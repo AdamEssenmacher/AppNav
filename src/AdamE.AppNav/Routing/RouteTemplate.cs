@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
+using System.Text;
 
 namespace AdamE.AppNav.Routing;
 
@@ -17,8 +19,10 @@ namespace AdamE.AppNav.Routing;
 /// sequence that is not valid, or does not decode to valid UTF-8, is kept as written.
 /// </para>
 /// <para>
-/// A template segment cannot contain <c>{</c>, <c>}</c>, <c>?</c> or <c>#</c>, or start or end with white space.
-/// To match those characters, percent-encode them in the template: <c>%7B</c>, <c>%7D</c>, <c>%3F</c>, <c>%23</c>
+/// A template segment cannot contain a control character (one for which <see cref="char.IsControl(char)"/> is
+/// <see langword="true"/>, such as a tab or line feed), <c>{</c>, <c>}</c>, <c>?</c> or <c>#</c>, or start or end
+/// with white space. To match those characters, percent-encode them in the template: for example <c>%09</c> for a
+/// tab, <c>%0A</c> for a line feed, <c>%00</c> for a null character, <c>%7B</c>, <c>%7D</c>, <c>%3F</c>, <c>%23</c>
 /// and <c>%20</c>.
 /// </para>
 /// </remarks>
@@ -45,8 +49,10 @@ public sealed class RouteTemplate
     /// <exception cref="ArgumentNullException"><paramref name="value"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">
     /// <paramref name="value"/> is empty or consists only of white space, does not start with <c>/</c>, or has a
-    /// segment that contains <c>{</c>, <c>}</c>, <c>?</c> or <c>#</c>, or starts or ends with white space. These
-    /// checks apply to the text as written, before percent-decoding.
+    /// segment that contains a control character, <c>{</c>, <c>}</c>, <c>?</c> or <c>#</c>, or starts or ends with
+    /// white space. These checks apply to the text as written, before percent-decoding. A segment with a control
+    /// character is reported as such even when the character is also white space, such as a tab at the start, and the
+    /// message shows each control character as a <c>\uXXXX</c> escape.
     /// </exception>
     public static RouteTemplate Parse(string value)
     {
@@ -59,7 +65,11 @@ public sealed class RouteTemplate
         foreach (string segment in segments)
         {
             if (FindSegmentProblem(segment) is { } problem)
-                throw new ArgumentException($"Route template segment '{segment}' {problem}.", nameof(value));
+            {
+                throw new ArgumentException(
+                    $"Route template segment '{EscapeControlCharacters(segment)}' {problem}.",
+                    nameof(value));
+            }
         }
 
         return new RouteTemplate(value, DecodeSegments(segments));
@@ -100,6 +110,11 @@ public sealed class RouteTemplate
 
     private static string? FindSegmentProblem(string segment)
     {
+        // Checked first: a control character is invisible where the template is written, and its rule covers the
+        // whole segment, so a tab or line feed at an edge is reported here rather than as white space.
+        if (ContainsControlCharacter(segment))
+            return "contains a control character";
+
         if (segment.Contains('{', StringComparison.Ordinal) || segment.Contains('}', StringComparison.Ordinal))
             return "contains '{' or '}'";
 
@@ -110,6 +125,36 @@ public sealed class RouteTemplate
             return "starts or ends with white space";
 
         return null;
+    }
+
+    private static bool ContainsControlCharacter(string segment)
+    {
+        foreach (char c in segment)
+        {
+            if (char.IsControl(c))
+                return true;
+        }
+
+        return false;
+    }
+
+    // Writes each control character as a \uXXXX escape, so that quoting a segment in a message cannot break the line
+    // or the terminal it is printed to. Other characters are quoted as written.
+    private static string EscapeControlCharacters(string segment)
+    {
+        if (!ContainsControlCharacter(segment))
+            return segment;
+
+        var builder = new StringBuilder(segment.Length + 8);
+        foreach (char c in segment)
+        {
+            if (char.IsControl(c))
+                builder.Append(CultureInfo.InvariantCulture, $"\\u{(int)c:X4}");
+            else
+                builder.Append(c);
+        }
+
+        return builder.ToString();
     }
 
     private static string[] SplitSegments(string path)

@@ -246,6 +246,21 @@ public sealed class RouteTemplateTests
         Assert.NotNull(template.Match(path));
     }
 
+    [Theory]
+    [InlineData("/a%00b", "/a\0b")]
+    [InlineData("/a%00b", "/a%00b")]
+    [InlineData("/line%0Afeed", "/line\nfeed")]
+    [InlineData("/%09tab", "/\ttab")]
+    [InlineData("/%09tab", "/%09tab")]
+    [InlineData("/delete%7F", "/delete\u007F")]
+    [InlineData("/next%C2%85line", "/next\u0085line")]
+    public void EncodedControlCharactersInATemplateMatchTheDecodedText(string value, string path)
+    {
+        RouteTemplate template = RouteTemplate.Parse(value);
+
+        Assert.NotNull(template.Match(path));
+    }
+
     [Fact]
     public void ASuccessfulMatchReturnsAnEmptyReadOnlyDictionary()
     {
@@ -318,13 +333,60 @@ public sealed class RouteTemplateTests
     [Theory]
     [InlineData("/ settings", " settings")]
     [InlineData("/settings ", "settings ")]
-    [InlineData("/settings/\tprofile", "\tprofile")]
+    [InlineData("/settings/\u00A0profile", "\u00A0profile")]
     [InlineData("/ /", " ")]
     [InlineData("/settings/ /profile", " ")]
     [InlineData("/%20a ", "%20a ")]
     public void ParseRejectsASegmentThatStartsOrEndsWithWhiteSpace(string value, string segment)
     {
         AssertRejectsSegment(value, segment);
+    }
+
+    [Theory]
+    [InlineData("/\0settings", "\\u0000settings")]
+    [InlineData("/a\0b", "a\\u0000b")]
+    [InlineData("/settings\0", "settings\\u0000")]
+    [InlineData("/\nsettings", "\\u000Asettings")]
+    [InlineData("/set\rtings", "set\\u000Dtings")]
+    [InlineData("/settings\u001B", "settings\\u001B")]
+    [InlineData("/settings/a\u007Fb", "a\\u007Fb")]
+    [InlineData("/a\u0001\u0002b", "a\\u0001\\u0002b")]
+    [InlineData("/a%20\u0001", "a%20\\u0001")]
+    public void ParseRejectsASegmentContainingAControlCharacter(string value, string segment)
+    {
+        AssertRejectsControlCharacterSegment(value, segment);
+    }
+
+    [Theory]
+    [InlineData("/\t", "\\u0009")]
+    [InlineData("/settings/\tprofile", "\\u0009profile")]
+    [InlineData("/settings\n", "settings\\u000A")]
+    [InlineData("/a\tb", "a\\u0009b")]
+    public void ParseRejectsATabOrLineFeedAsAControlCharacterEvenAtAnEdge(string value, string segment)
+    {
+        AssertRejectsControlCharacterSegment(value, segment);
+    }
+
+    [Theory]
+    [InlineData("/\u0085next", "\\u0085next")]
+    [InlineData("/next\u0085line", "next\\u0085line")]
+    [InlineData("/next\u0085", "next\\u0085")]
+    public void ParseRejectsTheC1NextLineCharacterAsAControlCharacterThoughItIsAlsoWhiteSpace(
+        string value,
+        string segment)
+    {
+        Assert.True(char.IsControl('\u0085'));
+        Assert.True(char.IsWhiteSpace('\u0085'));
+
+        AssertRejectsControlCharacterSegment(value, segment);
+    }
+
+    [Theory]
+    [InlineData("/{\n}", "{\\u000A}")]
+    [InlineData("/what?\0", "what?\\u0000")]
+    public void ParseReportsAControlCharacterBeforeTheSegmentsOtherProblems(string value, string segment)
+    {
+        AssertRejectsControlCharacterSegment(value, segment);
     }
 
     [Fact]
@@ -343,5 +405,15 @@ public sealed class RouteTemplateTests
 
         Assert.Equal("value", exception.ParamName);
         Assert.Contains($"'{segment}'", exception.Message, StringComparison.Ordinal);
+    }
+
+    private static void AssertRejectsControlCharacterSegment(string value, string segment)
+    {
+        ArgumentException exception = Assert.Throws<ArgumentException>(() => RouteTemplate.Parse(value));
+
+        Assert.Equal("value", exception.ParamName);
+        Assert.Contains($"'{segment}'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("control character", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(exception.Message, char.IsControl);
     }
 }

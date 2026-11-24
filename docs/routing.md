@@ -34,8 +34,11 @@ A path is otherwise taken as it is:
 
 `Parse` throws `ArgumentNullException` for `null`. It throws `ArgumentException` when the text is empty or only white space, does not start with `/`, or has a segment that:
 
+- contains a control character (one for which `char.IsControl` is true), such as a tab, line feed or null character, anywhere in the segment,
 - contains `{` or `}`,
 - contains `?` or `#`, which cannot appear in the path of a URI, or
 - starts or ends with white space. Spaces inside a segment, as in `/my files`, are allowed.
 
-These checks apply to the text as written, before decoding. To match one of these characters, percent-encode it: `%7B` for `{`, `%7D` for `}`, `%3F` for `?`, `%23` for `#` and `%20` for a space at the start or end of a segment. For example, `/what%3F` matches the path `/what%3F`.
+A control character is reported as a control character even when it is also white space, as a tab or line feed at the start of a segment is, and the exception message shows it as a `\uXXXX` escape, such as `\u0009`, rather than printing it.
+
+These checks apply to the text as written, before decoding. To match one of these characters, percent-encode it: `%09` for a tab, `%0A` for a line feed, `%00` for a null character (and the UTF-8 bytes of any other control character, such as `%C2%85` for U+0085), `%7B` for `{`, `%7D` for `}`, `%3F` for `?`, `%23` for `#` and `%20` for a space at the start or end of a segment. For example, `/what%3F` matches the path `/what%3F`, and `/a%09b` matches a path whose segment is `a`, a tab and `b`.
