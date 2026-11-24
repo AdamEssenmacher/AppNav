@@ -6,6 +6,10 @@ AppNav keeps an app's navigation as durable logical state, resolved from typed r
 
 > **Status: under construction.** Nothing is published yet. Packages will ship to NuGet.org as `AdamE.AppNav.*`.
 
+## Documentation
+
+See the [documentation](https://github.com/AdamEssenmacher/AppNav/blob/main/docs/index.md).
+
 ## License
 
-[MIT](LICENSE)
+[MIT](https://github.com/AdamEssenmacher/AppNav/blob/main/LICENSE)
