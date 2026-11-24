@@ -1,6 +1,6 @@
 # Architecture
 
-> **Status:** this page describes the design AppNav is being built to. The code arrives in small pull requests in a planned order, and until a part has landed, the types named here do not exist yet. Type names are the planned ones and may change before they ship. Sections will link to code as it lands.
+> **Status:** this page describes the design AppNav is being built to. The code arrives in small pull requests in the order set out in the [roadmap](roadmap.md), and until a part has landed, the types named here do not exist yet. Type names are the planned ones and may change before they ship. Sections will link to code as it lands.
 
 ## The central idea
 
@@ -67,7 +67,7 @@ Back, reconciliation and refresh also go through `ApplyAsync`: Back with its pla
 
 ## Layers
 
-The core library's layers, in the order they are built; each builds mainly on those above it. Back navigation and route-entry leases are the exception: they come after the router and extend it, and the router gains its Back operation and its lease handling when they land.
+The core library's layers, in the order they are built; each builds mainly on those above it. Back navigation and route-entry leases are the exception: they come after the router and extend it, and the router gains its Back operation and its lease handling when they land. The [roadmap](roadmap.md) follows this order.
 
 | Layer | Owns |
 | --- | --- |
