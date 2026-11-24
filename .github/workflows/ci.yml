@@ -47,7 +47,6 @@ jobs:
       - name: Build
         run: dotnet build AppNav.slnx -c Release --no-restore
 
-      # Succeeds without running anything until the solution contains a test project.
       - name: Test
         run: dotnet test AppNav.slnx -c Release --no-build
 
