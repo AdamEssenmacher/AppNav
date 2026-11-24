@@ -30,8 +30,10 @@ A pull request must:
 - Record public API changes in the project's `PublicAPI.Unshipped.txt`. The build fails with RS0016 for a public symbol that is not listed and RS0017 for a listed symbol that no longer exists; add or remove the line the diagnostic names (your IDE's code fix for RS0016 writes it for you). Do not edit `PublicAPI.Shipped.txt`; entries move there at release, and removing a shipped symbol is a breaking change to raise in an issue first.
 - Have XML documentation comments on every public type and member in library projects. A missing one fails the build with CS1591.
 - Build cleanly. Warnings are errors, and the code style rules in `.editorconfig` are enforced in the build.
-- Keep library code trim- and AOT-compatible. Every library project sets `IsAotCompatible` (copy it, along with `GenerateDocumentationFile` and the `Microsoft.CodeAnalysis.PublicApiAnalyzers` reference, into any new library project), so the trim and AOT analyzers run on every build and a violation fails it.
+- Keep library code trim- and AOT-compatible. Every library project sets `IsAotCompatible`, so the trim and AOT analyzers run on every build and a violation fails it.
 - Add any new package version to `Directory.Packages.props`. Project files reference packages without a version.
+
+To add a library project, add it to `AppNav.slnx` and copy `IsAotCompatible`, `GenerateDocumentationFile` and the `Microsoft.CodeAnalysis.PublicApiAnalyzers` reference from `src/AdamE.AppNav/AdamE.AppNav.csproj`. Then create `PublicAPI.Shipped.txt` and `PublicAPI.Unshipped.txt` next to the project file, each starting with the line `#nullable enable`, as in `src/AdamE.AppNav`. A missing file fails the build with RS0016 or RS0048, and a missing `#nullable enable` line fails it with RS0037 once the API uses nullable annotations.
 
 ## License
 
