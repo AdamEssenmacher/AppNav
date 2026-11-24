@@ -26,8 +26,10 @@ flowchart TD
     A -->|success| C[Commit state and history]
     T -. redirect .-> T
     P -. redirect .-> T
-    M -->|no match| F[State and history unchanged]
-    L -->|invalid plan| F
+    T -->|error or redirect loop| F[State and history unchanged]
+    M -->|no match| F
+    P -->|error or redirect loop| F
+    L -->|error or invalid plan| F
     A -->|failure or cancellation| F
 ```
 
@@ -51,7 +53,7 @@ flowchart TD
 7. **Present.** The router passes the plan to the presenter's `ApplyAsync`, which changes the navigation surface to match.
 8. **Commit.** Only after `ApplyAsync` succeeds does the router make the target its current state and add an entry to its **history**, a bounded record of committed operations.
 
-A successful navigation returns a `NavigationResult` with the final route, the applied plan and the committed state. Every failure throws instead: an unmatched URI, a redirect loop, an invalid plan, an exception from a transformer, policy, planner or presenter, or cancellation. A policy denies a request by redirecting it, which is a success. A navigation that fails at any step leaves state and history unchanged.
+A successful navigation returns a `NavigationResult` with the final route, the applied plan and the committed state. Every navigation failure throws instead: an unmatched URI, a redirect loop, an invalid plan, an exception from a transformer, policy, planner or presenter, or cancellation. A policy denies a request by redirecting it, which is a success. A navigation that fails at any step leaves state and history unchanged.
 
 The pipeline emits structured diagnostic events, correlated by an operation ID, to observers, `ILogger` and an `ActivitySource`.
 
@@ -59,13 +61,13 @@ The pipeline emits structured diagnostic events, correlated by an operation ID, 
 
 Back, reconciliation and refresh also go through `ApplyAsync`: Back with its plan; reconciliation with the state the host already shows, so that the presenter can confirm it matches the navigation surface and adopt it rather than navigate (the result reports `Presented` as false); refresh with the current state unchanged.
 
-- **Back.** A **back navigator** (`IBackNavigator`) plans one logical Back from the current state. The default one lets the content of a modal handle it first, then dismisses the modal, pops a stack (the selected branch's content first), or returns a branch host to its default branch. Back policies can inspect the candidate plan and cancel it before presentation. A Back that nothing can handle returns a result of `Unhandled`, and the host applies its own root-level behavior. A Back the host starts, such as a system Back gesture, is recorded with a host-Back source.
+- **Back.** A **back navigator** (`IBackNavigator`) plans one logical Back from the current state. The default one lets the content of a modal handle it first, then dismisses the modal, pops a stack (the selected branch's content first), or returns a branch host to its default branch. Back policies can inspect the candidate plan and cancel it before presentation. A Back returns one of three results: `Completed`, with the committed state; `Canceled`, when a Back policy cancels it or the modal that asked for it is no longer on top; or `Unhandled`, when nothing in the state can handle it. Only `Unhandled` tells the host to apply its own root-level behavior. Failures throw, as they do for a navigation. A Back the host starts, such as a system Back gesture, is recorded with a host-Back source.
 - **Reconciliation.** When the user changes the navigation surface directly, by a swipe-back gesture or a tab selection, for example, the presenter reports the committed state the change started from and the state the host now shows. The router commits it, with a host-reconciliation source, only if that starting state is still the current one; otherwise it rejects the reconciliation as stale. Waiting reconciliations are admitted before any queued navigation, Back or refresh, because the host already shows their state.
 - **Refresh.** After the host recreates its native artifacts, it asks the router to reapply the current state. Refresh plans nothing and changes neither state nor history.
 
 ## Layers
 
-The core library's layers, broadly in dependency order: each builds mainly on those above it.
+The core library's layers, in the order they are built; each builds mainly on those above it. Back navigation and route-entry leases are the exception: they come after the router and extend it, and the router gains its Back operation and its lease handling when they land.
 
 | Layer | Owns |
 | --- | --- |
@@ -110,7 +112,7 @@ A presenter **must not**:
 
 - **Operations are serialized.** The router runs navigation, Back, reconciliation and refresh one at a time.
 - **Presentation precedes commit.** A failed or cancelled operation leaves state and history unchanged.
-- **State is immutable and validated.** Navigation state is made of immutable records, and the router validates its initial state when it is created and every plan's target state before presenting it.
+- **State is immutable and validated.** Navigation state is made of immutable records, and the router validates its initial state when it is created and every state before it commits it, whether the state comes from a plan or a reconciliation. A reconciliation whose state fails validation throws and commits nothing; when the presenter raised it as an event, the failure is reported as a diagnostic event instead.
 - **Stale reconciliations are rejected.** A reconciliation commits only against the exact state it was observed from.
 - **Back does not traverse history.** History records what was committed; Back plans from the current state.
 - **Diagnostics never change outcomes.** The result or exception of an operation is authoritative; diagnostic events only observe it.
