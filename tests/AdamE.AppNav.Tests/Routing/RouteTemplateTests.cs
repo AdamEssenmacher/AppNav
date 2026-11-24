@@ -1,3 +1,4 @@
+using System.Text;
 using AdamE.AppNav.Routing;
 using Xunit;
 
@@ -13,6 +14,7 @@ public sealed class RouteTemplateTests
     private const string EdgeWhiteSpace = "white space";
     private const string QuestionMarkOrHash = "'?' or '#'";
     private const string RepeatedName = "repeats the name";
+    private const string LoneSurrogate = "lone surrogate";
 
     [Theory]
     [InlineData("/")]
@@ -604,6 +606,66 @@ public sealed class RouteTemplateTests
         AssertRejectsControlCharacterSegment(value, segment, notCategory);
     }
 
+    [Theory]
+    [InlineData("a", 0xD800, "b", "a\\uD800b", EdgeWhiteSpace)]
+    [InlineData("", 0xDFFF, "", "\\uDFFF", EdgeWhiteSpace)]
+    [InlineData("{id", 0xDC00, "}", "{id\\uDC00}", InvalidParameterName)]
+    [InlineData("{", 0xD800, "}", "{\\uD800}", InvalidParameterName)]
+    [InlineData("{a", 0xDFFF, "b}", "{a\\uDFFFb}", InvalidParameterName)]
+    [InlineData("{", 0xDBFF, "", "{\\uDBFF", BraceOutsideAParameter)]
+    [InlineData("\U0001F600", 0xD83D, "", "\U0001F600\\uD83D", ControlCharacter)]
+    [InlineData("x", 0xDE00, "\U0001F600", "x\\uDE00\U0001F600", ControlCharacter)]
+    public void ParseRejectsASegmentContainingALoneSurrogate(
+        string before,
+        int surrogate,
+        string after,
+        string quoted,
+        string notCategory)
+    {
+        string value = "/" + before + (char)surrogate + after;
+
+        ArgumentException exception = AssertRejectsSegment(value, quoted, LoneSurrogate, notCategory);
+
+        Assert.True(IsValidUtf16(exception.Message));
+    }
+
+    [Theory]
+    [InlineData("\0", 0xD800, "", "\\u0000\\uD800")]
+    [InlineData("", 0xDC00, "\n", "\\uDC00\\u000A")]
+    [InlineData("{a\u0001", 0xDBFF, "}", "{a\\u0001\\uDBFF}")]
+    public void ParseReportsAControlCharacterBeforeALoneSurrogate(
+        string before,
+        int surrogate,
+        string after,
+        string quoted)
+    {
+        string value = "/" + before + (char)surrogate + after;
+
+        ArgumentException exception = AssertRejectsSegment(value, quoted, ControlCharacter, LoneSurrogate);
+
+        Assert.True(IsValidUtf16(exception.Message));
+    }
+
+    [Fact]
+    public void ASurrogatePairInATemplateIsValidText()
+    {
+        RouteTemplate template = RouteTemplate.Parse("/smile\U0001F600/{id}");
+
+        Assert.NotNull(template.Match("/smile\U0001F600/1"));
+        Assert.NotNull(template.Match("/smile%F0%9F%98%80/1"));
+    }
+
+    [Fact]
+    public void EncodedSurrogateBytesAreKeptAsWritten()
+    {
+        Assert.Equal("%ED%A0%80", Uri.UnescapeDataString("%ED%A0%80"));
+
+        RouteTemplate template = RouteTemplate.Parse("/%ED%A0%80");
+
+        Assert.NotNull(template.Match("/%ED%A0%80"));
+        Assert.Null(template.Match("/" + (char)0xD800));
+    }
+
     [Fact]
     public void MatchRejectsANullPath()
     {
@@ -634,5 +696,18 @@ public sealed class RouteTemplateTests
         ArgumentException exception = AssertRejectsSegment(value, segment, ControlCharacter, notCategory);
 
         Assert.DoesNotContain(exception.Message, char.IsControl);
+    }
+
+    private static bool IsValidUtf16(string text)
+    {
+        try
+        {
+            _ = new UTF8Encoding(false, throwOnInvalidBytes: true).GetByteCount(text);
+            return true;
+        }
+        catch (EncoderFallbackException)
+        {
+            return false;
+        }
     }
 }
