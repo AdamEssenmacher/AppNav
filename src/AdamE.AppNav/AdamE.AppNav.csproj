@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net11.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <IsAotCompatible>true</IsAotCompatible>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    </PropertyGroup>
+
+    <PropertyGroup>
+        <IsPackable>true</IsPackable>
+        <PackageId>AdamE.AppNav</PackageId>
+        <Description>Route-first application navigation for .NET, resolving typed routes into durable logical navigation state.</Description>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.CodeAnalysis.PublicApiAnalyzers" PrivateAssets="all" />
+    </ItemGroup>
+
+</Project>
