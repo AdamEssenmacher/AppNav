@@ -5,12 +5,18 @@ using System.Text;
 namespace AdamE.AppNav.Routing;
 
 /// <summary>
-/// A parsed route template: the path pattern that a route answers to, such as <c>/settings/profile</c>.
+/// A parsed route template: the path pattern that a route answers to, such as <c>/products/{id}</c>.
 /// </summary>
 /// <remarks>
 /// <para>
-/// A template is a path that starts with <c>/</c> and is divided into segments by <c>/</c>. Every segment is a
-/// literal that a path must contain exactly, in the same position.
+/// A template is a path that starts with <c>/</c> and is divided into segments by <c>/</c>. A segment written
+/// <c>{name}</c> is a parameter: it matches any one path segment and captures that segment's decoded text under its
+/// name. Every other segment is a literal that a path must contain exactly, in the same position.
+/// </para>
+/// <para>
+/// A parameter name starts with an ASCII letter or an underscore, followed by ASCII letters, digits or underscores.
+/// Names are compared without regard to case, so a template cannot use two names that differ only by case, and
+/// captured values are looked up the same way.
 /// </para>
 /// <para>
 /// Templates and paths are divided the same way. Leading, trailing and repeated slashes do not create segments, so
@@ -19,21 +25,27 @@ namespace AdamE.AppNav.Routing;
 /// sequence that is not valid, or does not decode to valid UTF-8, is kept as written.
 /// </para>
 /// <para>
-/// A template segment cannot contain a control character (one for which <see cref="char.IsControl(char)"/> is
-/// <see langword="true"/>, such as a tab or line feed), <c>{</c>, <c>}</c>, <c>?</c> or <c>#</c>, or start or end
-/// with white space. To match those characters, percent-encode them in the template: for example <c>%09</c> for a
-/// tab, <c>%0A</c> for a line feed, <c>%00</c> for a null character, <c>%7B</c>, <c>%7D</c>, <c>%3F</c>, <c>%23</c>
-/// and <c>%20</c>.
+/// A segment cannot contain a control character (one for which <see cref="char.IsControl(char)"/> is
+/// <see langword="true"/>, such as a tab or line feed). A literal segment also cannot start or end with white space,
+/// or contain <c>{</c>, <c>}</c>, <c>?</c> or <c>#</c>. To match those characters, percent-encode them in the
+/// template: for example <c>%09</c> for a tab, <c>%0A</c> for a line feed, <c>%00</c> for a null character,
+/// <c>%20</c>, <c>%7B</c>, <c>%7D</c>, <c>%3F</c> and <c>%23</c>.
 /// </para>
 /// </remarks>
 public sealed class RouteTemplate
 {
-    private readonly string[] _segments;
+    private const string InvalidParameterName =
+        "has an invalid parameter name; a parameter name starts with an ASCII letter or '_', " +
+        "followed by ASCII letters, digits or '_'";
 
-    private RouteTemplate(string value, string[] segments)
+    private readonly Segment[] _segments;
+    private readonly int _parameterCount;
+
+    private RouteTemplate(string value, Segment[] segments, int parameterCount)
     {
         Value = value;
         _segments = segments;
+        _parameterCount = parameterCount;
     }
 
     /// <summary>
@@ -48,11 +60,17 @@ public sealed class RouteTemplate
     /// <returns>The parsed template.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="value"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">
-    /// <paramref name="value"/> is empty or consists only of white space, does not start with <c>/</c>, or has a
-    /// segment that contains a control character, <c>{</c>, <c>}</c>, <c>?</c> or <c>#</c>, or starts or ends with
-    /// white space. These checks apply to the text as written, before percent-decoding. A segment with a control
-    /// character is reported as such even when the character is also white space, such as a tab at the start, and the
-    /// message shows each control character as a <c>\uXXXX</c> escape.
+    /// <para>
+    /// <paramref name="value"/> is empty or consists only of white space or does not start with <c>/</c>; a segment
+    /// contains a control character; a parameter has an invalid name or repeats the name of an earlier parameter,
+    /// ignoring case; or a literal segment starts or ends with white space, or contains <c>{</c>, <c>}</c>, <c>?</c>
+    /// or <c>#</c>. These checks apply to the text as written, before percent-decoding.
+    /// </para>
+    /// <para>
+    /// The first invalid segment, reading left to right, is reported. Within a segment, a control character is
+    /// reported before any other problem, even when the character is also white space, such as a tab at the start,
+    /// and the message shows each control character as a <c>\uXXXX</c> escape.
+    /// </para>
     /// </exception>
     public static RouteTemplate Parse(string value)
     {
@@ -62,67 +80,140 @@ public sealed class RouteTemplate
             throw new ArgumentException("Route templates must start with '/'.", nameof(value));
 
         string[] segments = SplitSegments(value);
-        foreach (string segment in segments)
+        var parsed = new Segment[segments.Length];
+        var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        for (var i = 0; i < segments.Length; i++)
         {
-            if (FindSegmentProblem(segment) is { } problem)
+            string segment = segments[i];
+            string? name = FindParameterName(segment);
+            if (FindSegmentProblem(segment, name) is { } problem)
             {
                 throw new ArgumentException(
                     $"Route template segment '{EscapeControlCharacters(segment)}' {problem}.",
                     nameof(value));
             }
+
+            if (name is null)
+            {
+                parsed[i] = Segment.Literal(Uri.UnescapeDataString(segment));
+                continue;
+            }
+
+            if (!seenNames.Add(name))
+            {
+                seenNames.TryGetValue(name, out string? earlier);
+                throw new ArgumentException(
+                    $"Route template segment '{EscapeControlCharacters(segment)}' repeats the name of an earlier " +
+                    $"parameter, '{{{earlier}}}'; parameter names are compared without regard to case.",
+                    nameof(value));
+            }
+
+            parsed[i] = Segment.Parameter(name);
         }
 
-        return new RouteTemplate(value, DecodeSegments(segments));
+        return new RouteTemplate(value, parsed, seenNames.Count);
     }
 
     /// <summary>
     /// Matches a path against this template.
     /// </summary>
     /// <param name="path">
-    /// The path to match, such as <c>/settings/profile</c>. A leading <c>/</c> is optional. The whole value is the
-    /// path: it is not trimmed, and a query string or fragment is not removed.
+    /// The path to match, such as <c>/products/42</c>. A leading <c>/</c> is optional. The whole value is the path: it
+    /// is not trimmed, and a query string or fragment is not removed.
     /// </param>
     /// <returns>
-    /// An empty, read-only dictionary when the path has the same number of segments as the template and each decoded
-    /// segment equals the template's segment in the same position; otherwise <see langword="null"/>.
+    /// The values captured by the template's parameters, keyed by parameter name as written in the template and
+    /// looked up without regard to case, or <see langword="null"/> when the path does not match. Each match returns
+    /// its own dictionary; treat it as read-only. For a template without parameters, the dictionary is empty.
     /// </returns>
     /// <remarks>
-    /// Segments are compared ordinally and case-sensitively. White space is significant, <c>+</c> is not a space,
-    /// and <c>.</c> and <c>..</c> are ordinary segments.
+    /// A path matches when it has the same number of segments as the template, each decoded segment in a literal's
+    /// position equals that literal, compared ordinally and case-sensitively, and each parameter's position holds one
+    /// segment. A captured value is the decoded path segment, so it contains <c>/</c> where the path has <c>%2F</c>.
+    /// White space is significant, <c>+</c> is not a space, and <c>.</c> and <c>..</c> are ordinary segments.
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="path"/> is <see langword="null"/>.</exception>
     public IReadOnlyDictionary<string, string>? Match(string path)
     {
         ArgumentNullException.ThrowIfNull(path);
 
-        string[] pathSegments = DecodeSegments(SplitSegments(path));
+        string[] pathSegments = SplitSegments(path);
         if (pathSegments.Length != _segments.Length)
             return null;
 
         for (var i = 0; i < _segments.Length; i++)
         {
-            if (!StringComparer.Ordinal.Equals(_segments[i], pathSegments[i]))
+            Segment segment = _segments[i];
+            if (!segment.IsParameter &&
+                !StringComparer.Ordinal.Equals(segment.Text, Uri.UnescapeDataString(pathSegments[i])))
+            {
                 return null;
+            }
         }
 
-        return ReadOnlyDictionary<string, string>.Empty;
+        if (_parameterCount == 0)
+            return ReadOnlyDictionary<string, string>.Empty;
+
+        var values = new Dictionary<string, string>(_parameterCount, StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < _segments.Length; i++)
+        {
+            Segment segment = _segments[i];
+            if (segment.IsParameter)
+                values.Add(segment.Text, Uri.UnescapeDataString(pathSegments[i]));
+        }
+
+        return values;
     }
 
-    private static string? FindSegmentProblem(string segment)
+    // Returns the name between the braces when the segment is a whole-segment parameter, valid or not, and null when
+    // the segment is a literal.
+    private static string? FindParameterName(string segment)
+    {
+        if (segment.Length < 2 || segment[0] != '{' || segment[^1] != '}')
+            return null;
+
+        ReadOnlySpan<char> name = segment.AsSpan(1, segment.Length - 2);
+        return name.ContainsAny('{', '}') ? null : name.ToString();
+    }
+
+    private static string? FindSegmentProblem(string segment, string? parameterName)
     {
         // Checked first: a control character is invisible where the template is written, and its rule covers the
         // whole segment, so a tab or line feed at an edge is reported here rather than as white space.
         if (ContainsControlCharacter(segment))
             return "contains a control character";
 
+        if (parameterName is not null)
+            return FindParameterNameProblem(parameterName);
+
+        // Checked before braces, so that a space next to an otherwise valid parameter, as in ' {id}', is reported as
+        // the white space it is.
+        if (char.IsWhiteSpace(segment[0]) || char.IsWhiteSpace(segment[^1]))
+            return "starts or ends with white space";
+
         if (segment.Contains('{', StringComparison.Ordinal) || segment.Contains('}', StringComparison.Ordinal))
-            return "contains '{' or '}'";
+            return "contains '{' or '}' outside a parameter; a parameter is a whole segment, written '{name}'";
 
         if (segment.Contains('?', StringComparison.Ordinal) || segment.Contains('#', StringComparison.Ordinal))
             return "contains '?' or '#'";
 
-        if (char.IsWhiteSpace(segment[0]) || char.IsWhiteSpace(segment[^1]))
-            return "starts or ends with white space";
+        return null;
+    }
+
+    private static string? FindParameterNameProblem(string name)
+    {
+        if (name.AsSpan().ContainsAny(':', '?', '*'))
+            return "contains ':', '?' or '*', which are not allowed in a parameter name";
+
+        if (name.Length == 0 || !(char.IsAsciiLetter(name[0]) || name[0] == '_'))
+            return InvalidParameterName;
+
+        for (var i = 1; i < name.Length; i++)
+        {
+            if (!(char.IsAsciiLetterOrDigit(name[i]) || name[i] == '_'))
+                return InvalidParameterName;
+        }
 
         return null;
     }
@@ -162,11 +253,26 @@ public sealed class RouteTemplate
         return path.Split('/', StringSplitOptions.RemoveEmptyEntries);
     }
 
-    private static string[] DecodeSegments(string[] segments)
+    private readonly struct Segment
     {
-        for (var i = 0; i < segments.Length; i++)
-            segments[i] = Uri.UnescapeDataString(segments[i]);
+        private Segment(string text, bool isParameter)
+        {
+            Text = text;
+            IsParameter = isParameter;
+        }
 
-        return segments;
+        public string Text { get; }
+
+        public bool IsParameter { get; }
+
+        public static Segment Literal(string text)
+        {
+            return new Segment(text, false);
+        }
+
+        public static Segment Parameter(string name)
+        {
+            return new Segment(name, true);
+        }
     }
 }
