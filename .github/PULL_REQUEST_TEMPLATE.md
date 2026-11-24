@@ -10,3 +10,4 @@
 
 - [ ] One discrete change, with its tests and documentation
 - [ ] Discussed in an issue first, unless it is a small fix
+- [ ] If this finishes a roadmap milestone, its box in `docs/roadmap.md` is checked

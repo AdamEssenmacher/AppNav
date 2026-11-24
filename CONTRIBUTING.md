@@ -25,7 +25,7 @@ CI runs the same steps on every pull request. The `Build and test (Linux)`, `Bui
 
 A pull request must:
 
-- Add one discrete piece of value, with its tests and documentation in the same pull request. Documentation means XML documentation on public API and, for user-visible behavior, the README or the relevant page in `docs/`. A pull request that completes a roadmap item also checks its box in `docs/roadmap.md`.
+- Add one discrete piece of value, with its tests and documentation in the same pull request. Documentation means XML documentation on public API and, for user-visible behavior, the README or the relevant page in `docs/`. The pull request that finishes a roadmap milestone, the last one planned for it, also checks that milestone's box in `docs/roadmap.md`.
 - Have a title in the imperative, such as `Add route parameter parsing`. Pull requests are squash-merged, so the title becomes the commit subject on `main`. Push changes made in response to review as new commits; do not force-push. If your branch conflicts with `main`, merge `main` into it.
 - Record public API changes in the project's `PublicAPI.Unshipped.txt`. The build fails with RS0016 for a public symbol that is not listed and RS0017 for a listed symbol that no longer exists; add or remove the line the diagnostic names (your IDE's code fix for RS0016 writes it for you). Do not edit `PublicAPI.Shipped.txt`; entries move there at release, and removing a shipped symbol is a breaking change to raise in an issue first.
 - Have XML documentation comments on every public type and member in library projects. A missing one fails the build with CS1591.

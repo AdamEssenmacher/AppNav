@@ -79,7 +79,7 @@ The core library's layers, in the order they are built; each builds mainly on th
 | Presenter contract and topology | `INavigationPresenter`, presentation context, reconciliation, `NavigationTopology` |
 | Diagnostics | Diagnostic events, data redaction, logging and activity sources |
 | The router | `IRouterNavigator` and its factory: the pipeline, results, fallback routes, history, serialized operations, redirect-loop protection, reconciliation, refresh |
-| Back navigation | `IBackNavigator`, the default back navigator, Back policies |
+| Back navigation | `IBackNavigator`, the default back navigator, Back policies, the router's Back operation |
 | Deferred navigation | The versioned request serializer and the replayer |
 | Route-entry leases | `RouteEntryLease`, its registry, and its part in the router's commit |
 

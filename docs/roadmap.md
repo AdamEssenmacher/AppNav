@@ -22,17 +22,17 @@ A checked box means the work is merged to `main`.
 
 The core is the `AdamE.AppNav` package. Its milestones are the layers in the [architecture](architecture.md#layers), in the same order.
 
-- [ ] **1. Routing (in progress).** Route templates with literal, required, optional and catch-all parameters; constraints and value codecs; query strings; the route table, with match precedence that does not depend on registration order and conflicts reported when the table is built; formatting routes back to URIs; route metadata; convention routes bound from their template; route table modules.
-- [ ] **2. Navigation state.** `NavigationState` and its window, stack, branch-host and modal nodes; route entries; structural identity and validation; `NavigationPlan`; metadata lifetimes.
-- [ ] **3. Requests, provenance and deferral.** `RouterNavigationRequest` with its source, disposition, window, metadata and timestamp; request provenance; the deferred-request store contract and an in-memory store.
-- [ ] **4. Planner contracts and policies.** The planner contract, request transformers, request policies, and the access gate with its access evaluator.
-- [ ] **5. Navigation models.** The stack and branch-host models, route recipes, and the planner that applies them with each disposition, including contextual fallback.
-- [ ] **6. Presenter contract and topology.** `INavigationPresenter`, presentation context, reconciliation events, and `NavigationTopology` for checking a plan against a presenter's supported shape.
-- [ ] **7. Diagnostics.** Structured diagnostic events, safe and full data modes with redaction, logging, and activity sources for tracing.
-- [ ] **8. The router.** `IRouterNavigator`: the navigation pipeline, results, fallback routes and history, operation serialization, redirect-loop protection, reconciliation and refresh.
-- [ ] **9. Back navigation.** The back navigator contract, the default logical Back behavior, Back policies that can cancel a candidate plan, and the router's Back operation.
+- [ ] **1. Routing.** Route templates, with literal, required, optional and catch-all parameters; constraints and value codecs; the route table, composable from modules, with match precedence that does not depend on registration order and conflicts reported when the table is built; matching URIs, including their query strings, and formatting routes back to URIs; convention routes bound from their template; route metadata.
+- [ ] **2. Navigation state.** `NavigationState` and its nodes: windows, stacks, branch hosts and modals, with their route entries; structural identity and validation; `NavigationPlan`; metadata lifetimes.
+- [ ] **3. Requests, provenance and deferral.** `RouterNavigationRequest`, with its window, metadata and timestamp; request sources, dispositions and provenance; the deferred-request store contract and an in-memory store.
+- [ ] **4. Planner contracts and policies.** The planner contract (`IAppNavigationPlanner`), request transformers and policies, and the access gate.
+- [ ] **5. Navigation models.** The stack and branch-host models, route recipes, and the standard planner, which applies them with each disposition, including contextual fallback.
+- [ ] **6. Presenter contract and topology.** `INavigationPresenter`, presentation context, reconciliation, and `NavigationTopology` for checking a plan against a presenter's supported shape.
+- [ ] **7. Diagnostics.** Structured diagnostic events, data redaction with safe and full data modes, logging, and activity sources for tracing.
+- [ ] **8. The router.** `IRouterNavigator` and its factory: the navigation pipeline, results, fallback routes, history, operation serialization, redirect-loop protection, reconciliation and refresh.
+- [ ] **9. Back navigation.** The back navigator contract (`IBackNavigator`), the default back navigator, Back policies that can cancel a candidate plan, and the router's Back operation.
 - [ ] **10. Deferred navigation.** The versioned request serializer and the replayer.
-- [ ] **11. Route-entry leases.** Leases that own what a route entry borrows, the lease registry, their retirement and release as entries leave the committed state, and their integration into the router's commit.
+- [ ] **11. Route-entry leases.** `RouteEntryLease`, which owns what a route entry borrows and is retired and released as its entry leaves the committed state; the lease registry; and the leases' part in the router's commit.
 - [ ] **12. Core release gate.** Allocation budgets, package inspection, a clean consumer build from the packed package, the release workflow, and the first preview package of `AdamE.AppNav`.
 
 ## Presenters
