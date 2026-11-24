@@ -1,0 +1,27 @@
+<Project>
+
+    <PropertyGroup>
+        <Nullable>enable</Nullable>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    </PropertyGroup>
+
+    <PropertyGroup>
+        <Version>0.0.0-local</Version>
+        <Authors>Adam Essenmacher</Authors>
+        <Copyright>Copyright © 2026 Adam Essenmacher</Copyright>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <PackageProjectUrl>https://github.com/AdamEssenmacher/AppNav</PackageProjectUrl>
+        <RepositoryUrl>https://github.com/AdamEssenmacher/AppNav</RepositoryUrl>
+        <PackageTags>navigation;application-navigation;router;deep-linking;app-links;url-routing</PackageTags>
+        <IsPackable>false</IsPackable>
+    </PropertyGroup>
+
+    <PropertyGroup>
+        <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+        <PublishRepositoryUrl>true</PublishRepositoryUrl>
+        <IncludeSymbols>true</IncludeSymbols>
+        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    </PropertyGroup>
+
+</Project>
