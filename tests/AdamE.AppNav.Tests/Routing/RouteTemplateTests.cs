@@ -5,6 +5,15 @@ namespace AdamE.AppNav.Tests.Routing;
 
 public sealed class RouteTemplateTests
 {
+    // A short phrase that identifies each kind of rejection, so that tests pin which check reported a segment.
+    private const string ControlCharacter = "control character";
+    private const string InvalidParameterName = "invalid parameter name";
+    private const string ReservedInAParameterName = "not allowed in a parameter name";
+    private const string BraceOutsideAParameter = "outside a parameter";
+    private const string EdgeWhiteSpace = "white space";
+    private const string QuestionMarkOrHash = "'?' or '#'";
+    private const string RepeatedName = "repeats the name";
+
     [Theory]
     [InlineData("/")]
     [InlineData("/settings")]
@@ -233,6 +242,7 @@ public sealed class RouteTemplateTests
 
     [Theory]
     [InlineData("/a%7Bb%7D", "/a{b}")]
+    [InlineData("/%7Bid%7D", "/{id}")]
     [InlineData("/what%3F", "/what?")]
     [InlineData("/what%3F", "/what%3F")]
     [InlineData("/item%23", "/item#")]
@@ -262,7 +272,7 @@ public sealed class RouteTemplateTests
     }
 
     [Fact]
-    public void ASuccessfulMatchReturnsAnEmptyReadOnlyDictionary()
+    public void ALiteralTemplateMatchReturnsAnEmptyReadOnlyDictionary()
     {
         RouteTemplate template = RouteTemplate.Parse("/settings/profile");
 
@@ -273,6 +283,153 @@ public sealed class RouteTemplateTests
         IDictionary<string, string> mutable = Assert.IsAssignableFrom<IDictionary<string, string>>(values);
         Assert.True(mutable.IsReadOnly);
         Assert.Throws<NotSupportedException>(() => mutable.Add("key", "value"));
+    }
+
+    [Theory]
+    [InlineData("/{id}")]
+    [InlineData("/{_id}")]
+    [InlineData("/{_}")]
+    [InlineData("/{a1}")]
+    [InlineData("/{Store_Id_2}")]
+    public void AWholeSegmentInBracesIsAParameter(string value)
+    {
+        RouteTemplate template = RouteTemplate.Parse(value);
+
+        IReadOnlyDictionary<string, string>? values = template.Match("/anything");
+
+        Assert.NotNull(values);
+        Assert.Equal([value[2..^1]], values.Keys);
+        Assert.Equal("anything", Assert.Single(values.Values));
+    }
+
+    [Fact]
+    public void EncodedBracesAreALiteralNotAParameter()
+    {
+        RouteTemplate template = RouteTemplate.Parse("/%7Bid%7D");
+
+        IReadOnlyDictionary<string, string>? values = template.Match("/{id}");
+
+        Assert.NotNull(values);
+        Assert.Empty(values);
+        Assert.Null(template.Match("/42"));
+    }
+
+    [Fact]
+    public void CapturedValuesAreKeyedByTheNamesAsWritten()
+    {
+        RouteTemplate template = RouteTemplate.Parse("/{zone}/stores/{StoreId}/{aisle_2}/{B}");
+
+        IReadOnlyDictionary<string, string>? values = template.Match("/north/stores/42/7/x");
+
+        Assert.NotNull(values);
+        Assert.Equal(["B", "StoreId", "aisle_2", "zone"], values.Keys.Order(StringComparer.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("/{id}", "/42")]
+    [InlineData("/{id}/details", "/42/details")]
+    [InlineData("/products/{id}/details", "/products/42/details")]
+    [InlineData("/products/{id}", "/products/42")]
+    public void AParameterCapturesOneSegmentAtAnyPosition(string value, string path)
+    {
+        RouteTemplate template = RouteTemplate.Parse(value);
+
+        IReadOnlyDictionary<string, string>? values = template.Match(path);
+
+        Assert.NotNull(values);
+        Assert.Equal(new Dictionary<string, string> { ["id"] = "42" }, values);
+    }
+
+    [Fact]
+    public void SeveralParametersMixedWithLiteralsAreCaptured()
+    {
+        RouteTemplate template = RouteTemplate.Parse("/stores/{storeId}/products/{productId}/{tab}");
+
+        IReadOnlyDictionary<string, string>? values = template.Match("/stores/northwind/products/42/reviews");
+
+        Assert.NotNull(values);
+        Assert.Equal(
+            new Dictionary<string, string> { ["storeId"] = "northwind", ["productId"] = "42", ["tab"] = "reviews" },
+            values);
+    }
+
+    [Theory]
+    [InlineData("/products")]
+    [InlineData("/products/")]
+    [InlineData("/products//")]
+    [InlineData("/products/42/details")]
+    [InlineData("/")]
+    [InlineData("")]
+    public void AParameterDoesNotMatchAMissingOrExtraSegment(string path)
+    {
+        RouteTemplate template = RouteTemplate.Parse("/products/{id}");
+
+        Assert.Null(template.Match(path));
+    }
+
+    [Theory]
+    [InlineData("/products/42/Details")]
+    [InlineData("/items/42/details")]
+    public void LiteralsAroundAParameterMustStillMatch(string path)
+    {
+        RouteTemplate template = RouteTemplate.Parse("/products/{id}/details");
+
+        Assert.Null(template.Match(path));
+    }
+
+    [Theory]
+    [InlineData("/files/a%20b", "a b")]
+    [InlineData("/files/caf%C3%A9", "café")]
+    [InlineData("/files/a%2Fb", "a/b")]
+    [InlineData("/files/a%252Fb", "a%2Fb")]
+    [InlineData("/files/%20", " ")]
+    [InlineData("/files/ a ", " a ")]
+    [InlineData("/files/a+b", "a+b")]
+    [InlineData("/files/%zz", "%zz")]
+    [InlineData("/files/%FF", "%FF")]
+    [InlineData("/files/100%", "100%")]
+    [InlineData("/files/..", "..")]
+    [InlineData("/files/a?b=c", "a?b=c")]
+    [InlineData("/files/%0A", "\n")]
+    [InlineData("/files/a%00b", "a\0b")]
+    public void ACapturedValueIsTheDecodedSegment(string path, string expected)
+    {
+        RouteTemplate template = RouteTemplate.Parse("/files/{name}");
+
+        IReadOnlyDictionary<string, string>? values = template.Match(path);
+
+        Assert.NotNull(values);
+        Assert.Equal(expected, values["name"]);
+    }
+
+    [Theory]
+    [InlineData("storeId")]
+    [InlineData("STOREID")]
+    [InlineData("storeid")]
+    public void CapturedValuesAreLookedUpWithoutRegardToCase(string key)
+    {
+        RouteTemplate template = RouteTemplate.Parse("/stores/{storeId}");
+
+        IReadOnlyDictionary<string, string>? values = template.Match("/stores/northwind");
+
+        Assert.NotNull(values);
+        Assert.True(values.TryGetValue(key, out string? value));
+        Assert.Equal("northwind", value);
+    }
+
+    [Fact]
+    public void EachMatchReturnsItsOwnValues()
+    {
+        RouteTemplate template = RouteTemplate.Parse("/products/{id}");
+
+        IReadOnlyDictionary<string, string>? first = template.Match("/products/1");
+        IReadOnlyDictionary<string, string>? second = template.Match("/products/2");
+
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.NotSame(first, second);
+        Assert.Equal("1", first["id"]);
+        Assert.Equal("2", second["id"]);
     }
 
     [Fact]
@@ -307,16 +464,62 @@ public sealed class RouteTemplateTests
     }
 
     [Theory]
-    [InlineData("/{id}", "{id}")]
-    [InlineData("/products/{*path}", "{*path}")]
-    [InlineData("/{}", "{}")]
     [InlineData("/a{b", "a{b")]
     [InlineData("/a}b", "a}b")]
+    [InlineData("/{", "{")]
+    [InlineData("/}", "}")]
     [InlineData("/products/item{id}/details", "item{id}")]
+    [InlineData("/{id}x", "{id}x")]
+    [InlineData("/{a}{b}", "{a}{b}")]
+    [InlineData("/{id}}", "{id}}")]
+    [InlineData("/{{id}", "{{id}")]
     [InlineData("/a%20{b", "a%20{b")]
-    public void ParseRejectsASegmentContainingABrace(string value, string segment)
+    public void ParseRejectsABraceOutsideAWholeSegmentParameter(string value, string segment)
     {
-        AssertRejectsSegment(value, segment);
+        AssertRejectsSegment(value, segment, BraceOutsideAParameter, notCategory: InvalidParameterName);
+    }
+
+    [Theory]
+    [InlineData("/{}", "{}", BraceOutsideAParameter)]
+    [InlineData("/{ }", "{ }", EdgeWhiteSpace)]
+    [InlineData("/{ id }", "{ id }", EdgeWhiteSpace)]
+    [InlineData("/{a b}", "{a b}", BraceOutsideAParameter)]
+    [InlineData("/{1a}", "{1a}", ReservedInAParameterName)]
+    [InlineData("/{a-b}", "{a-b}", ReservedInAParameterName)]
+    [InlineData("/{a.b}", "{a.b}", ReservedInAParameterName)]
+    [InlineData("/{é}", "{é}", ReservedInAParameterName)]
+    [InlineData("/{café}", "{café}", ReservedInAParameterName)]
+    [InlineData("/{%41}", "{%41}", ReservedInAParameterName)]
+    public void ParseRejectsAnInvalidParameterName(string value, string segment, string notCategory)
+    {
+        AssertRejectsSegment(value, segment, InvalidParameterName, notCategory);
+    }
+
+    [Theory]
+    [InlineData("/products/{id:int}", "{id:int}")]
+    [InlineData("/products/{id?}", "{id?}")]
+    [InlineData("/files/{*rest}", "{*rest}")]
+    [InlineData("/{:}", "{:}")]
+    [InlineData("/{1:a}", "{1:a}")]
+    public void ParseRejectsAColonQuestionMarkOrAsteriskInAParameterName(string value, string segment)
+    {
+        ArgumentException exception =
+            AssertRejectsSegment(value, segment, ReservedInAParameterName, notCategory: InvalidParameterName);
+
+        Assert.DoesNotContain(QuestionMarkOrHash, exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("/{id}/{id}", "{id}", "{id}")]
+    [InlineData("/{id}/{ID}", "{ID}", "{id}")]
+    [InlineData("/{id}/products/{ID}", "{ID}", "{id}")]
+    [InlineData("/{storeId}/{a}/{StoreID}", "{StoreID}", "{storeId}")]
+    public void ParseRejectsAParameterNameUsedTwiceIgnoringCase(string value, string segment, string earlierSegment)
+    {
+        ArgumentException exception =
+            AssertRejectsSegment(value, segment, RepeatedName, notCategory: InvalidParameterName);
+
+        Assert.Contains($"'{earlierSegment}'", exception.Message, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -327,19 +530,24 @@ public sealed class RouteTemplateTests
     [InlineData("/a%20?", "a%20?")]
     public void ParseRejectsASegmentContainingAQuestionMarkOrHash(string value, string segment)
     {
-        AssertRejectsSegment(value, segment);
+        AssertRejectsSegment(value, segment, QuestionMarkOrHash, notCategory: ReservedInAParameterName);
     }
 
     [Theory]
-    [InlineData("/ settings", " settings")]
-    [InlineData("/settings ", "settings ")]
-    [InlineData("/settings/\u00A0profile", "\u00A0profile")]
-    [InlineData("/ /", " ")]
-    [InlineData("/settings/ /profile", " ")]
-    [InlineData("/%20a ", "%20a ")]
-    public void ParseRejectsASegmentThatStartsOrEndsWithWhiteSpace(string value, string segment)
+    [InlineData("/ settings", " settings", QuestionMarkOrHash)]
+    [InlineData("/settings ", "settings ", QuestionMarkOrHash)]
+    [InlineData("/settings/\u00A0profile", "\u00A0profile", QuestionMarkOrHash)]
+    [InlineData("/ /", " ", QuestionMarkOrHash)]
+    [InlineData("/settings/ /profile", " ", QuestionMarkOrHash)]
+    [InlineData("/%20a ", "%20a ", QuestionMarkOrHash)]
+    [InlineData("/ what?", " what?", QuestionMarkOrHash)]
+    [InlineData("/ {id}", " {id}", BraceOutsideAParameter)]
+    [InlineData("/{id} ", "{id} ", BraceOutsideAParameter)]
+    [InlineData("/products/ {id}/details", " {id}", BraceOutsideAParameter)]
+    [InlineData("/{id}\u00A0", "{id}\u00A0", BraceOutsideAParameter)]
+    public void ParseRejectsASegmentThatStartsOrEndsWithWhiteSpace(string value, string segment, string notCategory)
     {
-        AssertRejectsSegment(value, segment);
+        AssertRejectsSegment(value, segment, EdgeWhiteSpace, notCategory);
     }
 
     [Theory]
@@ -354,7 +562,7 @@ public sealed class RouteTemplateTests
     [InlineData("/a%20\u0001", "a%20\\u0001")]
     public void ParseRejectsASegmentContainingAControlCharacter(string value, string segment)
     {
-        AssertRejectsControlCharacterSegment(value, segment);
+        AssertRejectsControlCharacterSegment(value, segment, notCategory: EdgeWhiteSpace);
     }
 
     [Theory]
@@ -364,7 +572,7 @@ public sealed class RouteTemplateTests
     [InlineData("/a\tb", "a\\u0009b")]
     public void ParseRejectsATabOrLineFeedAsAControlCharacterEvenAtAnEdge(string value, string segment)
     {
-        AssertRejectsControlCharacterSegment(value, segment);
+        AssertRejectsControlCharacterSegment(value, segment, notCategory: EdgeWhiteSpace);
     }
 
     [Theory]
@@ -378,15 +586,22 @@ public sealed class RouteTemplateTests
         Assert.True(char.IsControl('\u0085'));
         Assert.True(char.IsWhiteSpace('\u0085'));
 
-        AssertRejectsControlCharacterSegment(value, segment);
+        AssertRejectsControlCharacterSegment(value, segment, notCategory: EdgeWhiteSpace);
     }
 
     [Theory]
-    [InlineData("/{\n}", "{\\u000A}")]
-    [InlineData("/what?\0", "what?\\u0000")]
-    public void ParseReportsAControlCharacterBeforeTheSegmentsOtherProblems(string value, string segment)
+    [InlineData("/{\n}", "{\\u000A}", InvalidParameterName)]
+    [InlineData("/{a\tb}", "{a\\u0009b}", InvalidParameterName)]
+    [InlineData("/{id}/{\u0001}", "{\\u0001}", InvalidParameterName)]
+    [InlineData("/{id}/{ID\u0001}", "{ID\\u0001}", RepeatedName)]
+    [InlineData("/a{\0", "a{\\u0000", BraceOutsideAParameter)]
+    [InlineData("/what?\0", "what?\\u0000", QuestionMarkOrHash)]
+    public void ParseReportsAControlCharacterBeforeTheSegmentsOtherProblems(
+        string value,
+        string segment,
+        string notCategory)
     {
-        AssertRejectsControlCharacterSegment(value, segment);
+        AssertRejectsControlCharacterSegment(value, segment, notCategory);
     }
 
     [Fact]
@@ -399,21 +614,25 @@ public sealed class RouteTemplateTests
         Assert.Equal("path", exception.ParamName);
     }
 
-    private static void AssertRejectsSegment(string value, string segment)
+    private static ArgumentException AssertRejectsSegment(
+        string value,
+        string segment,
+        string category,
+        string notCategory)
     {
         ArgumentException exception = Assert.Throws<ArgumentException>(() => RouteTemplate.Parse(value));
 
         Assert.Equal("value", exception.ParamName);
         Assert.Contains($"'{segment}'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains(category, exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(notCategory, exception.Message, StringComparison.Ordinal);
+        return exception;
     }
 
-    private static void AssertRejectsControlCharacterSegment(string value, string segment)
+    private static void AssertRejectsControlCharacterSegment(string value, string segment, string notCategory)
     {
-        ArgumentException exception = Assert.Throws<ArgumentException>(() => RouteTemplate.Parse(value));
+        ArgumentException exception = AssertRejectsSegment(value, segment, ControlCharacter, notCategory);
 
-        Assert.Equal("value", exception.ParamName);
-        Assert.Contains($"'{segment}'", exception.Message, StringComparison.Ordinal);
-        Assert.Contains("control character", exception.Message, StringComparison.Ordinal);
         Assert.DoesNotContain(exception.Message, char.IsControl);
     }
 }
