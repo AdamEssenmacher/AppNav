@@ -17,7 +17,7 @@ dotnet format AppNav.slnx --verify-no-changes
 dotnet pack AppNav.slnx -c Release -o artifacts/packages
 ```
 
-To fix formatting rather than check it, run `dotnet format AppNav.slnx`. Packages are written to `artifacts/packages`, which git ignores.
+Tests live in `tests/<Project>.Tests` and run on Microsoft.Testing.Platform through xUnit v3, so VSTest options such as `--logger` and `--collect` do not apply. To fix formatting rather than check it, run `dotnet format AppNav.slnx`. Packages are written to `artifacts/packages`, which git ignores.
 
 CI runs the same steps on every pull request. The `Build and test (Linux)`, `Build and test (Windows)` and `Build and test (macOS)` checks build and test on each operating system, and `Format and pack` verifies formatting and packs. All four must pass.
 
