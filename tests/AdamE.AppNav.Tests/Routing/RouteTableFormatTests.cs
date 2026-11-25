@@ -418,6 +418,28 @@ public sealed class RouteTableFormatTests
         AssertRoundTrip(table, new TextRoute("X0"));
     }
 
+    // The template that matches first decides, even when its create function then rejects the value: the link
+    // opens no route, so the message says which template matches and not which route opens.
+    [Fact]
+    public void ATemplateWhoseCreateFunctionRejectsTheValueStillCaptures()
+    {
+        RouteTable table = new RouteTableBuilder()
+            .Map("/p/{id:int}", c =>
+            {
+                int id = c.Path<int>("id");
+                return id > 1000 ? throw new RouteValueException("id") : new OrderRoute(id);
+            })
+            .Map("/p/{name}", c => new TextRoute(c.Path("name")), f => f.Path("name", r => r.Text))
+            .Build();
+
+        ArgumentException exception = AssertCaptured(table, new TextRoute("5000"), "/p/{name}", "/p/{id:int}");
+
+        Assert.DoesNotContain("open", exception.Message, StringComparison.Ordinal);
+        RouteMatchResult result = table.Match(new Uri("/p/5000", UriKind.Relative));
+        Assert.False(result.IsSuccess);
+        Assert.Equal(RouteDiagnosticCodes.ValueInvalid, Assert.Single(result.Diagnostics).Code);
+    }
+
     // A token that happens to be a number is captured by a sibling constrained to numbers. The message names the two
     // templates only: not the token, and not the path it would have been written as.
     [Fact]

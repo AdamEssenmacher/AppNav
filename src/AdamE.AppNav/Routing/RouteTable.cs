@@ -317,14 +317,15 @@ public sealed class RouteTable
 
         // The message names both templates, but neither the route's values nor the path, which can carry a secret.
         // The capturing template can contain a literal equal to a value, as '/products/new' does for the name 'new',
-        // but such a value is text the application wrote into its own template, not a secret.
+        // but such a value is text the application wrote into its own template, not a secret. It says which template
+        // matches, not which route opens, because that template's create function may still reject the value.
         RouteDefinition owner = _matchOrder[writer.Position];
         throw new ArgumentException(
             $"The route type '{RouteValueTypes.DisplayName(type)}' cannot be written as a path by the template " +
             $"'{owner.Template.Value}': the path it writes is matched first by the template " +
-            $"'{first.Template.Value}', which ranks higher, so a link to it would open that route instead. " +
-            "Change the templates so that they cannot match the same path, for example by constraining a parameter " +
-            "or by giving one of them a literal of its own.",
+            $"'{first.Template.Value}', which ranks higher, so a link to it would be matched by that template " +
+            "instead. Change the templates so that they cannot match the same path, for example by constraining a " +
+            "parameter or by giving one of them a literal of its own.",
             nameof(route));
     }
 
