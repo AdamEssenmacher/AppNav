@@ -48,11 +48,21 @@ namespace AdamE.AppNav.Routing;
 /// or does not decode to valid UTF-8, is kept as written.
 /// </para>
 /// <para>
+/// A dot segment, one whose decoded text is exactly <c>.</c> or <c>..</c>, is never part of a route, because a URI
+/// parser may remove it when it resolves a path. <see cref="Uri"/> removes it, written or percent-encoded, from a URI
+/// with an authority, such as <c>https://host/a/../b</c>, and keeps it, decoding <c>%2E</c>, in one without, such as
+/// <c>app:/a/../b</c>, as relative URIs and plain strings do, so the rule is enforced here rather than left to the
+/// parser: a literal cannot be one, a path that has one in any position does not match, and
+/// <see cref="Format(IReadOnlyDictionary{string, string})"/> does not write one. Other text that contains dots, such as
+/// <c>...</c> or <c>.well-known</c>, is ordinary.
+/// </para>
+/// <para>
 /// A segment cannot contain a control character (one for which <see cref="char.IsControl(char)"/> is
 /// <see langword="true"/>, such as a tab or line feed). A literal segment also cannot start or end with white space,
 /// or contain <c>{</c>, <c>}</c>, <c>?</c> or <c>#</c>. To match those characters, percent-encode them in the
 /// template: for example <c>%09</c> for a tab, <c>%0A</c> for a line feed, <c>%00</c> for a null character,
-/// <c>%20</c>, <c>%7B</c>, <c>%7D</c>, <c>%3F</c> and <c>%23</c>.
+/// <c>%20</c>, <c>%7B</c>, <c>%7D</c>, <c>%3F</c> and <c>%23</c>. Encoding does not make a dot segment a literal,
+/// because that rule applies to the decoded text.
 /// </para>
 /// <para>
 /// A segment also cannot contain a lone surrogate, a <see langword="char"/> that is half of a surrogate pair without
@@ -114,19 +124,21 @@ public sealed class RouteTemplate
     /// character, contains <c>?</c> other than as its last character, has an invalid name, repeats the name of an
     /// earlier parameter, ignoring case, contains more than one <c>:</c>, or has an empty or unknown constraint; a
     /// catch-all parameter is optional or has a constraint; a literal segment starts or ends with white space, or
-    /// contains <c>{</c>, <c>}</c>, <c>?</c> or <c>#</c>; a literal or a parameter that is not optional, including a
-    /// catch-all parameter, follows an optional parameter; or any segment follows a catch-all parameter. These checks
-    /// apply to the text as written, before percent-decoding.
+    /// contains <c>{</c>, <c>}</c>, <c>?</c> or <c>#</c>; a literal segment is a dot segment, <c>.</c> or <c>..</c>
+    /// once decoded; a literal or a parameter that is not optional, including a catch-all parameter, follows an
+    /// optional parameter; or any segment follows a catch-all parameter. Apart from the dot segment, which no encoding
+    /// avoids, these checks apply to the text as written, before percent-decoding.
     /// </para>
     /// <para>
     /// The first invalid segment, reading left to right, is reported. Within a segment, a control character is
-    /// reported first, then a lone surrogate, then any other problem of the segment's own text, then a segment that
-    /// follows a catch-all parameter or follows an optional parameter without being one, then a repeated name. Within
-    /// a parameter, a <c>*</c> that is not first is reported first, then a <c>?</c> that is not last, then, with a
-    /// first <c>*</c> and a final <c>?</c> removed, an invalid name, then a catch-all parameter that is optional, then
-    /// a catch-all parameter with a constraint, then more than one <c>:</c>, then an empty constraint, then an unknown
-    /// one. A control character is reported even when it is also white space, such as a tab at the start of a segment.
-    /// The message shows each control character and lone surrogate as a <c>\uXXXX</c> escape.
+    /// reported first, then a lone surrogate, then any other problem of the segment's own text, of which a dot segment
+    /// is the last, then a segment that follows a catch-all parameter or follows an optional parameter without being
+    /// one, then a repeated name. Within a parameter, a <c>*</c> that is not first is reported first, then a <c>?</c>
+    /// that is not last, then, with a first <c>*</c> and a final <c>?</c> removed, an invalid name, then a catch-all
+    /// parameter that is optional, then a catch-all parameter with a constraint, then more than one <c>:</c>, then an
+    /// empty constraint, then an unknown one. A control character is reported even when it is also white space, such
+    /// as a tab at the start of a segment. The message shows each control character and lone surrogate as a
+    /// <c>\uXXXX</c> escape.
     /// </para>
     /// </exception>
     public static RouteTemplate Parse(string value)
@@ -172,8 +184,12 @@ public sealed class RouteTemplate
     /// A segment that does not satisfy a constraint is not an error: the path simply does not match, even when the
     /// parameter is optional, because a segment that is present is never treated as left out. The value captured by a
     /// parameter that is not a catch-all is the decoded path segment, unchanged even when a constraint checked it, so
-    /// it contains <c>/</c> where the path has <c>%2F</c>. White space is significant, <c>+</c> is not a space, and
-    /// <c>.</c> and <c>..</c> are ordinary segments.
+    /// it contains <c>/</c> where the path has <c>%2F</c>. White space is significant and <c>+</c> is not a space.
+    /// </para>
+    /// <para>
+    /// A path that has a dot segment, as described in the remarks on <see cref="RouteTemplate"/>, does not match,
+    /// wherever it is and however it is encoded, including as a part of what a catch-all parameter would capture, as in
+    /// <c>/files/a%2F..%2Fb</c>. The dots are not resolved.
     /// </para>
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="path"/> is <see langword="null"/>.</exception>
@@ -199,8 +215,21 @@ public sealed class RouteTemplate
             pathSegments[i] = decoded;
         }
 
+        // The segments a catch-all captures are decoded in place too, and the path does not match when any of them, or
+        // any part a decoded '/' divides one into, is a dot segment, which Format could not write back.
+        var containsSlash = false;
+        for (int i = positionalCount; i < pathSegments.Length; i++)
+        {
+            string decoded = Uri.UnescapeDataString(pathSegments[i]);
+            if (RouteText.HasDotSegmentPart(decoded))
+                return null;
+
+            containsSlash |= decoded.Contains('/', StringComparison.Ordinal);
+            pathSegments[i] = decoded;
+        }
+
         // Null when nothing is left, or only slashes decoded from '%2F', so that the catch-all has no entry.
-        string? rest = _endsInCatchAll ? CaptureRemaining(pathSegments, positionalCount) : null;
+        string? rest = _endsInCatchAll ? CaptureRemaining(pathSegments, positionalCount, containsSlash) : null;
 
         // Without a catch-all, the segments the path leaves out are all optional parameters, because only optional
         // parameters are trailing. With one, the catch-all is the only parameter that can be left out.
@@ -251,7 +280,8 @@ public sealed class RouteTemplate
     /// parameter that was given and the catch-all parameter if it was given, with the values that were formatted. In
     /// the other direction, formatting the values that a match returned produces a path that matches again with the
     /// same values, unless the matched path itself contained a lone surrogate in a parameter's position:
-    /// <see cref="Match(string)"/> does not check paths, and this method rejects such a value.
+    /// <see cref="Match(string)"/> does not check paths for one, and this method rejects such a value. The path never
+    /// contains a dot segment, so a URI parser removes none of its segments as dot segments.
     /// </para>
     /// <para>
     /// That path need not have the same text as the path that was matched. The output is canonical: the same values
@@ -262,11 +292,11 @@ public sealed class RouteTemplate
     /// <para>
     /// A value for a parameter with a constraint must satisfy it, so that the path matches. A value for a catch-all
     /// parameter cannot have an empty part: it cannot start or end with <c>/</c> or contain <c>//</c>, because the
-    /// empty segment would be dropped when the path is matched. Values are not otherwise checked: white space, control
-    /// characters, <c>%</c>, <c>/</c> and any other text are encoded and read back unchanged, except that in a
-    /// catch-all value each <c>/</c> separates two segments. <c>.</c> and <c>..</c> are written as they are, as values,
-    /// as parts of a catch-all value or as literals, and a URI parser or browser may remove them and the segment before
-    /// them when the path is resolved.
+    /// empty segment would be dropped when the path is matched. A value cannot be a dot segment, as described in the
+    /// remarks on <see cref="RouteTemplate"/>, and neither can a part of a catch-all value, because a URI parser may
+    /// remove it and the path would not match. Values are not otherwise checked: white space, control
+    /// characters, <c>%</c>, <c>/</c> and any other text, including <c>...</c>, are encoded and read back unchanged,
+    /// except that in a catch-all value each <c>/</c> separates two segments.
     /// </para>
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="pathValues"/> is <see langword="null"/>.</exception>
@@ -274,13 +304,14 @@ public sealed class RouteTemplate
     /// A parameter that is not optional or catch-all has no entry in <paramref name="pathValues"/>; a parameter has no
     /// entry under its name as written and more than one whose key equals it ignoring case; a parameter's value is
     /// <see langword="null"/>, empty, not valid UTF-16 (it contains a lone surrogate, which cannot be percent-encoded
-    /// and read back unchanged), or does not satisfy the parameter's constraint; a catch-all parameter's value starts
-    /// or ends with <c>/</c> or contains <c>//</c>; or an optional parameter has a value although an earlier optional
-    /// parameter was left out, so its segment cannot be written. These rules apply to optional and catch-all parameters
-    /// that have an entry exactly as to other parameters: a <see langword="null"/> or empty value does not leave a
-    /// parameter out. The first parameter in template order that cannot be formatted is the one reported. A lone
-    /// surrogate in a catch-all value is reported before an empty part, and a value that is not valid is reported
-    /// before it is found to follow a parameter that was left out.
+    /// and read back unchanged), does not satisfy the parameter's constraint, or is <c>.</c> or <c>..</c>; a catch-all
+    /// parameter's value starts or ends with <c>/</c>, contains <c>//</c>, or has <c>.</c> or <c>..</c> as a part
+    /// between slashes; or an optional parameter has a value although an earlier optional parameter was left out, so
+    /// its segment cannot be written. These rules apply to optional and catch-all parameters that have an entry
+    /// exactly as to other parameters: a <see langword="null"/> or empty value does not leave a parameter out. The
+    /// first parameter in template order that cannot be formatted is the one reported. A lone surrogate in a catch-all
+    /// value is reported before an empty part, a dot segment is reported after every other problem with the value, and
+    /// a value that is not valid is reported before it is found to follow a parameter that was left out.
     /// </exception>
     public string Format(IReadOnlyDictionary<string, string> pathValues)
     {
@@ -394,6 +425,19 @@ public sealed class RouteTemplate
                 nameof(pathValues));
         }
 
+        // Checked last, so that every other problem is reported first. No constraint accepts a dot segment, so for a
+        // parameter with one, the constraint has already rejected it.
+        if (parameter.IsCatchAll ? RouteText.HasDotSegmentPart(value) : RouteText.IsDotSegment(value))
+        {
+            throw new ArgumentException(
+                $"Path parameter '{name}' has a value " +
+                (parameter.IsCatchAll
+                    ? "with a dot segment part ('.' or '..' between slashes), "
+                    : "that is a dot segment ('.' or '..'), ") +
+                RouteText.DotSegmentReason + ".",
+                nameof(pathValues));
+        }
+
         return value;
     }
 
@@ -447,19 +491,11 @@ public sealed class RouteTemplate
         return foundKey is not null;
     }
 
-    // Decodes the segments from start on in place and joins them with '/', or returns null when there is nothing to
-    // join. A single segment is returned as decoded, and string.Join allocates the joined value once, at its final
-    // length; only a decoded '/' needs the slower path.
-    private static string? CaptureRemaining(string[] pathSegments, int start)
+    // Joins the decoded segments from start on with '/', or returns null when there is nothing to join. A single
+    // segment is returned as it is, and string.Join allocates the joined value once, at its final length; only a
+    // decoded '/', which the caller has looked for while decoding, needs the slower path.
+    private static string? CaptureRemaining(string[] pathSegments, int start, bool containsSlash)
     {
-        var containsSlash = false;
-        for (int i = start; i < pathSegments.Length; i++)
-        {
-            string decoded = Uri.UnescapeDataString(pathSegments[i]);
-            containsSlash |= decoded.Contains('/', StringComparison.Ordinal);
-            pathSegments[i] = decoded;
-        }
-
         int count = pathSegments.Length - start;
         if (!containsSlash)
             return count == 0 ? null : count == 1 ? pathSegments[start] : string.Join('/', pathSegments, start, count);

@@ -24,7 +24,10 @@ internal static class RouteTemplateParser
         {
             string segment = segments[i];
             ParameterText? parameter = FindParameter(segment);
-            if (FindSegmentProblem(segment, parameter) is { } problem)
+
+            // A literal is decoded once, for the dot segment check and for the segment itself.
+            string? literal = parameter is null ? Uri.UnescapeDataString(segment) : null;
+            if (FindSegmentProblem(segment, parameter, literal) is { } problem)
             {
                 throw new ArgumentException(
                     $"Route template segment '{RouteText.EscapeForMessage(segment)}' {problem}.",
@@ -55,7 +58,7 @@ internal static class RouteTemplateParser
 
             if (parameter is not { } found)
             {
-                parsed[i] = RouteSegment.Literal(Uri.UnescapeDataString(segment));
+                parsed[i] = RouteSegment.Literal(literal!);
                 continue;
             }
 
@@ -120,7 +123,8 @@ internal static class RouteTemplateParser
             isCatchAll);
     }
 
-    private static string? FindSegmentProblem(string segment, ParameterText? parameter)
+    // The decoded literal is null for a parameter.
+    private static string? FindSegmentProblem(string segment, ParameterText? parameter, string? literal)
     {
         // Checked first: a control character is invisible where the template is written, and its rule covers the
         // whole segment, so a tab or line feed at an edge is reported here rather than as white space.
@@ -145,6 +149,11 @@ internal static class RouteTemplateParser
 
         if (segment.Contains('?', StringComparison.Ordinal) || segment.Contains('#', StringComparison.Ordinal))
             return "contains '?' or '#'";
+
+        // Checked on the decoded text, unlike the rules above, because a path with '%2E%2E' is no more routable than
+        // one with '..': Match refuses both.
+        if (RouteText.IsDotSegment(literal))
+            return "is a dot segment ('.' or '..' once decoded), " + RouteText.DotSegmentReason;
 
         return null;
     }

@@ -118,7 +118,6 @@ public sealed class RouteTemplateConstraintTests
     [InlineData("-79228162514264337593543950336")]
     [InlineData("79228162514264337593543950335.5")]
     [InlineData("-79228162514264337593543950335.5")]
-    [InlineData(".")]
     [InlineData("-.")]
     [InlineData("+")]
     [InlineData("-")]

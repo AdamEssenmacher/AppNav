@@ -52,11 +52,12 @@ internal readonly struct RouteSegment
         return new RouteSegment(name, string.Empty, RouteSegmentKind.CatchAllParameter, null);
     }
 
-    // Whether a decoded path segment can stand in this segment's position.
+    // Whether a decoded path segment can stand in this segment's position. A parameter never takes a dot segment, so
+    // that every value a match returns can be formatted; a literal is never one, because the parser rejects it.
     public bool Accepts(string decoded)
     {
         return IsParameter
-            ? Constraint is null || Constraint.IsSatisfiedBy(decoded)
+            ? !RouteText.IsDotSegment(decoded) && (Constraint is null || Constraint.IsSatisfiedBy(decoded))
             : StringComparer.Ordinal.Equals(Text, decoded);
     }
 }

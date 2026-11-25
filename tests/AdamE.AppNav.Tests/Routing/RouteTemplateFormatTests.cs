@@ -20,7 +20,8 @@ public sealed class RouteTemplateFormatTests
     private static readonly string[] AwkwardValues =
     [
         "a", "%", "%2F", "%252F", "%zz", "%FF", "a%20b", "+", " ", " a ", "/", "//", "a/b/c", "?", "#", "?a=b#c",
-        "{", "}", "{v}", "é", "€", "\U0001F600", "\0", "\t", "\n", "\r\n", "\u0085", "\u00A0", ".", "..", "~", "&=;",
+        "{", "}", "{v}", "é", "€", "\U0001F600", "\0", "\t", "\n", "\r\n", "\u0085", "\u00A0", "~", "&=;", "...",
+        ".a", "a.", "a..b", "%2E",
     ];
 
     [Theory]
@@ -99,7 +100,7 @@ public sealed class RouteTemplateFormatTests
     [InlineData("\U0001F600", "%F0%9F%98%80")]
     [InlineData("\n", "%0A")]
     [InlineData("~a-b_c.d", "~a-b_c.d")]
-    [InlineData("..", "..")]
+    [InlineData("...", "...")]
     public void FormatsAValuePercentEncoded(string value, string expected)
     {
         RouteTemplate template = RouteTemplate.Parse("/files/{name}");
@@ -201,7 +202,7 @@ public sealed class RouteTemplateFormatTests
         [
             "a", "Z", "0", " ", "-", ".", "_", "~", "%", "/", "?", "#", "{", "}", "+", "&", "=", ":", "@", "\\", "\"",
             "<", "^", "`", "|", "\t", "\n", "\0", "\u0085", "\u00A0", "é", "€", "\U0001F600", "%\U0001F600",
-            "\U0001F600%", "%2F", "%F0%9F%98%80",
+            "\U0001F600%", "%2F", "%F0%9F%98%80", "..", "%2E",
         ];
         var random = new Random(20261124);
 
@@ -231,14 +232,21 @@ public sealed class RouteTemplateFormatTests
             string path = AssertRoundTrips(parsed, values);
             foreach (string literal in literals)
                 Assert.Contains("/" + Uri.EscapeDataString(literal), path, StringComparison.Ordinal);
+
+            RouteTemplateDotSegmentTests.AssertUriKeepsEverySegment(path);
         }
 
+        // A dot segment cannot be a literal or a value, so it is generated again; text with other dots is kept.
         string Generate()
         {
             var builder = new StringBuilder();
-            int count = random.Next(1, 8);
-            for (var i = 0; i < count; i++)
-                builder.Append(pieces[random.Next(pieces.Length)]);
+            while (builder.Length == 0 || builder.ToString() is "." or "..")
+            {
+                builder.Clear();
+                int count = random.Next(1, 8);
+                for (var i = 0; i < count; i++)
+                    builder.Append(pieces[random.Next(pieces.Length)]);
+            }
 
             return builder.ToString();
         }
@@ -398,7 +406,7 @@ public sealed class RouteTemplateFormatTests
     [InlineData("/files/{name}", "/files/a%2Fb")]
     [InlineData("/files/{name}", "/files/%E2%82%AC")]
     [InlineData("/files/{name}", "/files/%0A")]
-    [InlineData("/files/{name}", "/files/..")]
+    [InlineData("/files/{name}", "/files/...")]
     [InlineData("/{a}/x/{b}", "//one//x/two/")]
     [InlineData("/my files/{n}", "/my%20files/%41")]
     [InlineData("/", "")]

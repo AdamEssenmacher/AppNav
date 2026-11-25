@@ -225,18 +225,6 @@ public sealed class RouteTemplateTests
         Assert.Null(RouteTemplate.Parse("/a%20b").Match("/a+b"));
     }
 
-    [Theory]
-    [InlineData("/a/./b")]
-    [InlineData("/a/../b")]
-    public void DotSegmentsAreLiteral(string value)
-    {
-        RouteTemplate template = RouteTemplate.Parse(value);
-
-        Assert.NotNull(template.Match(value));
-        Assert.Null(template.Match("/a/b"));
-        Assert.Null(template.Match("/b"));
-    }
-
     [Fact]
     public void QueryAndFragmentCharactersInAPathAreLiteral()
     {
@@ -394,7 +382,7 @@ public sealed class RouteTemplateTests
     [InlineData("/files/%zz", "%zz")]
     [InlineData("/files/%FF", "%FF")]
     [InlineData("/files/100%", "100%")]
-    [InlineData("/files/..", "..")]
+    [InlineData("/files/...", "...")]
     [InlineData("/files/a?b=c", "a?b=c")]
     [InlineData("/files/%0A", "\n")]
     [InlineData("/files/a%00b", "a\0b")]
