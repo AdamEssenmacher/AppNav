@@ -62,13 +62,20 @@ public sealed class RouteMatchContext
     /// Gets the value a path parameter captured, converted to <typeparamref name="T"/>.
     /// </summary>
     /// <typeparam name="T">
-    /// The type to convert to: <see cref="string"/>, <see cref="int"/>, <see cref="long"/>, <see cref="decimal"/>,
-    /// <see cref="bool"/> or <see cref="Guid"/>, or the nullable form of one of the last five, such as <c>int?</c>. A
-    /// value converts to a type other than <see cref="string"/> exactly when it satisfies the built-in constraint of
-    /// the same name, such as <c>{id:int}</c>, so a value that the constraint of the same name accepted in the
-    /// template always converts. A different constraint can let through a value that does not convert, such as
-    /// <c>3000000000</c> for <c>{id:long}</c> read as <see cref="int"/>. A nullable type converts by the rule of its
-    /// underlying type, to the same value. A <see cref="string"/> is the captured value unchanged.
+    /// The type to convert to: <see cref="string"/>, <see cref="bool"/>, <see cref="Guid"/>, <see cref="decimal"/>,
+    /// <see cref="double"/>, <see cref="float"/>, one of the integer types <see cref="sbyte"/>, <see cref="byte"/>,
+    /// <see cref="short"/>, <see cref="ushort"/>, <see cref="int"/>, <see cref="uint"/>, <see cref="long"/> and
+    /// <see cref="ulong"/>, or the nullable form of any of them but <see cref="string"/>, such as <c>int?</c>. A value
+    /// converts to a type a constraint is named after, such as <see cref="int"/>, exactly when it satisfies that
+    /// constraint, such as <c>{id:int}</c>, so a value that the constraint of the same name accepted in the template
+    /// always converts. A different constraint can let through a value that does not convert, such as
+    /// <c>3000000000</c> for <c>{id:long}</c> read as <see cref="int"/>. The other integer types follow the rule of
+    /// <see cref="int"/> within their own range. <see cref="double"/> and <see cref="float"/> accept text of the
+    /// same shape as <see cref="decimal"/>, not limited to the range of <see cref="decimal"/>, and read the nearest
+    /// value of the type; a value that, after rounding, is beyond the largest finite value of the type does not
+    /// convert, rather than being read as infinity. No constraint is named after those types. A nullable type
+    /// converts by the rule of its underlying type, to the same value. A <see cref="string"/> is the captured value
+    /// unchanged.
     /// </typeparam>
     /// <param name="name">The parameter name, compared without regard to case.</param>
     /// <returns>
@@ -76,8 +83,8 @@ public sealed class RouteMatchContext
     /// <typeparamref name="T"/>, which reads a value that must be present, as its underlying type does.
     /// </returns>
     /// <exception cref="InvalidOperationException">
-    /// <typeparamref name="T"/> is not one of the supported types, such as <see cref="double"/>, <c>double?</c> or an
-    /// enum. This is thrown whether or not the path has a value, and propagates out of
+    /// <typeparamref name="T"/> is not one of the supported types, such as <see cref="Half"/>, <c>DateTime?</c> or
+    /// an enum. This is thrown whether or not the path has a value, and propagates out of
     /// <see cref="RouteTable.Match(Uri)"/>.
     /// </exception>
     /// <exception cref="ArgumentNullException"><paramref name="name"/> is <see langword="null"/>.</exception>
@@ -240,10 +247,9 @@ public sealed class RouteMatchContext
     /// </summary>
     /// <typeparam name="T">
     /// The type to convert to, one of those listed for <see cref="Path{T}(string)"/>, by the same rules, so a value
-    /// converts to a type other than <see cref="string"/> exactly when it satisfies the built-in constraint of the
-    /// same name, and a <see cref="string"/> is the value unchanged. A nullable type, such as
-    /// <c>int?</c>, reads a value that may be absent into a nullable variable, as in
-    /// <c>TryGetQuery("page", out int? page)</c>.
+    /// converts to a type a constraint is named after, such as <see cref="int"/>, exactly when it satisfies that
+    /// constraint, and a <see cref="string"/> is the value unchanged. A nullable type, such as <c>int?</c>, reads a
+    /// value that may be absent into a nullable variable, as in <c>TryGetQuery("page", out int? page)</c>.
     /// </typeparam>
     /// <param name="name">The name, compared ordinally without regard to case; the empty name is a valid name.</param>
     /// <param name="value">
@@ -293,11 +299,13 @@ public sealed class RouteMatchContext
     /// <typeparamref name="T"/>.
     /// </summary>
     /// <typeparam name="T">
-    /// The type to convert to: <see cref="string"/>, <see cref="int"/>, <see cref="long"/>, <see cref="decimal"/>,
-    /// <see cref="bool"/> or <see cref="Guid"/>, by the rules described for <see cref="Path{T}(string)"/>: a value
-    /// converts to a type other than <see cref="string"/> exactly when it satisfies the built-in constraint of the
-    /// same name, and a <see cref="string"/> is the value unchanged. A nullable type is not supported, since an
-    /// element of the list is never absent.
+    /// The type to convert to: <see cref="string"/>, <see cref="bool"/>, <see cref="Guid"/>, <see cref="decimal"/>,
+    /// <see cref="double"/>, <see cref="float"/> or one of the integer types <see cref="sbyte"/>, <see cref="byte"/>,
+    /// <see cref="short"/>, <see cref="ushort"/>, <see cref="int"/>, <see cref="uint"/>, <see cref="long"/> and
+    /// <see cref="ulong"/>, by the rules described for <see cref="Path{T}(string)"/>, so a value converts to a type a
+    /// constraint is named after, such as <see cref="int"/>, exactly when it satisfies that constraint, and a
+    /// <see cref="string"/> is the value unchanged. A nullable type is not supported, since an element of the list is
+    /// never absent.
     /// </typeparam>
     /// <param name="name">The name, compared ordinally without regard to case; the empty name is a valid name.</param>
     /// <returns>
@@ -357,8 +365,13 @@ public sealed class RouteMatchContext
         return Array.AsReadOnly(converted);
     }
 
+    // Written once, so that the messages for a single value and for a list list the same types; only the tail
+    // differs, since a list has no nullable forms.
+    private const string SupportedTypes =
+        "string, bool, Guid, decimal, double, float, sbyte, byte, short, ushort, int, uint, long and ulong";
+
     private const string ValueTypesTail =
-        ", and the nullable forms of the last five; read the value as a string and convert it instead.";
+        ", and the nullable forms of all but string; read the value as a string and convert it instead.";
 
     private const string ListTypesTail = "; read the values as strings and convert them instead.";
 
@@ -385,8 +398,8 @@ public sealed class RouteMatchContext
     private static InvalidOperationException UnsupportedType<T>(string subject, string tail)
     {
         return new InvalidOperationException(
-            $"{subject} cannot be read as type '{DisplayName(typeof(T))}'. The supported types are string, int, " +
-            $"long, decimal, bool and Guid{tail}");
+            $"{subject} cannot be read as type '{DisplayName(typeof(T))}'. The supported types are " +
+            $"{SupportedTypes}{tail}");
     }
 
     // A short name for a message, as Int32? for a nullable type, List<Int32> for another generic one and Int32?[] for
@@ -433,8 +446,24 @@ public sealed class RouteMatchContext
             return "int";
         if (typeof(T) == typeof(long) || typeof(T) == typeof(long?))
             return "long";
+        if (typeof(T) == typeof(sbyte) || typeof(T) == typeof(sbyte?))
+            return "sbyte";
+        if (typeof(T) == typeof(byte) || typeof(T) == typeof(byte?))
+            return "byte";
+        if (typeof(T) == typeof(short) || typeof(T) == typeof(short?))
+            return "short";
+        if (typeof(T) == typeof(ushort) || typeof(T) == typeof(ushort?))
+            return "ushort";
+        if (typeof(T) == typeof(uint) || typeof(T) == typeof(uint?))
+            return "uint";
+        if (typeof(T) == typeof(ulong) || typeof(T) == typeof(ulong?))
+            return "ulong";
         if (typeof(T) == typeof(decimal) || typeof(T) == typeof(decimal?))
             return "decimal";
+        if (typeof(T) == typeof(float) || typeof(T) == typeof(float?))
+            return "float";
+        if (typeof(T) == typeof(double) || typeof(T) == typeof(double?))
+            return "double";
         if (typeof(T) == typeof(bool) || typeof(T) == typeof(bool?))
             return "bool";
         if (typeof(T) == typeof(Guid) || typeof(T) == typeof(Guid?))
@@ -444,11 +473,12 @@ public sealed class RouteMatchContext
     }
 
     // Each type uses the parse method of the constraint of the same name, so that conversion and constraint cannot
-    // disagree, and a nullable type shares the branch of its underlying type, so it reads by exactly that rule. On
-    // CoreCLR the JIT removes the cast through object at every tier when T is that value type or its nullable form,
-    // as measured, and a test checks that a typed read allocates nothing more; another runtime still gives the right
-    // value and could differ only in that allocation. A branch whose test and local ever disagreed would throw
-    // InvalidCastException rather than misread memory.
+    // disagree, or, for a type that no constraint is named after, the method of the rule it follows. A nullable type
+    // shares the branch of its underlying type, so it reads by exactly that rule. On CoreCLR the JIT removes the cast
+    // through object at every tier when T is that value type or its nullable form, as measured, and a test checks
+    // that a typed read allocates nothing more; another runtime still gives the right value and could differ only in
+    // that allocation. A branch whose test and local ever disagreed would throw InvalidCastException rather than
+    // misread memory.
     private static bool TryConvert<T>(string text, [MaybeNullWhen(false)] out T value)
     {
         bool converted;
@@ -468,9 +498,49 @@ public sealed class RouteMatchContext
             converted = RouteConstraint.TryParseLong(text, out long result);
             value = (T)(object)result;
         }
+        else if (typeof(T) == typeof(sbyte) || typeof(T) == typeof(sbyte?))
+        {
+            converted = RouteConstraint.TryParseInteger(text, out sbyte result);
+            value = (T)(object)result;
+        }
+        else if (typeof(T) == typeof(byte) || typeof(T) == typeof(byte?))
+        {
+            converted = RouteConstraint.TryParseInteger(text, out byte result);
+            value = (T)(object)result;
+        }
+        else if (typeof(T) == typeof(short) || typeof(T) == typeof(short?))
+        {
+            converted = RouteConstraint.TryParseInteger(text, out short result);
+            value = (T)(object)result;
+        }
+        else if (typeof(T) == typeof(ushort) || typeof(T) == typeof(ushort?))
+        {
+            converted = RouteConstraint.TryParseInteger(text, out ushort result);
+            value = (T)(object)result;
+        }
+        else if (typeof(T) == typeof(uint) || typeof(T) == typeof(uint?))
+        {
+            converted = RouteConstraint.TryParseInteger(text, out uint result);
+            value = (T)(object)result;
+        }
+        else if (typeof(T) == typeof(ulong) || typeof(T) == typeof(ulong?))
+        {
+            converted = RouteConstraint.TryParseInteger(text, out ulong result);
+            value = (T)(object)result;
+        }
         else if (typeof(T) == typeof(decimal) || typeof(T) == typeof(decimal?))
         {
             converted = RouteConstraint.TryParseDecimal(text, out decimal result);
+            value = (T)(object)result;
+        }
+        else if (typeof(T) == typeof(float) || typeof(T) == typeof(float?))
+        {
+            converted = RouteConstraint.TryParseFloatingPoint(text, out float result);
+            value = (T)(object)result;
+        }
+        else if (typeof(T) == typeof(double) || typeof(T) == typeof(double?))
+        {
+            converted = RouteConstraint.TryParseFloatingPoint(text, out double result);
             value = (T)(object)result;
         }
         else if (typeof(T) == typeof(bool) || typeof(T) == typeof(bool?))
