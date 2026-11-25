@@ -33,8 +33,14 @@ AdamE.AppNav.Routing.RouteTemplate
 AdamE.AppNav.Routing.RouteTemplate.Format(System.Collections.Generic.IReadOnlyDictionary<string!, string!>! pathValues) -> string!
 AdamE.AppNav.Routing.RouteTemplate.Match(string! path) -> System.Collections.Generic.IReadOnlyDictionary<string!, string!>?
 AdamE.AppNav.Routing.RouteTemplate.Value.get -> string!
+AdamE.AppNav.Routing.RouteValueException
+AdamE.AppNav.Routing.RouteValueException.RouteValueException(string! valueName) -> void
+AdamE.AppNav.Routing.RouteValueException.RouteValueException(string! valueName, string? message) -> void
+AdamE.AppNav.Routing.RouteValueException.RouteValueException(string! valueName, string? message, System.Exception? innerException) -> void
+AdamE.AppNav.Routing.RouteValueException.ValueName.get -> string!
 abstract AdamE.AppNav.AppRoute.<Clone>$() -> AdamE.AppNav.AppRoute!
 const AdamE.AppNav.Routing.RouteDiagnosticCodes.NotMatched = "route.not_matched" -> string!
+const AdamE.AppNav.Routing.RouteDiagnosticCodes.ValueInvalid = "route.value.invalid" -> string!
 override AdamE.AppNav.AppRoute.Equals(object? obj) -> bool
 override AdamE.AppNav.AppRoute.GetHashCode() -> int
 override AdamE.AppNav.AppRoute.ToString() -> string!

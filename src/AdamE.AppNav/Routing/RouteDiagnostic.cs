@@ -3,7 +3,8 @@ using System.Collections.ObjectModel;
 namespace AdamE.AppNav.Routing;
 
 /// <summary>
-/// Describes why a URI did not produce a route.
+/// Describes why a URI did not produce a route: no template matched its path, or the create function of the one that
+/// did rejected a value with a <see cref="RouteValueException"/>.
 /// </summary>
 public sealed class RouteDiagnostic
 {
@@ -32,7 +33,8 @@ public sealed class RouteDiagnostic
     /// Gets the values that describe the diagnostic, keyed as each code in <see cref="RouteDiagnosticCodes"/>
     /// documents. Never <see langword="null"/>, and read-only: it cannot be changed, even through a cast. Values from
     /// the URI are kept as they were, without escaping or truncation, and can carry secrets, so logging them is the
-    /// caller's decision.
+    /// caller's decision. Text that the application or the library gave, such as the name and reason of a rejected
+    /// value, is also kept as it was given.
     /// </summary>
     public IReadOnlyDictionary<string, object?> Data { get; }
 }

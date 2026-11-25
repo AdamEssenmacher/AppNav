@@ -19,7 +19,9 @@ public sealed class RouteTableBuilder
     /// </param>
     /// <param name="createRoute">
     /// Creates the route from what the match captured. It is called once for each URI whose path the template
-    /// matches, when this mapping is the one that wins, and must return a route, not <see langword="null"/>.
+    /// matches, when this mapping is the one that wins, and must return a route, not <see langword="null"/>. To
+    /// reject a value that it cannot use, it throws a <see cref="RouteValueException"/>, and
+    /// <see cref="RouteTable.Match(Uri)"/> then fails for the URI instead of throwing.
     /// </param>
     /// <returns>This builder, so that calls can be chained.</returns>
     /// <remarks>

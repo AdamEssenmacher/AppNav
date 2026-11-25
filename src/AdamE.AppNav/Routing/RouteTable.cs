@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 
 namespace AdamE.AppNav.Routing;
 
@@ -58,9 +59,10 @@ public sealed class RouteTable
     /// URI that is, and for the query, which a create function can read.
     /// </param>
     /// <returns>
-    /// A successful result with the route and its definition when a template matches the path, or a failed result
-    /// with at least one diagnostic when none does; in this version that is one
-    /// <see cref="RouteDiagnosticCodes.NotMatched"/> diagnostic.
+    /// A successful result with the route and its definition when a template matches the path. Otherwise a failed
+    /// result with at least one diagnostic; in this version that is one <see cref="RouteDiagnosticCodes.NotMatched"/>
+    /// diagnostic when no template matches, or one <see cref="RouteDiagnosticCodes.ValueInvalid"/> diagnostic, with
+    /// the definition that matched, when its create function throws a <see cref="RouteValueException"/>.
     /// </returns>
     /// <remarks>
     /// <para>
@@ -109,11 +111,18 @@ public sealed class RouteTable
     /// wins" section of the routing guide sets out. <see cref="RouteTableBuilder.Build"/> rejects templates that rank
     /// equally at every position and can match the same path, so the order the routes were mapped in never decides
     /// which one wins. The first whose template matches wins; no later one is tried. Its create function is called
-    /// once, and any exception it throws propagates unchanged.
+    /// once, and any exception it throws propagates unchanged, except a <see cref="RouteValueException"/>.
+    /// </para>
+    /// <para>
+    /// A create function that finds a value unusable throws a <see cref="RouteValueException"/>, and the match fails
+    /// with a <see cref="RouteDiagnosticCodes.ValueInvalid"/> diagnostic instead of throwing. No later template is
+    /// tried, even one that also matches the path: the template that matched owns the URI. A constraint, by contrast,
+    /// makes the template not match, so that a later one can. Only an exception thrown by the call to the create
+    /// function of the definition that matched is turned into a result.
     /// </para>
     /// <para>
     /// A URI that no template matches is not an error. The table itself does not throw for the content of a URI; an
-    /// exception that a create function throws propagates to the caller.
+    /// exception other than <see cref="RouteValueException"/> that a create function throws propagates to the caller.
     /// </para>
     /// <para>
     /// The table checks neither the scheme nor the host, so <c>https://other.example/account</c> and
@@ -126,8 +135,13 @@ public sealed class RouteTable
     /// The create function of the definition that matched returned <see langword="null"/>.
     /// </exception>
     /// <exception cref="Exception">
-    /// Any exception that the create function of the definition that matched throws, unchanged.
+    /// Any exception other than <see cref="RouteValueException"/> that the create function of the definition that
+    /// matched throws, unchanged.
     /// </exception>
+    // A rejected value is thrown in the application's create function and caught here, so a debugger that breaks on
+    // user-unhandled exceptions would stop on every rejected link. Only RouteValueException is caught here, so this
+    // hides no other exception from the debugger.
+    [DebuggerDisableUserUnhandledExceptions]
     public RouteMatchResult Match(Uri uri)
     {
         ArgumentNullException.ThrowIfNull(uri);
@@ -144,14 +158,25 @@ public sealed class RouteTable
             if (values is null)
                 continue;
 
-            // The create function is not guarded: the first matching definition decides the route, so an exception
-            // is the application's to see, and falling through to a later definition would hide it.
-            AppRoute route = definition.CreateRoute(new RouteMatchContext(uri, values, queryStart)) ??
-                throw new InvalidOperationException(
-                    $"The create function for route type '{definition.RouteType}', mapped to the template " +
-                    $"'{definition.Template.Value}', returned null; it must return a route.");
+            // The first matching definition decides the route, so its create function's exceptions are the
+            // application's to see, and falling through to a later definition would hide them. Only the one the create
+            // function throws to reject a value is caught, by its exact type, around this call alone, so that one from
+            // anywhere else, and every other exception, passes through untouched.
+            AppRoute? route;
+            try
+            {
+                route = definition.CreateRoute(new RouteMatchContext(uri, values, queryStart));
+            }
+            catch (RouteValueException exception)
+            {
+                return ValueInvalid(definition, path, exception);
+            }
 
-            return RouteMatchResult.Success(route, definition);
+            return RouteMatchResult.Success(
+                route ?? throw new InvalidOperationException(
+                    $"The create function for route type '{definition.RouteType}', mapped to the template " +
+                    $"'{definition.Template.Value}', returned null; it must return a route."),
+                definition);
         }
 
         // A deep-link path can carry a secret, such as a sign-in token, and messages tend to be logged, so the path is
@@ -160,6 +185,25 @@ public sealed class RouteTable
             RouteDiagnosticCodes.NotMatched,
             "No route matches the path of the URI.",
             new Dictionary<string, object?>(1, StringComparer.Ordinal) { ["path"] = path }));
+    }
+
+    // Like the path, the name and the reason can carry text from the URI, so they are only in Data. The exception
+    // itself is not kept: its inner exception, and the message of that, may quote the value, so only the name and the
+    // message the create function gave are carried.
+    private static RouteMatchResult ValueInvalid(RouteDefinition definition, string path, RouteValueException exception)
+    {
+        return RouteMatchResult.Failure(
+            new RouteDiagnostic(
+                RouteDiagnosticCodes.ValueInvalid,
+                "A value in the URI is not valid for the route that matched.",
+                new Dictionary<string, object?>(4, StringComparer.Ordinal)
+                {
+                    ["name"] = exception.ValueName,
+                    ["template"] = definition.Template.Value,
+                    ["reason"] = exception.Message,
+                    ["path"] = path,
+                }),
+            definition);
     }
 
     // Two definitions with the same template match the same paths and rank equally, so the later one could never win.

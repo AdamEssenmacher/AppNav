@@ -15,4 +15,15 @@ public static class RouteDiagnosticCodes
     /// path that was matched under the key <c>path</c>, as a <see langword="string"/>; its message does not.
     /// </summary>
     public const string NotMatched = "route.not_matched";
+
+    /// <summary>
+    /// A template matched the path of the URI, but its create function threw a <see cref="RouteValueException"/>
+    /// because a value the URI carries is not valid for the route. The result's
+    /// <see cref="RouteMatchResult.Definition"/> is the definition whose template matched. The diagnostic's
+    /// <see cref="RouteDiagnostic.Data"/> holds, each as a <see langword="string"/>, the exception's
+    /// <see cref="RouteValueException.ValueName"/> under the key <c>name</c>, the template as written under
+    /// <c>template</c>, the exception's message under <c>reason</c>, and the path that was matched under
+    /// <c>path</c>. Its message holds none of them.
+    /// </summary>
+    public const string ValueInvalid = "route.value.invalid";
 }
