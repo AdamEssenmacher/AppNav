@@ -24,9 +24,10 @@ public sealed class RouteTableBuilder
     /// <returns>This builder, so that calls can be chained.</returns>
     /// <remarks>
     /// In this version, the same route type can be mapped to more than one template. The same template cannot be
-    /// mapped twice, but that is checked by <see cref="Build"/>, not here. The order of the calls sets the order of
-    /// <see cref="RouteTable.Definitions"/>, but not which mapping wins when several match, which follows the
-    /// precedence of their templates as <see cref="RouteTable.Match(Uri)"/> describes.
+    /// mapped twice, nor two templates that rank equally and can match the same path, but that is checked by
+    /// <see cref="Build"/>, not here. The order of the calls sets the order of <see cref="RouteTable.Definitions"/>,
+    /// but never which mapping wins when several match, which follows the precedence of their templates as
+    /// <see cref="RouteTable.Match(Uri)"/> describes.
     /// </remarks>
     /// <exception cref="ArgumentNullException">
     /// <paramref name="template"/> or <paramref name="createRoute"/> is <see langword="null"/>.
@@ -61,8 +62,17 @@ public sealed class RouteTableBuilder
     /// segment, the same decoded literal text, compared ordinally and case-sensitively, and the same constraint or
     /// none. Parameter names do not count, so <c>/a/{x}</c> and <c>/a/{y}</c> are the same. The message names both
     /// templates and both route types, the earlier mapping first: the first mapping, in the order the routes were
-    /// mapped, whose template repeats an earlier one is reported, with the mapping it repeats. The builder is not
-    /// changed.
+    /// mapped, whose template repeats an earlier one is reported, with the mapping it repeats.
+    /// <para>-or-</para>
+    /// Two mappings have templates that are not the same but rank equally at every position and both match some
+    /// path, such as <c>/products/{id:int}</c> and <c>/products/{n:long}</c>, which both match <c>/products/0</c>, or
+    /// <c>/a/{x:int?}</c> and <c>/a/{y:alpha?}</c>, which both match <c>/a</c>. The route that won for such a path
+    /// would depend on the order of the mappings. The message names both templates and both route types, the earlier
+    /// mapping first, and one path that both match: the first mapping, in the order the routes were mapped, that
+    /// conflicts with an earlier one is reported, with the earliest it conflicts with. The same template twice is
+    /// looked for first, across the whole table, so it is reported even when two other mappings that conflict in this
+    /// way come earlier. Templates that rank differently can match the same path, because precedence decides between
+    /// them. In either case, the builder is not changed.
     /// </exception>
     public RouteTable Build()
     {

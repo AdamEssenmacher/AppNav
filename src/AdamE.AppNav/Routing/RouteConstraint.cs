@@ -19,6 +19,13 @@ internal sealed class RouteConstraint
         new("alpha", IsAlpha),
     ];
 
+    // Whenever two built-in constraints both accept some text, they both accept one of these, tried simplest first:
+    // '0' is an int, a long and a decimal, 'a' letters, 'true' a bool and letters, 32 zeros a number and a guid, and
+    // 32 a's a guid and letters. So two built-in constraints that accept none of them together accept no text
+    // together, which the tests check against a large corpus.
+    private static readonly string[] SampleValues =
+        ["0", "a", "true", new string('0', 32), new string('a', 32)];
+
     private readonly Func<string, bool> _isSatisfiedBy;
 
     private RouteConstraint(string name, Func<string, bool> isSatisfiedBy)
@@ -50,6 +57,19 @@ internal sealed class RouteConstraint
     public bool IsSatisfiedBy(string value)
     {
         return _isSatisfiedBy(value);
+    }
+
+    // Returns text that both constraints accept, or null when no text satisfies both. The same pair gives the same
+    // value in either order, so that a message naming it does not depend on which template was mapped first.
+    public static string? FindCommonValue(RouteConstraint x, RouteConstraint y)
+    {
+        foreach (string value in SampleValues)
+        {
+            if (x.IsSatisfiedBy(value) && y.IsSatisfiedBy(value))
+                return value;
+        }
+
+        return null;
     }
 
     private static string ListNames()

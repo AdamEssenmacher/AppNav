@@ -116,15 +116,6 @@ public sealed class RouteTablePrecedenceTests
         Assert.Equal("/a/{y}", Winner(["/{x}/b", "/a/{y}"], "/a/b"));
     }
 
-    [Fact]
-    public void EqualRankTemplatesCurrentlyMatchInRegistrationOrder()
-    {
-        Assert.Equal("/p/{id:int?}", Winner(["/p/{id:int?}", "/p/{n:decimal?}"], "/p/1"));
-        Assert.Equal("/p/{n:decimal?}", Winner(["/p/{n:decimal?}", "/p/{id:int?}"], "/p/1"));
-        Assert.Equal("/p/{id:int}", Winner(["/p/{id:int}", "/p/{n:long}"], "/p/1"));
-        Assert.Equal("/p/{n:long}", Winner(["/p/{n:long}", "/p/{id:int}"], "/p/1"));
-    }
-
     [Theory]
     [InlineData("/p/{id:int}", "/p/{id:long}")]
     [InlineData("/p/{id:int?}", "/p/{id:guid?}")]
@@ -149,11 +140,12 @@ public sealed class RouteTablePrecedenceTests
         Assert.Equal("/a/b", Winner(table, "/a/b"));
     }
 
-    // Below 17 elements Array.Sort happens to be stable, so only a larger table shows whether ties are broken on
-    // registration order rather than left to the sort. The parameter templates differ only in a literal after the
-    // parameter, so they rank equally without being the same template.
+    // Templates that rank equally but cannot match the same path, here because they differ in a literal after the
+    // parameter, are tried in registration order among themselves. No path can tell, but the order must not change
+    // from one build to the next, and below 17 elements Array.Sort happens to be stable, so only a larger table shows
+    // whether the tie is broken on registration order rather than left to the sort.
     [Fact]
-    public void ManyEqualRankTemplatesCurrentlyKeepRegistrationOrder()
+    public void ManyEqualRankTemplatesThatCannotMatchTheSamePathKeepRegistrationOrderAmongThemselves()
     {
         string[] parameters = [.. Enumerable.Range(0, 40).Select(i => $"/p/{{n{i}}}/l{i}")];
         string[] literals = [.. Enumerable.Range(0, 40).Select(i => $"/p/l{i}")];
@@ -185,8 +177,9 @@ public sealed class RouteTablePrecedenceTests
         var random = new Random(20261125);
         for (var iteration = 0; iteration < 500; iteration++)
         {
-            // A table cannot map the same template twice, so a template with the shape of an earlier one is drawn
-            // again.
+            // A table cannot map the same template twice, nor two that rank equally and both match a path, so a
+            // template with the shape of an earlier one is drawn again; int and long both accept 0, so the shape
+            // does not tell them apart.
             var templates = new (string Value, string Ranks)[random.Next(2, 8)];
             var shapes = new HashSet<string>(StringComparer.Ordinal);
             for (var i = 0; i < templates.Length; i++)
@@ -248,7 +241,10 @@ public sealed class RouteTablePrecedenceTests
     // A template of up to three literals, constrained and unconstrained parameters, then nothing, optional
     // parameters or a catch-all, with its ranks as one letter per segment, so that two templates rank equally at
     // every position exactly when the letters are equal. Names and constraints vary within a rank. The shape is the
-    // template before names are filled in, which is the same for two templates exactly when they are the same.
+    // template before names are filled in, with long written as int, so it is the same for two templates exactly
+    // when they are the same or rank equally and both match a path: the optional constraints are fixed by position,
+    // and the literals and the int and long constraints at required positions match the same path exactly when the
+    // shapes agree.
     private static (string Value, string Ranks, string Shape) RandomTemplate(Random random, int index)
     {
         var value = new StringBuilder();
@@ -259,7 +255,7 @@ public sealed class RouteTablePrecedenceTests
         {
             value.Append('/').Append(segment.Replace("#", $"p{index}x{names++}", StringComparison.Ordinal));
             ranks.Append(rank);
-            shape.Append('/').Append(segment);
+            shape.Append('/').Append(segment.Replace(":long", ":int", StringComparison.Ordinal));
         }
 
         int positionalCount = random.Next(0, 4);

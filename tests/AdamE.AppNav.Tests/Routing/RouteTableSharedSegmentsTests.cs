@@ -90,9 +90,9 @@ public sealed class RouteTableSharedSegmentsTests
         Assert.Equal(-1, MatchTable(["/{a}/lit", "/{a}/{b}", "/{*rest}"], "/x/%2E").Winner);
     }
 
-    // Each random table matches like the first template, by precedence, that matches the path on its own. Because a
-    // repeated shape is drawn again, no table here has two equal-rank templates that both match the path; the order
-    // of such ties is covered by the tests named for it.
+    // Each random table matches like the first template, by precedence, that matches the path on its own. A repeated
+    // shape is drawn again, and the only constraints at required positions, int and alpha, accept no text in common,
+    // so no table here has two equal-rank templates that both match a path, which Build would reject.
     [Fact]
     public void RandomTablesMatchLikeTheirFirstMatchingTemplateByPrecedence()
     {
@@ -214,7 +214,8 @@ public sealed class RouteTableSharedSegmentsTests
         return (template.Length == 0 ? "/" : template.ToString(), shape.ToString());
     }
 
-    // The first template in precedence order, with ties in registration order, that matches the path on its own.
+    // The first template in precedence order that matches the path on its own. Templates that rank equally are taken
+    // in registration order, but in a table that builds, at most one of them matches any path.
     private static void AssertSameAsFirstMatchingTemplate(string[] templates, string path)
     {
         int expectedWinner = -1;

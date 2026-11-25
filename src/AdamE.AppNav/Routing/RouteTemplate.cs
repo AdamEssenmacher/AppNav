@@ -308,6 +308,63 @@ public sealed class RouteTemplate
         return 0;
     }
 
+    // Returns a path that both this template and another of the same shape match, or null when none does, which is
+    // when the constraints at some required position accept no text in common. The path has only the required
+    // segments, because a path that leaves out every optional parameter and the catch-all matches both whatever their
+    // constraints. Every position is checked before the path is built, because most templates of one shape in a table
+    // differ in a constraint that keeps them apart, and those comparisons then allocate nothing.
+    internal string? FindCommonPath(RouteTemplate other)
+    {
+        Debug.Assert(SameTemplateComparer.SameShape.Equals(this, other), "Only templates of one shape are compared.");
+
+        for (var i = 0; i < _requiredCount; i++)
+        {
+            if (CommonSegment(other, i) is null)
+                return null;
+        }
+
+        if (_requiredCount == 0)
+            return "/";
+
+        var path = new StringBuilder();
+        for (var i = 0; i < _requiredCount; i++)
+            path.Append('/').Append(CommonSegment(other, i));
+
+        return path.ToString();
+    }
+
+    // Whether two templates of the same shape have the same required segments, so that only their optional
+    // parameters, which never keep templates apart, distinguish them, and a message must not advise changing their
+    // constraints. Literals are already the same within a shape, so only the constraints are compared.
+    internal bool HasSameRequiredSegments(RouteTemplate other)
+    {
+        Debug.Assert(SameTemplateComparer.SameShape.Equals(this, other), "Only templates of one shape are compared.");
+
+        for (var i = 0; i < _requiredCount; i++)
+        {
+            if (!ReferenceEquals(_segments[i].Constraint, other._segments[i].Constraint))
+                return false;
+        }
+
+        return true;
+    }
+
+    // The text of a path segment that both templates accept at a required position: a literal as Format writes it,
+    // which is the same for both, a letter for parameters without a constraint, which take any text, or a value both
+    // constraints accept, if there is one.
+    private string? CommonSegment(RouteTemplate other, int position)
+    {
+        RouteSegment segment = _segments[position];
+        if (!segment.IsParameter)
+            return segment.EncodedText;
+
+        RouteConstraint? constraint = segment.Constraint;
+        RouteConstraint? otherConstraint = other._segments[position].Constraint;
+        return constraint is null || otherConstraint is null
+            ? "x"
+            : RouteConstraint.FindCommonValue(constraint, otherConstraint);
+    }
+
     // The rank of a position, from the kind and the constraint of its segment, or Ended past the last one. It is
     // written out rather than taken from RouteSegmentKind, whose order says nothing about precedence.
     private static int Rank(RouteSegment[] segments, int position)

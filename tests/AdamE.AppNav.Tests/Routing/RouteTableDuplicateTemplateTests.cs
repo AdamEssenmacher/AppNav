@@ -31,7 +31,7 @@ public sealed class RouteTableDuplicateTemplateTests
 
     [Theory]
     [InlineData("/Users", "/users")]
-    [InlineData("/a/{id:int}", "/a/{id:long}")]
+    [InlineData("/a/{id:int}", "/a/{id:alpha}")]
     [InlineData("/a/{id}", "/a/{id?}")]
     [InlineData("/a/{id}", "/a/{id:int}")]
     [InlineData("/a/{id:int}", "/a/{id:int?}")]
@@ -119,7 +119,9 @@ public sealed class RouteTableDuplicateTemplateTests
         Assert.Equal(message, Assert.Throws<InvalidOperationException>(builder.Build).Message);
     }
 
-    // A smoke test that a large table of distinct templates of one shape builds. It asserts nothing about time.
+    // A smoke test that a large table of distinct templates of one shape builds, through both the check for the same
+    // template and the check for templates that cannot be told apart, which group these templates apart by their
+    // literals. It asserts nothing about time.
     [Fact]
     public void ManyDistinctTemplatesOfOneShapeBuild()
     {
@@ -145,12 +147,13 @@ public sealed class RouteTableDuplicateTemplateTests
     // The model describes each template as a list of (kind, key) pairs, where the key is a literal's decoded text or
     // a parameter's constraint in uppercase. The test writes the text from the model, so the model does not depend on
     // how the library parses or compares templates. A quarter of the templates repeat the model of an earlier one,
-    // written differently, so that both outcomes are common.
+    // written differently, so that both outcomes are common. A table with no repeat can still have two templates that
+    // rank equally and both match a path, which the model finds too, and which Build reports as that instead.
     [Fact]
     public void RandomTablesAreRejectedExactlyWhenTheModelFindsTheSameTemplateTwice()
     {
         var random = new Random(20261125);
-        var rejected = 0;
+        int rejected = 0, ambiguous = 0;
         for (var iteration = 0; iteration < 3000; iteration++)
         {
             var templates = new (string Value, (char Kind, string Key)[] Model)[random.Next(1, 6)];
@@ -161,7 +164,7 @@ public sealed class RouteTableDuplicateTemplateTests
                 templates[i] = (Write(random, model), model);
             }
 
-            (int Earlier, int Later)? expected = FirstRepeat(templates);
+            (int Earlier, int Later)? expected = FirstRepeat(templates, IsSameModel);
             var builder = new RouteTableBuilder();
             foreach ((string value, _) in templates)
                 builder.Map(value, _ => new SettingsRoute());
@@ -169,7 +172,18 @@ public sealed class RouteTableDuplicateTemplateTests
             string context = string.Join(' ', templates.Select(t => t.Value));
             if (expected is not (int earlier, int later))
             {
-                Assert.Equal(templates.Length, builder.Build().Definitions.Count);
+                if (FirstRepeat(templates, IsAmbiguousModel) is (int first, int second))
+                {
+                    ambiguous++;
+                    string message = Assert.Throws<InvalidOperationException>(builder.Build).Message;
+                    Assert.True(message.Contains("rank equally and both match", StringComparison.Ordinal), context);
+                    AssertInOrder(message, $"'{templates[first].Value}'", $"'{templates[second].Value}'");
+                }
+                else
+                {
+                    Assert.Equal(templates.Length, builder.Build().Definitions.Count);
+                }
+
                 continue;
             }
 
@@ -180,6 +194,7 @@ public sealed class RouteTableDuplicateTemplateTests
         }
 
         Assert.InRange(rejected, 600, 2400);
+        Assert.InRange(ambiguous, 5, 200);
     }
 
     // Half the pairs share a model, written differently, and the other half are drawn independently.
@@ -270,19 +285,48 @@ public sealed class RouteTableDuplicateTemplateTests
         return value.Length == 0 ? "/" : value.ToString();
     }
 
-    // The first template, in registration order, whose model equals an earlier one's, with the earliest such one.
-    private static (int Earlier, int Later)? FirstRepeat((string Value, (char Kind, string Key)[] Model)[] templates)
+    // The first template, in registration order, whose model conflicts with an earlier one's, with the earliest such
+    // one.
+    private static (int Earlier, int Later)? FirstRepeat(
+        (string Value, (char Kind, string Key)[] Model)[] templates,
+        Func<(char Kind, string Key)[], (char Kind, string Key)[], bool> conflict)
     {
         for (var later = 0; later < templates.Length; later++)
         {
             for (var earlier = 0; earlier < later; earlier++)
             {
-                if (templates[earlier].Model.SequenceEqual(templates[later].Model))
+                if (conflict(templates[earlier].Model, templates[later].Model))
                     return (earlier, later);
             }
         }
 
         return null;
+    }
+
+    private static bool IsSameModel((char Kind, string Key)[] x, (char Kind, string Key)[] y)
+    {
+        return x.SequenceEqual(y);
+    }
+
+    // Two models that rank equally and both match a path: the same kinds and literals, parameters either both
+    // constrained or both not, and at every required position the same constraint, or INT and LONG, which both
+    // accept 0. ALPHA accepts no number.
+    private static bool IsAmbiguousModel((char Kind, string Key)[] x, (char Kind, string Key)[] y)
+    {
+        if (x.Length != y.Length)
+            return false;
+
+        for (var i = 0; i < x.Length; i++)
+        {
+            if (x[i].Kind != y[i].Kind || (x[i].Key.Length == 0) != (y[i].Key.Length == 0))
+                return false;
+
+            bool numbers = x[i].Key is "INT" or "LONG" && y[i].Key is "INT" or "LONG";
+            if (x[i].Kind is 'L' or 'R' && x[i].Key != y[i].Key && !numbers)
+                return false;
+        }
+
+        return true;
     }
 
     private static void AssertRejected(string first, string second)

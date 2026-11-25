@@ -18,9 +18,11 @@ public sealed class RouteTable
     internal RouteTable(RouteDefinition[] definitions)
     {
         ThrowIfSameTemplateTwice(definitions);
+        ThrowIfAmbiguous(definitions);
 
-        // Array.Sort is not stable, so it sorts registration indices and breaks ties on them: templates that rank
-        // equally at every position keep the order they were mapped in.
+        // Templates that rank equally at every position cannot both match a path, as checked above, so their order
+        // among themselves never decides which route wins. Array.Sort is not stable, so it sorts registration indices
+        // and breaks ties on them only so that the order is the same on every build.
         var order = new int[definitions.Length];
         for (var i = 0; i < order.Length; i++)
             order[i] = i;
@@ -39,7 +41,7 @@ public sealed class RouteTable
         Definitions = Array.AsReadOnly(definitions);
     }
 
-    // Read by tests only, which check that the order does not depend on the order of registration.
+    // Read by tests only, which check the order in which templates are tried.
     internal ReadOnlySpan<RouteDefinition> MatchOrder => _matchOrder;
 
     /// <summary>
@@ -104,10 +106,10 @@ public sealed class RouteTable
     /// The path is matched as <see cref="RouteTemplate.Match(string)"/> matches it. Definitions are tried by
     /// precedence, not in the order they were mapped: two templates are compared segment by segment from the left,
     /// and at the first position where their ranks differ, the more specific one is tried first, as the "Which route
-    /// wins" section of the routing guide sets out. Templates that rank equally at every position are tried in the
-    /// order they were mapped; they are never the same template, which <see cref="RouteTableBuilder.Build"/> rejects.
-    /// The first whose template matches wins; no later one is tried. Its create function is called once, and any
-    /// exception it throws propagates unchanged.
+    /// wins" section of the routing guide sets out. <see cref="RouteTableBuilder.Build"/> rejects templates that rank
+    /// equally at every position and can match the same path, so the order the routes were mapped in never decides
+    /// which one wins. The first whose template matches wins; no later one is tried. Its create function is called
+    /// once, and any exception it throws propagates unchanged.
     /// </para>
     /// <para>
     /// A URI that no template matches is not an error. The table itself does not throw for the content of a URI; an
@@ -179,6 +181,53 @@ public sealed class RouteTable
                 "template, so the second could never be matched. Templates are the same when they have the same " +
                 "segments, ignoring parameter names. Remove one mapping or change one of the templates.");
         }
+    }
+
+    // Two templates that rank equally at every position and both match some path would be tried in registration order,
+    // so that order would decide which route wins for that path. Only templates of the same shape can be such a pair,
+    // so the definitions are grouped by shape and each is compared with the earlier members of its group only. The
+    // members of a group are kept apart in pairs, or Build has already thrown, so a group holds at most one member for
+    // each combination of mutually disjoint constraints at its constrained required positions: up to 2^k for k such
+    // positions with the built-ins. The check is linear for tables whose groups are small, which is every realistic
+    // table, and quadratic in the size of a group. previous chains each group from its latest member back to its
+    // first, and the earliest member that conflicts is the one reported, so the error does not change from one build
+    // to the next.
+    private static void ThrowIfAmbiguous(RouteDefinition[] definitions)
+    {
+        var latest = new Dictionary<RouteTemplate, int>(definitions.Length, SameTemplateComparer.SameShape);
+        var previous = new int[definitions.Length];
+        for (var i = 0; i < definitions.Length; i++)
+        {
+            RouteTemplate template = definitions[i].Template;
+            int earliest = -1;
+            string? commonPath = null;
+            previous[i] = latest.TryGetValue(template, out int last) ? last : -1;
+            for (int j = previous[i]; j >= 0; j = previous[j])
+            {
+                string? path = definitions[j].Template.FindCommonPath(template);
+                if (path is not null)
+                    (earliest, commonPath) = (j, path);
+            }
+
+            if (commonPath is not null)
+                throw Ambiguous(definitions[earliest], definitions[i], commonPath);
+
+            latest[template] = i;
+        }
+    }
+
+    private static InvalidOperationException Ambiguous(RouteDefinition earlier, RouteDefinition later, string path)
+    {
+        return new InvalidOperationException(
+            $"The templates '{earlier.Template.Value}', mapped to route type '{earlier.RouteType}', and " +
+            $"'{later.Template.Value}', mapped to route type '{later.RouteType}', rank equally and both match the " +
+            $"path '{path}', so which route wins would depend on the order they were mapped in. " +
+            (earlier.Template.HasSameRequiredSegments(later.Template)
+                ? "Optional parameters never keep templates apart, because both templates match the path without " +
+                  "them. Map the shorter path and each alternative as its own template with a required parameter, " +
+                  "giving the alternatives constraints that no text satisfies together, or remove one."
+                : "Keep them apart at a required position, with a different literal or with constraints there that " +
+                  "no text satisfies together, or make them rank differently, or remove one."));
     }
 
     // Where the path ends and where the query starts are decided here together, so that the two always agree. The

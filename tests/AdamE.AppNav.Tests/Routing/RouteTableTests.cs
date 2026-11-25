@@ -183,23 +183,6 @@ public sealed class RouteTableTests
     }
 
     [Fact]
-    public void OfEqualRankTemplatesThatMatchTheFirstMappedCurrentlyWins()
-    {
-        var uri = new Uri("/products/42", UriKind.Relative);
-        RouteTable idFirst = new RouteTableBuilder()
-            .Map("/products/{id:int}", c => new ProductRoute(c.Path("id")))
-            .Map("/products/{n:long}", c => new ProductByNameRoute(c.Path("n")))
-            .Build();
-        RouteTable nameFirst = new RouteTableBuilder()
-            .Map("/products/{n:long}", c => new ProductByNameRoute(c.Path("n")))
-            .Map("/products/{id:int}", c => new ProductRoute(c.Path("id")))
-            .Build();
-
-        Assert.Equal(new ProductRoute("42"), idFirst.Match(uri).Route);
-        Assert.Equal(new ProductByNameRoute("42"), nameFirst.Match(uri).Route);
-    }
-
-    [Fact]
     public void ALaterDefinitionWinsWhenEarlierTemplatesDoNotMatch()
     {
         RouteTable table = new RouteTableBuilder()
