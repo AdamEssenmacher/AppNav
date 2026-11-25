@@ -738,6 +738,30 @@ public sealed class RouteMatchContextTypedPathTests
             wide.Match(new Uri("/n/" + ulong.MaxValue.ToString(Invariant), UriKind.Relative)).Route);
     }
 
+    // A wider constraint checks less than the type does, so what it lets through beyond the type fails the match.
+    [Theory]
+    [InlineData("/n/1.5")]
+    [InlineData("/n/-1")]
+    public void AConstraintWiderThanTheTypeLetsThroughValuesThatFailTheMatch(string path)
+    {
+        var laterCalled = false;
+        RouteTable table = new RouteTableBuilder()
+            .Map("/n/{n:decimal}", c => new ProductRoute(c.Path<ulong>("n").ToString(Invariant)))
+            .Map("/n/{slug}", _ =>
+            {
+                laterCalled = true;
+                return new SettingsRoute();
+            })
+            .Build();
+
+        RouteMatchResult result = table.Match(new Uri(path, UriKind.Relative));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("/n/{n:decimal}", result.Definition?.Template.Value);
+        Assert.Equal(RouteDiagnosticCodes.ValueInvalid, Assert.Single(result.Diagnostics).Code);
+        Assert.False(laterCalled);
+    }
+
     [Fact]
     public void AFailedConversionFailsTheMatchAndNoLaterTemplateIsTried()
     {
