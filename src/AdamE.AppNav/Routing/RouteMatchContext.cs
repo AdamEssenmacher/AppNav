@@ -160,10 +160,7 @@ public sealed class RouteMatchContext
     {
         // Checked before the name and the value, so that using a type that can never work fails on every path, not
         // only on one that has the value.
-        string typeName = SupportedTypeName<T>() ?? throw new InvalidOperationException(
-            $"A path value cannot be read as type '{DisplayName(typeof(T))}'. The supported types are string, int, " +
-            "long, decimal, bool and Guid, and the nullable forms of the last five; read the value as a string and " +
-            "convert it instead.");
+        string typeName = SupportedTypeName<T>() ?? throw UnsupportedType<T>("A path value", ValueTypesTail);
 
         if (!TryGetPath(name, out string? text))
         {
@@ -171,15 +168,7 @@ public sealed class RouteMatchContext
             return false;
         }
 
-        if (TryConvert(text, out value))
-            return true;
-
-        // A path value can carry a secret, such as a sign-in token, and the message ends up in a diagnostic that
-        // tends to be logged, so it names the parameter and the type only. It is never another exception's
-        // message and has no inner exception, since parse exceptions quote their input.
-        throw new RouteValueException(
-            name,
-            $"The value of '{RouteText.EscapeForMessage(name)}' is not a valid {typeName}.");
+        return TryConvert(text, out value) ? true : throw NotValid(name, "The path value of", typeName);
     }
 
     /// <summary>
@@ -244,11 +233,160 @@ public sealed class RouteMatchContext
         };
     }
 
+    /// <summary>
+    /// Gets the first value the query of the URI gives for a name, converted to <typeparamref name="T"/>, if the
+    /// query gives any. A value that is present but does not convert throws <see cref="RouteValueException"/>; this
+    /// method never returns <see langword="false"/> for one.
+    /// </summary>
+    /// <typeparam name="T">
+    /// The type to convert to, one of those listed for <see cref="Path{T}(string)"/>, by the same rules, so a value
+    /// converts to a type other than <see cref="string"/> exactly when it satisfies the built-in constraint of the
+    /// same name, and a <see cref="string"/> is the value unchanged. A nullable type, such as
+    /// <c>int?</c>, reads a value that may be absent into a nullable variable, as in
+    /// <c>TryGetQuery("page", out int? page)</c>.
+    /// </typeparam>
+    /// <param name="name">The name, compared ordinally without regard to case; the empty name is a valid name.</param>
+    /// <param name="value">
+    /// When this method returns <see langword="true"/>, the first value given for <paramref name="name"/>, decoded
+    /// and converted; otherwise the default value of <typeparamref name="T"/>, which is <see langword="null"/> for a
+    /// nullable type.
+    /// </param>
+    /// <returns>
+    /// <see langword="true"/> when the query has the name, whose first value is then converted;
+    /// <see langword="false"/> when it does not, or there is no query.
+    /// </returns>
+    /// <remarks>
+    /// The query is read and decoded as described for <see cref="TryGetQuery(string, out string)"/>, so <c>+</c> is
+    /// a space: <c>?n=+5</c> gives a space followed by <c>5</c>, which is not a valid <see cref="int"/>, and
+    /// <c>?n=%2B5</c> gives <c>+5</c>, which is. A name written without a value, as in <c>?page</c> or
+    /// <c>?page=</c>, has the empty value, which is present and converts only to <see cref="string"/>. Only the first
+    /// value counts: <c>?page=x&amp;page=2</c> read as <see cref="int"/> is not valid, although a later value would
+    /// be. For a lenient read, use <see cref="TryGetQuery(string, out string)"/> and convert the text yourself.
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">
+    /// <typeparamref name="T"/> is not one of the supported types. This is thrown whether or not the query has the
+    /// name, and propagates out of <see cref="RouteTable.Match(Uri)"/>.
+    /// </exception>
+    /// <exception cref="ArgumentNullException"><paramref name="name"/> is <see langword="null"/>.</exception>
+    /// <exception cref="RouteValueException">
+    /// The first value of <paramref name="name"/> does not convert to <typeparamref name="T"/>. Thrown from the
+    /// create function, it makes <see cref="RouteTable.Match(Uri)"/> return a failed result with one
+    /// <see cref="RouteDiagnosticCodes.ValueInvalid"/> diagnostic, and no later template is tried. Its message names
+    /// the query value and the type but never quotes the value.
+    /// </exception>
+    public bool TryGetQuery<T>(string name, [MaybeNullWhen(false)] out T value)
+    {
+        // Checked first, as for a path value, so that a type that can never work fails on every URI.
+        string typeName = SupportedTypeName<T>() ?? throw UnsupportedType<T>("A query value", ValueTypesTail);
+
+        if (!TryGetQuery(name, out string? text))
+        {
+            value = default;
+            return false;
+        }
+
+        return TryConvert(text, out value) ? true : throw NotValid(name, "The query value of", typeName);
+    }
+
+    /// <summary>
+    /// Gets every value the query of the URI gives for a name, in the order they appear, each converted to
+    /// <typeparamref name="T"/>.
+    /// </summary>
+    /// <typeparam name="T">
+    /// The type to convert to: <see cref="string"/>, <see cref="int"/>, <see cref="long"/>, <see cref="decimal"/>,
+    /// <see cref="bool"/> or <see cref="Guid"/>, by the rules described for <see cref="Path{T}(string)"/>: a value
+    /// converts to a type other than <see cref="string"/> exactly when it satisfies the built-in constraint of the
+    /// same name, and a <see cref="string"/> is the value unchanged. A nullable type is not supported, since an
+    /// element of the list is never absent.
+    /// </typeparam>
+    /// <param name="name">The name, compared ordinally without regard to case; the empty name is a valid name.</param>
+    /// <returns>
+    /// The values, decoded and converted, including repeated ones; an empty list when the query does not have the
+    /// name, or there is no query. The list cannot be changed. For <see cref="string"/>, the values are those of
+    /// <see cref="GetQueryValues(string)"/>.
+    /// </returns>
+    /// <remarks>
+    /// The query is read and decoded as described for <see cref="TryGetQuery(string, out string)"/>. Either every
+    /// value converts or the read fails: a name written without a value has the empty value, which converts only to
+    /// <see cref="string"/>, so <c>?tag=1&amp;tag</c> read as <see cref="int"/> is not valid.
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">
+    /// <typeparamref name="T"/> is not one of the supported types, or is a nullable type. This is thrown whether or
+    /// not the query has the name, and propagates out of <see cref="RouteTable.Match(Uri)"/>.
+    /// </exception>
+    /// <exception cref="ArgumentNullException"><paramref name="name"/> is <see langword="null"/>.</exception>
+    /// <exception cref="RouteValueException">
+    /// A value of <paramref name="name"/> does not convert to <typeparamref name="T"/>. Thrown from the create
+    /// function, it makes <see cref="RouteTable.Match(Uri)"/> return a failed result with one
+    /// <see cref="RouteDiagnosticCodes.ValueInvalid"/> diagnostic, and no later template is tried. Its message names
+    /// the query value and the type but never quotes the value.
+    /// </exception>
+    public IReadOnlyList<T> GetQueryValues<T>(string name)
+    {
+        string typeName = SupportedTypeName<T>()
+            ?? throw UnsupportedType<T>("A list of query values", ListTypesTail);
+
+        // Of the supported types, only string and the nullable ones have a null default, and the test is a constant
+        // once the method is compiled for a value type, so only the throw looks up the underlying type.
+        if (default(T) is null && typeof(T) != typeof(string))
+        {
+            throw new InvalidOperationException(
+                $"A list of query values cannot be read as type '{DisplayName(typeof(T))}': an element of the list " +
+                $"is never absent, so read it as type '{DisplayName(Nullable.GetUnderlyingType(typeof(T))!)}' " +
+                "instead.");
+        }
+
+        // A string needs no conversion, and the reference cast keeps its values and wrapping exactly those of the
+        // string member.
+        if (typeof(T) == typeof(string))
+            return (IReadOnlyList<T>)(object)GetQueryValues(name);
+
+        ArgumentNullException.ThrowIfNull(name);
+
+        if (!QueryValues.TryGetValue(name, out IReadOnlyList<string>? values))
+            return ReadOnlyCollection<T>.Empty;
+
+        // A new array that only the wrapper sees, so the caller cannot change it through a cast.
+        var converted = new T[values.Count];
+        for (var i = 0; i < converted.Length; i++)
+        {
+            if (!TryConvert(values[i], out converted[i]!))
+                throw NotValid(name, "The query value of", typeName);
+        }
+
+        return Array.AsReadOnly(converted);
+    }
+
+    private const string ValueTypesTail =
+        ", and the nullable forms of the last five; read the value as a string and convert it instead.";
+
+    private const string ListTypesTail = "; read the values as strings and convert them instead.";
+
     private static KeyNotFoundException NoPathValue(string name)
     {
         return new KeyNotFoundException(
             $"The matched path has no value for path parameter '{RouteText.EscapeForMessage(name)}': the template " +
             "has no parameter of that name, or the path left it out.");
+    }
+
+    // A path or query value can carry a secret, such as a sign-in token, and the message ends up in a diagnostic that
+    // tends to be logged, so it names the parameter or query name and the type only, never the value. It is never
+    // another exception's message and has no inner exception, since parse exceptions quote their input. The subject
+    // tells a path value from a query value of the same name.
+    private static RouteValueException NotValid(string name, string subject, string typeName)
+    {
+        return new RouteValueException(
+            name,
+            $"{subject} '{RouteText.EscapeForMessage(name)}' is not a valid {typeName}.");
+    }
+
+    // The tail says what else is supported and what to do instead, since a list has no nullable forms and has
+    // several values.
+    private static InvalidOperationException UnsupportedType<T>(string subject, string tail)
+    {
+        return new InvalidOperationException(
+            $"{subject} cannot be read as type '{DisplayName(typeof(T))}'. The supported types are string, int, " +
+            $"long, decimal, bool and Guid{tail}");
     }
 
     // A short name for a message, as Int32? for a nullable type, List<Int32> for another generic one and Int32?[] for

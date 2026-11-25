@@ -12,6 +12,7 @@ AdamE.AppNav.Routing.RouteDiagnostic.Message.get -> string!
 AdamE.AppNav.Routing.RouteDiagnosticCodes
 AdamE.AppNav.Routing.RouteMatchContext
 AdamE.AppNav.Routing.RouteMatchContext.GetQueryValues(string! name) -> System.Collections.Generic.IReadOnlyList<string!>!
+AdamE.AppNav.Routing.RouteMatchContext.GetQueryValues<T>(string! name) -> System.Collections.Generic.IReadOnlyList<T>!
 AdamE.AppNav.Routing.RouteMatchContext.Path(string! name) -> string!
 AdamE.AppNav.Routing.RouteMatchContext.Path<T>(string! name) -> T
 AdamE.AppNav.Routing.RouteMatchContext.PathValues.get -> System.Collections.Generic.IReadOnlyDictionary<string!, string!>!
@@ -19,6 +20,7 @@ AdamE.AppNav.Routing.RouteMatchContext.SourceUri.get -> System.Uri!
 AdamE.AppNav.Routing.RouteMatchContext.TryGetPath(string! name, out string? value) -> bool
 AdamE.AppNav.Routing.RouteMatchContext.TryGetPath<T>(string! name, out T value) -> bool
 AdamE.AppNav.Routing.RouteMatchContext.TryGetQuery(string! name, out string? value) -> bool
+AdamE.AppNav.Routing.RouteMatchContext.TryGetQuery<T>(string! name, out T value) -> bool
 AdamE.AppNav.Routing.RouteMatchResult
 AdamE.AppNav.Routing.RouteMatchResult.Definition.get -> AdamE.AppNav.Routing.RouteDefinition?
 AdamE.AppNav.Routing.RouteMatchResult.Diagnostics.get -> System.Collections.Generic.IReadOnlyList<AdamE.AppNav.Routing.RouteDiagnostic!>!
