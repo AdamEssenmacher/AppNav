@@ -508,23 +508,20 @@ public sealed class RouteTemplateTests
     }
 
     [Theory]
-    [InlineData("/products/{id?}", "{id?}")]
     [InlineData("/files/{*rest}", "{*rest}")]
-    [InlineData("/{?}", "{?}")]
     [InlineData("/{*}", "{*}")]
-    [InlineData("/{1?}", "{1?}")]
-    [InlineData("/products/{id:int?}", "{id:int?}")]
-    [InlineData("/products/{id?:int}", "{id?:int}")]
     [InlineData("/files/{rest:*}", "{rest:*}")]
     [InlineData("/files/{*rest:alpha}", "{*rest:alpha}")]
-    [InlineData("/{id:slug?}", "{id:slug?}")]
-    [InlineData("/{id:?}", "{id:?}")]
-    public void ParseRejectsAQuestionMarkOrAsteriskInAParameter(string value, string segment)
+    [InlineData("/files/{*rest?}", "{*rest?}")]
+    [InlineData("/files/{rest?*}", "{rest?*}")]
+    [InlineData("/files/{1*:slug}", "{1*:slug}")]
+    public void ParseRejectsAnAsteriskInAParameter(string value, string segment)
     {
         ArgumentException exception =
             AssertRejectsSegment(value, segment, ReservedInAParameter, notCategory: InvalidParameterName);
 
-        Assert.DoesNotContain(QuestionMarkOrHash, exception.Message, StringComparison.Ordinal);
+        Assert.Contains("'*'", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("'?'", exception.Message, StringComparison.Ordinal);
         Assert.DoesNotContain(UnknownConstraint, exception.Message, StringComparison.Ordinal);
     }
 
@@ -583,9 +580,10 @@ public sealed class RouteTemplateTests
     }
 
     [Theory]
-    [InlineData("/{id:int}/{ID:guid}", "{ID:guid}", "{id}")]
-    [InlineData("/{id:int}/{ID}", "{ID}", "{id}")]
+    [InlineData("/{id:int}/{ID:guid}", "{ID:guid}", "{id:int}")]
+    [InlineData("/{id:int}/{ID}", "{ID}", "{id:int}")]
     [InlineData("/{id}/{id:int}", "{id:int}", "{id}")]
+    [InlineData("/{Id:INT}/x/{id}", "{id}", "{Id:INT}")]
     public void ParseRejectsAConstrainedParameterNameUsedTwiceIgnoringCase(
         string value,
         string segment,
