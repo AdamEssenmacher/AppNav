@@ -13,6 +13,7 @@ public sealed class RouteTemplateFormatTests
     private const string EmptyValue = "has an empty value";
     private const string NotValidUtf16 = "not valid UTF-16";
     private const string Ambiguous = "ambiguous";
+    private const string UnsatisfiedConstraint = "does not satisfy its constraint";
 
     private static readonly Dictionary<string, string> NoValues = [];
 
@@ -241,6 +242,151 @@ public sealed class RouteTemplateFormatTests
 
             return builder.ToString();
         }
+    }
+
+    [Theory]
+    [InlineData("int", "42", "42")]
+    [InlineData("int", "+007", "%2B007")]
+    [InlineData("int", "-2147483648", "-2147483648")]
+    [InlineData("long", "9223372036854775807", "9223372036854775807")]
+    [InlineData("decimal", "-.5", "-.5")]
+    [InlineData("decimal", "+19.95", "%2B19.95")]
+    [InlineData("bool", "TRUE", "TRUE")]
+    [InlineData("guid", "6f9619ff-8b86-d011-b42d-00cf4fc964ff", "6f9619ff-8b86-d011-b42d-00cf4fc964ff")]
+    [InlineData("guid", "6F9619FF8B86D011B42D00CF4FC964FF", "6F9619FF8B86D011B42D00CF4FC964FF")]
+    [InlineData("alpha", "caf\u00E9", "caf%C3%A9")]
+    [InlineData("alpha", "\U0001D49C", "%F0%9D%92%9C")]
+    [InlineData("INT", "42", "42")]
+    public void FormatsAValueThatSatisfiesItsConstraintUnchanged(string constraint, string value, string expected)
+    {
+        RouteTemplate template = RouteTemplate.Parse($"/items/{{v:{constraint}}}");
+        var values = new Dictionary<string, string> { ["v"] = value };
+
+        Assert.Equal("/items/" + expected, AssertRoundTrips(template, values));
+    }
+
+    [Theory]
+    [InlineData("int", "abc")]
+    [InlineData("int", " 42")]
+    [InlineData("int", "42 ")]
+    [InlineData("int", "42\u0000")]
+    [InlineData("int", "1,000")]
+    [InlineData("int", "2147483648")]
+    [InlineData("int", "\u0663")]
+    [InlineData("int", "%34%32")]
+    [InlineData("long", "9223372036854775808")]
+    [InlineData("long", "4.2")]
+    [InlineData("decimal", "1,000.5")]
+    [InlineData("decimal", "19.95-")]
+    [InlineData("decimal", "1e3")]
+    [InlineData("decimal", " 1")]
+    [InlineData("decimal", "79228162514264337593543950336")]
+    [InlineData("bool", " true")]
+    [InlineData("bool", "true\u0000")]
+    [InlineData("bool", "yes")]
+    [InlineData("guid", "{6f9619ff-8b86-d011-b42d-00cf4fc964ff}")]
+    [InlineData("guid", "(6f9619ff-8b86-d011-b42d-00cf4fc964ff)")]
+    [InlineData("guid", " 6f9619ff-8b86-d011-b42d-00cf4fc964ff")]
+    [InlineData("alpha", "a1")]
+    [InlineData("alpha", "a b")]
+    [InlineData("alpha", "e\u0301")]
+    [InlineData("ALPHA", "a1")]
+    public void FormatRejectsAValueThatDoesNotSatisfyItsConstraint(string constraint, string value)
+    {
+        RouteTemplate template = RouteTemplate.Parse($"/items/{{v:{constraint}}}");
+        var values = new Dictionary<string, string> { ["v"] = value };
+
+        ArgumentException exception = AssertRejectsValue(() => template.Format(values), "v", UnsatisfiedConstraint);
+
+        Assert.Contains($"'{constraint.ToLowerInvariant()}'", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(NoValue, exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FormatReportsAnEmptyOrInvalidValueBeforeItsConstraint()
+    {
+        RouteTemplate template = RouteTemplate.Parse("/items/{v:alpha}");
+
+        ArgumentException empty = AssertRejectsValue(
+            () => template.Format(new Dictionary<string, string> { ["v"] = "" }),
+            "v",
+            EmptyValue);
+        ArgumentException surrogate = AssertRejectsValue(
+            () => template.Format(new Dictionary<string, string> { ["v"] = "a\uD800" }),
+            "v",
+            NotValidUtf16);
+
+        Assert.DoesNotContain(UnsatisfiedConstraint, empty.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(UnsatisfiedConstraint, surrogate.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FormatReportsTheFirstParameterThatDoesNotSatisfyItsConstraint()
+    {
+        RouteTemplate template = RouteTemplate.Parse("/{first:int}/x/{second:bool}");
+
+        ArgumentException exception = AssertRejectsValue(
+            () => template.Format(new Dictionary<string, string> { ["first"] = "one", ["second"] = "maybe" }),
+            "first",
+            UnsatisfiedConstraint);
+
+        Assert.DoesNotContain("'second'", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GeneratedConstrainedTemplatesAndValuesRoundTrip()
+    {
+        (string Constraint, string[] Values)[] constrained =
+        [
+            ("int", ["0", "-0", "+007", "2147483647", "-2147483648"]),
+            ("long", ["9223372036854775807", "-9223372036854775808", "+00"]),
+            ("decimal", ["19.95", ".5", "5.", "-.5", "+0.0", "79228162514264337593543950335.4"]),
+            ("bool", ["true", "FALSE", "tRuE"]),
+            ("guid", ["6f9619ff-8b86-d011-b42d-00cf4fc964ff", "6F9619FF8B86D011B42D00CF4FC964FF"]),
+            ("alpha", ["a", "caf\u00E9", "\U0001D49C", "\u65E5\u672C", "\u01C5"]),
+        ];
+        var random = new Random(20261125);
+
+        for (var i = 0; i < 300; i++)
+        {
+            var template = new StringBuilder();
+            var values = new Dictionary<string, string>();
+            int segmentCount = random.Next(1, 5);
+            for (var segment = 0; segment < segmentCount; segment++)
+            {
+                string name = "p" + segment.ToString(CultureInfo.InvariantCulture);
+                switch (random.Next(3))
+                {
+                    case 0:
+                        (string constraint, string[] choices) = constrained[random.Next(constrained.Length)];
+                        string spelling = random.Next(2) == 0 ? constraint : constraint.ToUpperInvariant();
+                        template.Append("/{").Append(name).Append(':').Append(spelling).Append('}');
+                        values[name] = choices[random.Next(choices.Length)];
+                        break;
+                    case 1:
+                        template.Append("/{").Append(name).Append('}');
+                        values[name] = AwkwardValues[random.Next(AwkwardValues.Length)];
+                        break;
+                    default:
+                        template.Append("/lit%20").Append(name);
+                        break;
+                }
+            }
+
+            AssertRoundTrips(RouteTemplate.Parse(template.ToString()), values);
+        }
+    }
+
+    [Theory]
+    [InlineData("/products/{id:int}", "/products/%2B007")]
+    [InlineData("/products/{id:int}", "/products/4%32")]
+    [InlineData("/products/{id:decimal}", "/products/-.5")]
+    [InlineData("/products/{id:guid}", "/products/6F9619FF8b86d011b42d00cf4fc964ff")]
+    [InlineData("/products/{id:bool}", "/products/True")]
+    [InlineData("/{store:alpha}/x/{id:long}", "//caf%C3%A9//x/0042/")]
+    public void FormattingTheValuesOfAConstrainedMatchProducesAPathThatMatchesAgain(string value, string path)
+    {
+        FormattingTheValuesOfAMatchProducesAPathThatMatchesAgain(value, path);
     }
 
     [Theory]

@@ -19,6 +19,16 @@ namespace AdamE.AppNav.Routing;
 /// captured values are looked up the same way.
 /// </para>
 /// <para>
+/// A parameter written <c>{name:constraint}</c> matches a segment only when the segment's decoded text satisfies the
+/// constraint, one of the built-in constraints <c>int</c>, <c>long</c>, <c>decimal</c>, <c>bool</c>, <c>guid</c> and
+/// <c>alpha</c>, whose names are compared without regard to case. Each checks the text exactly as decoded, without
+/// trimming, and independently of culture: <c>int</c> and <c>long</c> accept an optional leading <c>+</c> or
+/// <c>-</c> and ASCII digits within the type's range; <c>decimal</c> also accepts one <c>.</c>; <c>bool</c> accepts
+/// <c>true</c> or <c>false</c> in any ASCII case; <c>guid</c> accepts 32 hex digits, with or without hyphens in the
+/// 8-4-4-4-12 form; and <c>alpha</c> accepts one or more Unicode letters. The captured value is the decoded text,
+/// unchanged.
+/// </para>
+/// <para>
 /// Templates and paths are divided the same way. Leading, trailing and repeated slashes do not create segments, so
 /// <c>/a//b/</c> has the same segments as <c>/a/b</c>, and <c>/</c> is the root template, which has no segments.
 /// Each segment is then percent-decoded once, so <c>%2F</c> is part of its segment and does not divide it. A percent
@@ -68,15 +78,17 @@ public sealed class RouteTemplate
     /// <exception cref="ArgumentException">
     /// <para>
     /// <paramref name="value"/> is empty or consists only of white space or does not start with <c>/</c>; a segment
-    /// contains a control character or a lone surrogate; a parameter has an invalid name or repeats the name of an
-    /// earlier parameter, ignoring case; or a literal segment starts or ends with white space, or contains <c>{</c>,
-    /// <c>}</c>, <c>?</c> or <c>#</c>. These checks apply to the text as written, before percent-decoding.
+    /// contains a control character or a lone surrogate; a parameter contains <c>?</c> or <c>*</c>, has an invalid
+    /// name, repeats the name of an earlier parameter, ignoring case, contains more than one <c>:</c>, or has an empty
+    /// or unknown constraint; or a literal segment starts or ends with white space, or contains <c>{</c>, <c>}</c>,
+    /// <c>?</c> or <c>#</c>. These checks apply to the text as written, before percent-decoding.
     /// </para>
     /// <para>
     /// The first invalid segment, reading left to right, is reported. Within a segment, a control character is
-    /// reported first, then a lone surrogate, then any other problem. A control character is reported even when it is
-    /// also white space, such as a tab at the start of a segment. The message shows each control character and lone
-    /// surrogate as a <c>\uXXXX</c> escape.
+    /// reported first, then a lone surrogate, then any other problem; within a parameter, <c>?</c> or <c>*</c> is
+    /// reported first, then an invalid name, then more than one <c>:</c>, then an empty constraint, then an unknown
+    /// one. A control character is reported even when it is also white space, such as a tab at the start of a segment.
+    /// The message shows each control character and lone surrogate as a <c>\uXXXX</c> escape.
     /// </para>
     /// </exception>
     public static RouteTemplate Parse(string value)
@@ -93,15 +105,15 @@ public sealed class RouteTemplate
         for (var i = 0; i < segments.Length; i++)
         {
             string segment = segments[i];
-            string? name = FindParameterName(segment);
-            if (FindSegmentProblem(segment, name) is { } problem)
+            ParameterText? parameter = FindParameter(segment);
+            if (FindSegmentProblem(segment, parameter) is { } problem)
             {
                 throw new ArgumentException(
                     $"Route template segment '{EscapeForMessage(segment)}' {problem}.",
                     nameof(value));
             }
 
-            if (name is null)
+            if (parameter is not { Name: var name, Constraint: var constraint })
             {
                 parsed[i] = Segment.Literal(Uri.UnescapeDataString(segment));
                 continue;
@@ -116,7 +128,7 @@ public sealed class RouteTemplate
                     nameof(value));
             }
 
-            parsed[i] = Segment.Parameter(name);
+            parsed[i] = Segment.Parameter(name, constraint);
         }
 
         return new RouteTemplate(value, parsed, seenNames.Count);
@@ -137,7 +149,9 @@ public sealed class RouteTemplate
     /// <remarks>
     /// A path matches when it has the same number of segments as the template, each decoded segment in a literal's
     /// position equals that literal, compared ordinally and case-sensitively, and each parameter's position holds one
-    /// segment. A captured value is the decoded path segment, so it contains <c>/</c> where the path has <c>%2F</c>.
+    /// segment, whose decoded text satisfies the parameter's constraint, if it has one. A segment that does not
+    /// satisfy a constraint is not an error: the path simply does not match. A captured value is the decoded path
+    /// segment, unchanged even when a constraint checked it, so it contains <c>/</c> where the path has <c>%2F</c>.
     /// White space is significant, <c>+</c> is not a space, and <c>.</c> and <c>..</c> are ordinary segments.
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="path"/> is <see langword="null"/>.</exception>
@@ -149,14 +163,15 @@ public sealed class RouteTemplate
         if (pathSegments.Length != _segments.Length)
             return null;
 
+        // Every segment is decoded in place and checked, against its literal or its parameter's constraint, before the
+        // dictionary is allocated, so a path that does not match allocates no dictionary.
         for (var i = 0; i < _segments.Length; i++)
         {
-            Segment segment = _segments[i];
-            if (!segment.IsParameter &&
-                !StringComparer.Ordinal.Equals(segment.Text, Uri.UnescapeDataString(pathSegments[i])))
-            {
+            string decoded = Uri.UnescapeDataString(pathSegments[i]);
+            if (!_segments[i].Accepts(decoded))
                 return null;
-            }
+
+            pathSegments[i] = decoded;
         }
 
         if (_parameterCount == 0)
@@ -167,7 +182,7 @@ public sealed class RouteTemplate
         {
             Segment segment = _segments[i];
             if (segment.IsParameter)
-                values.Add(segment.Text, Uri.UnescapeDataString(pathSegments[i]));
+                values.Add(segment.Text, pathSegments[i]);
         }
 
         return values;
@@ -203,17 +218,18 @@ public sealed class RouteTemplate
     /// <c>/my%20files</c>, and repeated slashes are not reproduced.
     /// </para>
     /// <para>
-    /// Values are not otherwise checked: white space, control characters, <c>%</c>, <c>/</c> and any other text
-    /// are encoded and read back unchanged. <c>.</c> and <c>..</c> are written as they are, as values or literals,
-    /// and a URI parser or browser may remove them and the segment before them when the path is resolved.
+    /// A value for a parameter with a constraint must satisfy it, so that the path matches. Values are not otherwise
+    /// checked: white space, control characters, <c>%</c>, <c>/</c> and any other text are encoded and read back
+    /// unchanged. <c>.</c> and <c>..</c> are written as they are, as values or literals, and a URI parser or browser
+    /// may remove them and the segment before them when the path is resolved.
     /// </para>
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="pathValues"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">
     /// A parameter has no entry in <paramref name="pathValues"/>; it has none under its name as written and more than
-    /// one whose key equals it ignoring case; or its value is <see langword="null"/>, empty, or not valid UTF-16 (it
-    /// contains a lone surrogate, which cannot be percent-encoded and read back unchanged). The first parameter in
-    /// template order that cannot be formatted is the one reported.
+    /// one whose key equals it ignoring case; or its value is <see langword="null"/>, empty, not valid UTF-16 (it
+    /// contains a lone surrogate, which cannot be percent-encoded and read back unchanged), or does not satisfy the
+    /// parameter's constraint. The first parameter in template order that cannot be formatted is the one reported.
     /// </exception>
     public string Format(IReadOnlyDictionary<string, string> pathValues)
     {
@@ -227,15 +243,16 @@ public sealed class RouteTemplate
         {
             builder.Append('/').Append(
                 segment.IsParameter
-                    ? Uri.EscapeDataString(GetPathValue(pathValues, segment.Text))
+                    ? Uri.EscapeDataString(GetPathValue(pathValues, segment))
                     : segment.EncodedText);
         }
 
         return builder.ToString();
     }
 
-    private static string GetPathValue(IReadOnlyDictionary<string, string> pathValues, string name)
+    private static string GetPathValue(IReadOnlyDictionary<string, string> pathValues, Segment parameter)
     {
+        string name = parameter.Text;
         if (!pathValues.TryGetValue(name, out string? value) && !TryGetValueIgnoringCase(pathValues, name, out value))
             throw new ArgumentException($"Path parameter '{name}' has no value.", nameof(pathValues));
 
@@ -254,6 +271,13 @@ public sealed class RouteTemplate
             throw new ArgumentException(
                 $"Path parameter '{name}' has a value that is not valid UTF-16: it contains a lone surrogate, " +
                 "which cannot be percent-encoded and read back unchanged.",
+                nameof(pathValues));
+        }
+
+        if (parameter.Constraint is { } constraint && !constraint.IsSatisfiedBy(value))
+        {
+            throw new ArgumentException(
+                $"Path parameter '{name}' has a value that does not satisfy its constraint '{constraint.Name}'.",
                 nameof(pathValues));
         }
 
@@ -307,18 +331,26 @@ public sealed class RouteTemplate
         return false;
     }
 
-    // Returns the name between the braces when the segment is a whole-segment parameter, valid or not, and null when
-    // the segment is a literal.
-    private static string? FindParameterName(string segment)
+    // Returns the parameter's name and constraint text, split at the first ':', and the built-in constraint that text
+    // names, if any, when the segment is a whole-segment parameter, valid or not; null when the segment is a literal.
+    private static ParameterText? FindParameter(string segment)
     {
         if (segment.Length < 2 || segment[0] != '{' || segment[^1] != '}')
             return null;
 
-        ReadOnlySpan<char> name = segment.AsSpan(1, segment.Length - 2);
-        return name.ContainsAny('{', '}') ? null : name.ToString();
+        ReadOnlySpan<char> text = segment.AsSpan(1, segment.Length - 2);
+        if (text.ContainsAny('{', '}'))
+            return null;
+
+        int separator = text.IndexOf(':');
+        if (separator < 0)
+            return new ParameterText(text.ToString(), null, null);
+
+        string constraintText = text[(separator + 1)..].ToString();
+        return new ParameterText(text[..separator].ToString(), constraintText, RouteConstraint.Find(constraintText));
     }
 
-    private static string? FindSegmentProblem(string segment, string? parameterName)
+    private static string? FindSegmentProblem(string segment, ParameterText? parameter)
     {
         // Checked first: a control character is invisible where the template is written, and its rule covers the
         // whole segment, so a tab or line feed at an edge is reported here rather than as white space.
@@ -330,8 +362,8 @@ public sealed class RouteTemplate
         if (ContainsLoneSurrogate(segment))
             return "contains a lone surrogate, which is not valid UTF-16";
 
-        if (parameterName is not null)
-            return FindParameterNameProblem(parameterName);
+        if (parameter is { } found)
+            return FindParameterProblem(found);
 
         // Checked before braces, so that a space next to an otherwise valid parameter, as in ' {id}', is reported as
         // the white space it is.
@@ -347,21 +379,47 @@ public sealed class RouteTemplate
         return null;
     }
 
-    private static string? FindParameterNameProblem(string name)
+    private static string? FindParameterProblem(ParameterText parameter)
     {
-        if (name.AsSpan().ContainsAny(':', '?', '*'))
-            return "contains ':', '?' or '*', which are not allowed in a parameter name";
+        // Checked first, across the name and the constraint, so that '{id?}' and '{id:int?}' are reported alike.
+        if (parameter.Name.AsSpan().ContainsAny('?', '*') || parameter.ConstraintText.AsSpan().ContainsAny('?', '*'))
+            return "contains '?' or '*', which are not allowed in a parameter";
 
-        if (name.Length == 0 || !(char.IsAsciiLetter(name[0]) || name[0] == '_'))
+        if (!IsParameterName(parameter.Name))
             return InvalidParameterName;
+
+        if (parameter.ConstraintText is not { } constraintText)
+            return null;
+
+        // The constraint is the text after the first ':', so '{id::int}' and '{id:int:}' have a constraint that is not
+        // empty but contains ':', and are reported as the extra ':' rather than as an empty or unknown constraint.
+        if (constraintText.Contains(':', StringComparison.Ordinal))
+            return "contains more than one ':'; a parameter is written '{name}' or '{name:constraint}'";
+
+        if (constraintText.Length == 0)
+            return "has no constraint after ':'; a parameter is written '{name}' or '{name:constraint}'";
+
+        if (parameter.Constraint is null)
+        {
+            return $"has an unknown constraint '{constraintText}'; the supported constraints are " +
+                $"{RouteConstraint.SupportedNames}, ignoring case";
+        }
+
+        return null;
+    }
+
+    private static bool IsParameterName(string name)
+    {
+        if (name.Length == 0 || !(char.IsAsciiLetter(name[0]) || name[0] == '_'))
+            return false;
 
         for (var i = 1; i < name.Length; i++)
         {
             if (!(char.IsAsciiLetterOrDigit(name[i]) || name[i] == '_'))
-                return InvalidParameterName;
+                return false;
         }
 
-        return null;
+        return true;
     }
 
     private static bool ContainsControlCharacter(string segment)
@@ -403,13 +461,18 @@ public sealed class RouteTemplate
         return path.Split('/', StringSplitOptions.RemoveEmptyEntries);
     }
 
+    // A parameter segment's text, split at the first ':' into the name and, when there is a ':', the constraint text,
+    // with the built-in constraint that the text names, or null when it names none.
+    private readonly record struct ParameterText(string Name, string? ConstraintText, RouteConstraint? Constraint);
+
     private readonly struct Segment
     {
-        private Segment(string text, string encodedText, bool isParameter)
+        private Segment(string text, string encodedText, bool isParameter, RouteConstraint? constraint)
         {
             Text = text;
             EncodedText = encodedText;
             IsParameter = isParameter;
+            Constraint = constraint;
         }
 
         // A literal's decoded text, which path segments are compared with, or a parameter's name.
@@ -420,14 +483,25 @@ public sealed class RouteTemplate
 
         public bool IsParameter { get; }
 
+        // A parameter's constraint; null for a literal or a parameter without one.
+        public RouteConstraint? Constraint { get; }
+
         public static Segment Literal(string text)
         {
-            return new Segment(text, Uri.EscapeDataString(text), false);
+            return new Segment(text, Uri.EscapeDataString(text), false, null);
         }
 
-        public static Segment Parameter(string name)
+        public static Segment Parameter(string name, RouteConstraint? constraint)
         {
-            return new Segment(name, string.Empty, true);
+            return new Segment(name, string.Empty, true, constraint);
+        }
+
+        // Whether a decoded path segment can stand in this segment's position.
+        public bool Accepts(string decoded)
+        {
+            return IsParameter
+                ? Constraint is null || Constraint.IsSatisfiedBy(decoded)
+                : StringComparer.Ordinal.Equals(Text, decoded);
         }
     }
 }

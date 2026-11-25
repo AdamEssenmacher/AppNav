@@ -9,12 +9,16 @@ public sealed class RouteTemplateTests
     // A short phrase that identifies each kind of rejection, so that tests pin which check reported a segment.
     private const string ControlCharacter = "control character";
     private const string InvalidParameterName = "invalid parameter name";
-    private const string ReservedInAParameterName = "not allowed in a parameter name";
+    private const string ReservedInAParameter = "not allowed in a parameter";
     private const string BraceOutsideAParameter = "outside a parameter";
     private const string EdgeWhiteSpace = "white space";
     private const string QuestionMarkOrHash = "'?' or '#'";
     private const string RepeatedName = "repeats the name";
     private const string LoneSurrogate = "lone surrogate";
+    private const string NoConstraint = "no constraint after ':'";
+    private const string MoreThanOneColon = "more than one ':'";
+    private const string UnknownConstraint = "unknown constraint";
+    private const string SupportedConstraints = "'int', 'long', 'decimal', 'bool', 'guid' and 'alpha'";
 
     [Theory]
     [InlineData("/")]
@@ -486,29 +490,124 @@ public sealed class RouteTemplateTests
     [InlineData("/{ }", "{ }", EdgeWhiteSpace)]
     [InlineData("/{ id }", "{ id }", EdgeWhiteSpace)]
     [InlineData("/{a b}", "{a b}", BraceOutsideAParameter)]
-    [InlineData("/{1a}", "{1a}", ReservedInAParameterName)]
-    [InlineData("/{a-b}", "{a-b}", ReservedInAParameterName)]
-    [InlineData("/{a.b}", "{a.b}", ReservedInAParameterName)]
-    [InlineData("/{é}", "{é}", ReservedInAParameterName)]
-    [InlineData("/{café}", "{café}", ReservedInAParameterName)]
-    [InlineData("/{%41}", "{%41}", ReservedInAParameterName)]
+    [InlineData("/{1a}", "{1a}", ReservedInAParameter)]
+    [InlineData("/{a-b}", "{a-b}", ReservedInAParameter)]
+    [InlineData("/{a.b}", "{a.b}", ReservedInAParameter)]
+    [InlineData("/{é}", "{é}", ReservedInAParameter)]
+    [InlineData("/{café}", "{café}", ReservedInAParameter)]
+    [InlineData("/{%41}", "{%41}", ReservedInAParameter)]
+    [InlineData("/{:}", "{:}", ReservedInAParameter)]
+    [InlineData("/{:int}", "{:int}", ReservedInAParameter)]
+    [InlineData("/{1:a}", "{1:a}", ReservedInAParameter)]
+    [InlineData("/{1:int}", "{1:int}", UnknownConstraint)]
+    [InlineData("/{ id :int}", "{ id :int}", EdgeWhiteSpace)]
+    [InlineData("/{a-b:slug}", "{a-b:slug}", UnknownConstraint)]
     public void ParseRejectsAnInvalidParameterName(string value, string segment, string notCategory)
     {
         AssertRejectsSegment(value, segment, InvalidParameterName, notCategory);
     }
 
     [Theory]
-    [InlineData("/products/{id:int}", "{id:int}")]
     [InlineData("/products/{id?}", "{id?}")]
     [InlineData("/files/{*rest}", "{*rest}")]
-    [InlineData("/{:}", "{:}")]
-    [InlineData("/{1:a}", "{1:a}")]
-    public void ParseRejectsAColonQuestionMarkOrAsteriskInAParameterName(string value, string segment)
+    [InlineData("/{?}", "{?}")]
+    [InlineData("/{*}", "{*}")]
+    [InlineData("/{1?}", "{1?}")]
+    [InlineData("/products/{id:int?}", "{id:int?}")]
+    [InlineData("/products/{id?:int}", "{id?:int}")]
+    [InlineData("/files/{rest:*}", "{rest:*}")]
+    [InlineData("/files/{*rest:alpha}", "{*rest:alpha}")]
+    [InlineData("/{id:slug?}", "{id:slug?}")]
+    [InlineData("/{id:?}", "{id:?}")]
+    public void ParseRejectsAQuestionMarkOrAsteriskInAParameter(string value, string segment)
     {
         ArgumentException exception =
-            AssertRejectsSegment(value, segment, ReservedInAParameterName, notCategory: InvalidParameterName);
+            AssertRejectsSegment(value, segment, ReservedInAParameter, notCategory: InvalidParameterName);
 
         Assert.DoesNotContain(QuestionMarkOrHash, exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(UnknownConstraint, exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("/products/{id:}", "{id:}")]
+    [InlineData("/{id:}/details", "{id:}")]
+    [InlineData("/{_:}", "{_:}")]
+    public void ParseRejectsAColonWithNoConstraintAfterIt(string value, string segment)
+    {
+        ArgumentException exception =
+            AssertRejectsSegment(value, segment, NoConstraint, notCategory: UnknownConstraint);
+
+        Assert.DoesNotContain(InvalidParameterName, exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(MoreThanOneColon, exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("/products/{id:int:long}", "{id:int:long}")]
+    [InlineData("/{id::int}", "{id::int}")]
+    [InlineData("/{id:int:}", "{id:int:}")]
+    [InlineData("/{id:int:int}", "{id:int:int}")]
+    [InlineData("/{id:slug:int}", "{id:slug:int}")]
+    [InlineData("/{id:::}", "{id:::}")]
+    public void ParseRejectsMoreThanOneColonInAParameter(string value, string segment)
+    {
+        ArgumentException exception =
+            AssertRejectsSegment(value, segment, MoreThanOneColon, notCategory: UnknownConstraint);
+
+        Assert.DoesNotContain(InvalidParameterName, exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(NoConstraint, exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("/products/{id:slug}", "{id:slug}", "slug")]
+    [InlineData("/{id: int}", "{id: int}", " int")]
+    [InlineData("/{id:int }", "{id:int }", "int ")]
+    [InlineData("/{id:in t}", "{id:in t}", "in t")]
+    [InlineData("/{id:integer}", "{id:integer}", "integer")]
+    [InlineData("/{id:in}", "{id:in}", "in")]
+    [InlineData("/{id:Int32}", "{id:Int32}", "Int32")]
+    [InlineData("/{id:%69nt}", "{id:%69nt}", "%69nt")]
+    [InlineData("/{id:\u0130NT}", "{id:\u0130NT}", "\u0130NT")]
+    [InlineData("/{id:\u0131nt}", "{id:\u0131nt}", "\u0131nt")]
+    [InlineData("/{id:\uFF49nt}", "{id:\uFF49nt}", "\uFF49nt")]
+    [InlineData("/{id:\u212Aey}", "{id:\u212Aey}", "\u212Aey")]
+    [InlineData("/{id:in\u00ADt}", "{id:in\u00ADt}", "in\u00ADt")]
+    [InlineData("/{id:in\u200Bt}", "{id:in\u200Bt}", "in\u200Bt")]
+    public void ParseRejectsAnUnknownConstraint(string value, string segment, string constraint)
+    {
+        ArgumentException exception =
+            AssertRejectsSegment(value, segment, UnknownConstraint, notCategory: InvalidParameterName);
+
+        Assert.Contains($"unknown constraint '{constraint}'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains(SupportedConstraints, exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(MoreThanOneColon, exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("/{id:int}/{ID:guid}", "{ID:guid}", "{id}")]
+    [InlineData("/{id:int}/{ID}", "{ID}", "{id}")]
+    [InlineData("/{id}/{id:int}", "{id:int}", "{id}")]
+    public void ParseRejectsAConstrainedParameterNameUsedTwiceIgnoringCase(
+        string value,
+        string segment,
+        string earlierSegment)
+    {
+        ArgumentException exception =
+            AssertRejectsSegment(value, segment, RepeatedName, notCategory: UnknownConstraint);
+
+        Assert.Contains($"'{earlierSegment}'", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("/{id:int} ", "{id:int} ", EdgeWhiteSpace)]
+    [InlineData("/{id:int}x", "{id:int}x", BraceOutsideAParameter)]
+    [InlineData("/{id:{int}}", "{id:{int}}", BraceOutsideAParameter)]
+    [InlineData("/{id:in\tt}", "{id:in\\u0009t}", ControlCharacter)]
+    public void ParseReportsAConstrainedSegmentsOtherProblemsBeforeItsConstraint(
+        string value,
+        string segment,
+        string category)
+    {
+        AssertRejectsSegment(value, segment, category, notCategory: UnknownConstraint);
     }
 
     [Theory]
@@ -532,7 +631,7 @@ public sealed class RouteTemplateTests
     [InlineData("/a%20?", "a%20?")]
     public void ParseRejectsASegmentContainingAQuestionMarkOrHash(string value, string segment)
     {
-        AssertRejectsSegment(value, segment, QuestionMarkOrHash, notCategory: ReservedInAParameterName);
+        AssertRejectsSegment(value, segment, QuestionMarkOrHash, notCategory: ReservedInAParameter);
     }
 
     [Theory]
