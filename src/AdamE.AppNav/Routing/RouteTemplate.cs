@@ -212,35 +212,39 @@ public sealed class RouteTemplate
     {
         ArgumentNullException.ThrowIfNull(path);
 
-        string[] pathSegments = RouteText.SplitSegments(path);
+        var decodedCount = 0;
+        return Match(RouteText.SplitSegments(path), ref decodedCount);
+    }
+
+    // Matches a path already split into segments, decoding them in place. The segments before decodedCount are always
+    // decoded and the rest never are, so a route table can split a path once and share it between templates: no
+    // segment is decoded twice, however many templates are tried, and none is read undecoded.
+    internal IReadOnlyDictionary<string, string>? Match(string[] pathSegments, ref int decodedCount)
+    {
         if (pathSegments.Length < _requiredCount || (!_endsInCatchAll && pathSegments.Length > _segments.Length))
             return null;
 
         // The segments in the template's own positions; with a catch-all, those before it.
         int positionalCount = _endsInCatchAll ? _requiredCount : pathSegments.Length;
 
-        // Every positional segment is decoded in place and checked, against its literal or its parameter's constraint,
-        // before anything else is allocated, so a path that does not match allocates no dictionary.
+        // Every positional segment is checked, against its literal or its parameter's constraint, before anything
+        // else is allocated, so a path that does not match allocates no dictionary.
         for (var i = 0; i < positionalCount; i++)
         {
-            string decoded = Uri.UnescapeDataString(pathSegments[i]);
-            if (!_segments[i].Accepts(decoded))
+            if (!_segments[i].Accepts(Decode(pathSegments, ref decodedCount, i)))
                 return null;
-
-            pathSegments[i] = decoded;
         }
 
-        // The segments a catch-all captures are decoded in place too, and the path does not match when any of them, or
-        // any part a decoded '/' divides one into, is a dot segment, which Format could not write back.
+        // The path does not match when a segment a catch-all captures, or any part a decoded '/' divides one into, is
+        // a dot segment, which Format could not write back.
         var containsSlash = false;
         for (int i = positionalCount; i < pathSegments.Length; i++)
         {
-            string decoded = Uri.UnescapeDataString(pathSegments[i]);
+            string decoded = Decode(pathSegments, ref decodedCount, i);
             if (RouteText.HasDotSegmentPart(decoded))
                 return null;
 
             containsSlash |= decoded.Contains('/', StringComparison.Ordinal);
-            pathSegments[i] = decoded;
         }
 
         // Null when nothing is left, or only slashes decoded from '%2F', so that the catch-all has no entry.
@@ -503,6 +507,20 @@ public sealed class RouteTemplate
         }
 
         return foundKey is not null;
+    }
+
+    // Returns the decoded segment at index, first decoding in place every segment from decodedCount up to it, so that
+    // the segments before decodedCount are always decoded and the rest never are, in whatever order segments are
+    // asked for.
+    private static string Decode(string[] pathSegments, ref int decodedCount, int index)
+    {
+        while (decodedCount <= index)
+        {
+            pathSegments[decodedCount] = Uri.UnescapeDataString(pathSegments[decodedCount]);
+            decodedCount++;
+        }
+
+        return pathSegments[index];
     }
 
     // Joins the decoded segments from start on with '/', or returns null when there is nothing to join. A single
