@@ -239,31 +239,11 @@ public sealed class RouteTemplate
     // segment is decoded twice, however many templates are tried, and none is read undecoded.
     internal IReadOnlyDictionary<string, string>? Match(string[] pathSegments, ref int decodedCount)
     {
-        if (pathSegments.Length < _requiredCount || (!_endsInCatchAll && pathSegments.Length > _segments.Length))
+        if (!Matches(pathSegments, ref decodedCount, out bool containsSlash))
             return null;
 
         // The segments in the template's own positions; with a catch-all, those before it.
         int positionalCount = _endsInCatchAll ? _requiredCount : pathSegments.Length;
-
-        // Every positional segment is checked, against its literal or its parameter's constraint, before anything
-        // else is allocated, so a path that does not match allocates no dictionary.
-        for (var i = 0; i < positionalCount; i++)
-        {
-            if (!_segments[i].Accepts(Decode(pathSegments, ref decodedCount, i)))
-                return null;
-        }
-
-        // The path does not match when a segment a catch-all captures, or any part a decoded '/' divides one into, is
-        // a dot segment, which Format could not write back.
-        var containsSlash = false;
-        for (int i = positionalCount; i < pathSegments.Length; i++)
-        {
-            string decoded = Decode(pathSegments, ref decodedCount, i);
-            if (RouteText.HasDotSegmentPart(decoded))
-                return null;
-
-            containsSlash |= decoded.Contains('/', StringComparison.Ordinal);
-        }
 
         // Null when nothing is left, or only slashes decoded from '%2F', so that the catch-all has no entry.
         string? rest = _endsInCatchAll ? CaptureRemaining(pathSegments, positionalCount, containsSlash) : null;
@@ -288,6 +268,47 @@ public sealed class RouteTemplate
             values.Add(_segments[^1].Text, rest);
 
         return values;
+    }
+
+    // Whether the template matches a path already split into segments, decoding them in place as Match does, but
+    // without capturing anything, so that a route table can find which template a path selects without allocating.
+    // Match decides by this same method, so the two never disagree.
+    internal bool Matches(string[] pathSegments, ref int decodedCount)
+    {
+        return Matches(pathSegments, ref decodedCount, out _);
+    }
+
+    // containsSlash says whether a segment a catch-all captures decoded to text with a '/', which only capturing
+    // needs.
+    private bool Matches(string[] pathSegments, ref int decodedCount, out bool containsSlash)
+    {
+        containsSlash = false;
+        if (pathSegments.Length < _requiredCount || (!_endsInCatchAll && pathSegments.Length > _segments.Length))
+            return false;
+
+        // The segments in the template's own positions; with a catch-all, those before it.
+        int positionalCount = _endsInCatchAll ? _requiredCount : pathSegments.Length;
+
+        // Every positional segment is checked, against its literal or its parameter's constraint, before anything
+        // else is allocated, so a path that does not match allocates no dictionary.
+        for (var i = 0; i < positionalCount; i++)
+        {
+            if (!_segments[i].Accepts(Decode(pathSegments, ref decodedCount, i)))
+                return false;
+        }
+
+        // The path does not match when a segment a catch-all captures, or any part a decoded '/' divides one into, is
+        // a dot segment, which Format could not write back.
+        for (int i = positionalCount; i < pathSegments.Length; i++)
+        {
+            string decoded = Decode(pathSegments, ref decodedCount, i);
+            if (RouteText.HasDotSegmentPart(decoded))
+                return false;
+
+            containsSlash |= decoded.Contains('/', StringComparison.Ordinal);
+        }
+
+        return true;
     }
 
     // Compares which of two templates a route table tries first: negative when this one is, positive when the other

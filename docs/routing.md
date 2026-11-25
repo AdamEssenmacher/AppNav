@@ -621,6 +621,8 @@ There is no way to write an empty value. An empty string is not left out: a path
 - an optional parameter has a value although an earlier optional parameter is left out, as for `/a/{b?}/{c?}` with a value for `c` and none for `b`; or
 - a value has no text: a `double` or `float` that is NaN or infinite, or an enum value that no member has.
 
+It also throws `ArgumentException`, after all of these checks, when every value can be written but a template that ranks higher matches the path first, as [What a round trip promises](#what-a-round-trip-promises) describes.
+
 The message names the route type, the template and the parameter, and says what is wrong in fixed words, as in `The route type 'ProductRoute' cannot be written as a path by the template '/products/{name}': path parameter 'name' is required, but its value is null.` It never quotes the value, because a route can carry a secret, such as a sign-in token, and messages tend to be logged, and the exception has no inner exception that could. When more than one value cannot be written, which one is reported is not specified. An exception thrown by a value function propagates unchanged.
 
 Each value function is called at most once each time a route is formatted, in template order. After a value that cannot be written as text, or an exception from a value function, the later functions are not called.
@@ -629,9 +631,9 @@ Each value function is called at most once each time a route is formatted, in te
 
 #### What a round trip promises
 
-The template reads back what `Format` writes. Matching the path against the template of the mapping that wrote it gives every value that was written, and the typed read of the type a value function returns reads each text back to a value equal to the one written. So when the create function reads each parameter with that typed read and builds the route from the values as the format function reads them, which the table does not check, matching the path with that mapping gives a route equal to the one written. In the other direction, text that a typed read accepts is written back as its canonical text, and writing the route again changes nothing: `/orders/+007` matches as `OrderRoute { Id = 7 }`, which is written as `/orders/7`. The mapping that writes a route is the one of its exact type, so a mapping whose create function returns routes of several types derived from its route type creates routes that it does not write.
+When `Format` returns a path, `Match` of that path selects the mapping that wrote it, and the typed read of the type a value function returns reads each text back to a value equal to the one written. So the route that matches is equal to the one written, provided the create function reads each parameter with that typed read and builds the route from the values as the format function reads them, which the table cannot check. In the other direction, text that a typed read accepts is written back as its canonical text, and writing the route again changes nothing: `/orders/+007` matches as `OrderRoute { Id = 7 }`, which is written as `/orders/7`. The mapping that writes a route is the one of its exact type, so a mapping whose create function returns routes of several types derived from its route type creates routes that it does not write.
 
-What is not promised is that `Match` picks the same mapping. [Precedence](#which-route-wins) decides which template wins, and `Build` rejects only templates that rank equally, so a template that ranks higher can match the written path first:
+[Precedence](#which-route-wins) decides which template wins, and `Build` rejects only templates that rank equally, so a template that ranks higher can match a path that another template writes. `Format` does not return such a path. After writing it, `Format` finds the template that `Match` would select for it, by the templates and their constraints alone, without calling a create function, and throws `ArgumentException`, whose `ParamName` is `route`, when that is not the template of the mapping that wrote it:
 
 ```csharp
 RouteTable table = new RouteTableBuilder()
@@ -641,15 +643,35 @@ RouteTable table = new RouteTableBuilder()
         format => format.Path("name", r => r.Name))
     .Build();
 
-string path = table.Format(new ProductRoute("new"));                    // /products/new
-Console.WriteLine(table.Match(new Uri(path, UriKind.Relative)).Route); // NewProductRoute { }
+Console.WriteLine(table.Format(new ProductRoute("widget"))); // /products/widget
+Console.WriteLine(table.Format(new ProductRoute("NEW")));    // /products/NEW
+table.Format(new ProductRoute("new"));                       // throws ArgumentException
 
 public sealed record NewProductRoute : AppRoute;
 
 public sealed record ProductRoute(string Name) : AppRoute;
 ```
 
-When the two must not meet, give the parameter a constraint that the literal does not satisfy, such as `{id:int}` beside `/products/new`, or keep such values out of the routes the app writes.
+The template `/products/new` matches the path `/products/new` first, so a link written from it would not lead to the product: it would open `NewProductRoute`, or fail, were that mapping's create function to reject the value. The message names the route type and both templates: `The route type 'ProductRoute' cannot be written as a path by the template '/products/{name}': the path it writes is matched first by the template '/products/new', which ranks higher, so a link to it would be matched by that template instead. Change the templates so that they cannot match the same path, for example by constraining a parameter or by giving one of them a literal of its own.` Like every other `Format` failure, it never quotes the route's values or the path, and it has no inner exception. Literals are compared case-sensitively, so `NEW` is written. The same happens for a constraint the value satisfies, as for the name `42` beside `/products/{id:int}`, for an optional parameter left out, as for `/list/{page:int?}` with no page beside `/list`, and for a catch-all value that a longer template matches, as for `doc/edit` in `/files/{*path}` beside `/files/{name}/edit`. The template that matches first counts whether or not its mapping has a format function, and even when its mapping creates the same route type, because the table cannot know that the two create functions agree: with `/items/{id:int}`, mapped without a format function, beside `/items/{slug}`, which writes the same route type, the slug `42` cannot be written. This check comes after every other, and calls no value function.
+
+To fix the table, change the templates so that they cannot match the same path, for example by constraining a parameter or by giving one of them a literal of its own. With `/products/{id:int}` in place of `/products/{name}`, no value it writes is `new`. With `/products/by-name/{name}` in place of it, the two templates never match the same path, and `new` is written as `/products/by-name/new`.
+
+The promise is about `Match` of the returned text as a relative URI, `new Uri(path, UriKind.Relative)`, and of an absolute URI with that path except where `System.Uri` itself changes the path of an absolute URI. It does so in one case: it drops trailing `%20` sequences, as [What is read from a URI](#what-is-read-from-a-uri) describes. So a value that ends with a space, written last in the path, may be read back without it from an absolute link, and may then match another template:
+
+```csharp
+RouteTable table = new RouteTableBuilder()
+    .Map("/é/new", _ => new NewProductRoute())
+    .Map("/é/{name}",
+        c => new ProductRoute(c.Path("name")),
+        format => format.Path("name", r => r.Name))
+    .Build();
+
+string path = table.Format(new ProductRoute("new "));                  // /%C3%A9/new%20
+Console.WriteLine(table.Match(new Uri(path, UriKind.Relative)).Route); // ProductRoute { Name = new  }
+Console.WriteLine(table.Match(new Uri("https://app" + path)).Route);   // NewProductRoute { }
+```
+
+Without `/é/new` in the table, the absolute link matches `/é/{name}`, but reads the name back as `new`, without the space.
 
 ### Threads
 
