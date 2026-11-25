@@ -624,8 +624,13 @@ public sealed class RouteMatchContextTypedPathTests
                 AssertUnsupported(() => context.Path<nint>(name), "'IntPtr'");
                 AssertUnsupported(() => context.Path<DateTime>(name), "'DateTime'");
                 AssertUnsupported(() => context.Path<DateTime?>(name), "'DateTime?'");
-                AssertUnsupported(() => context.Path<DayOfWeek>(name), "'DayOfWeek'");
-                AssertUnsupported(() => context.Path<DayOfWeek?>(name), "'DayOfWeek?'");
+                AssertUnregistered(() => context.Path<DayOfWeek>(name), "'DayOfWeek'", "DayOfWeek");
+                AssertUnregistered(() => context.Path<DayOfWeek?>(name), "'DayOfWeek?'", "DayOfWeek");
+                AssertUnregistered(() => context.TryGetPath(name, out Status _), "'" + StatusName + "'", StatusName);
+                AssertUnregistered(
+                    () => context.TryGetPath(name, out Status? _),
+                    "'" + StatusName + "?'",
+                    StatusName);
                 AssertUnsupported(() => context.Path<List<int>>(name), "'List<Int32>'");
                 AssertUnsupported(() => context.Path<Dictionary<string, int?>>(name), "'Dictionary<String, Int32?>'");
                 AssertUnsupported(() => context.Path<object>(name), "'Object'");
@@ -641,6 +646,22 @@ public sealed class RouteMatchContextTypedPathTests
             AssertUnsupported(() => context.Path<Half>(null!), "'Half'");
             AssertUnsupported(() => context.Path<Int128?>(null!), "'Int128?'");
             AssertUnsupported(() => context.TryGetPath(null!, out nint _), "'IntPtr'");
+            AssertUnregistered(() => context.Path<DayOfWeek>(null!), "'DayOfWeek'", "DayOfWeek");
+            AssertUnregistered(() => context.TryGetPath(null!, out Status? _), "'" + StatusName + "?'", StatusName);
+        });
+    }
+
+    // Enum and ValueType are not enums themselves, so they get the general message, not the advice to register them.
+    [Fact]
+    public void TheBaseTypesOfAnEnumAreUnsupportedRatherThanUnregistered()
+    {
+        WithinEnums("/products/{id}", "/products/42", context =>
+        {
+            foreach (string name in new[] { "id", "missing" })
+            {
+                AssertNotAnEnum(() => context.Path<Enum>(name), "'Enum'");
+                AssertNotAnEnum(() => context.TryGetPath(name, out ValueType? _), "'ValueType'");
+            }
         });
     }
 
@@ -936,7 +957,389 @@ public sealed class RouteMatchContextTypedPathTests
             $"{type}: typed {typedBytes} bytes, parsed {parsedBytes} bytes");
     }
 
+    [Theory]
+    [InlineData("Pending", Status.Pending)]
+    [InlineData("pending", Status.Pending)]
+    [InlineData("PENDING", Status.Pending)]
+    [InlineData("pEnDiNg", Status.Pending)]
+    [InlineData("InProgress", Status.InProgress)]
+    [InlineData("inprogress", Status.InProgress)]
+    [InlineData("INPROGRESS", Status.InProgress)]
+    [InlineData("Shipped", Status.Shipped)]
+    [InlineData("Cancelled", Status.Cancelled)]
+    public void AnEnumIsTheMemberItsNameNamesInAnyCase(string text, Status expected)
+    {
+        AssertEnumCase<Status>(text, expected, "Status");
+    }
+
+    // Enum.TryParse accepts the numbers, the lists of names and the texts with white space among these; a registered
+    // enum accepts none of them.
+    [Theory]
+    [InlineData("0")]
+    [InlineData("2")]
+    [InlineData("-1")]
+    [InlineData("+2")]
+    [InlineData("99")]
+    [InlineData("0x1")]
+    [InlineData("1.0")]
+    [InlineData(" 2")]
+    [InlineData("Pending,Shipped")]
+    [InlineData("Pending, Shipped")]
+    [InlineData("Pending,")]
+    [InlineData(",Pending")]
+    [InlineData(" Pending")]
+    [InlineData("Pending ")]
+    [InlineData("\tPending")]
+    [InlineData("Pend ing")]
+    [InlineData("Pendingx")]
+    [InlineData("xPending")]
+    [InlineData("In-Progress")]
+    [InlineData("in_progress")]
+    [InlineData("Status.Pending")]
+    [InlineData("None")]
+    [InlineData("Pend\u0131ng")]
+    [InlineData("PEND\u0130NG")]
+    [InlineData("\u0130nProgress")]
+    [InlineData("\u0131nProgress")]
+    public void AnEnumRejectsEveryTextButTheNameOfAMember(string text)
+    {
+        AssertEnumCase<Status>(text, null, "Status");
+    }
+
+    // Case is ignored ordinally, so a culture whose casing rules differ, such as Turkish, changes nothing.
+    [Fact]
+    public void AnEnumNameIsComparedTheSameWayInEveryCulture()
+    {
+        CultureInfo original = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("tr-TR");
+            AssertEnumCase<Status>("PENDING", Status.Pending, "Status");
+            AssertEnumCase<Status>("inprogress", Status.InProgress, "Status");
+            AssertEnumCase<Status>("PEND\u0130NG", null, "Status");
+            AssertEnumCase<Status>("\u0131nprogress", null, "Status");
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = original;
+        }
+    }
+
+    [Theory]
+    [InlineData("Cancelled")]
+    [InlineData("Canceled")]
+    [InlineData("CANCELED")]
+    public void EveryNameOfAValueGivesThatValue(string text)
+    {
+        AssertEnumCase<Status>(text, Status.Cancelled, "Status");
+    }
+
+    [Theory]
+    [InlineData("None", Access.None)]
+    [InlineData("Read", Access.Read)]
+    [InlineData("write", Access.Write)]
+    [InlineData("READWRITE", Access.ReadWrite)]
+    [InlineData("Admin", Access.Admin)]
+    public void AFlagsEnumIsReadFromTheNameOfASingleMember(string text, Access expected)
+    {
+        AssertEnumCase<Access>(text, expected, "Access");
+    }
+
+    [Theory]
+    [InlineData("Read,Write")]
+    [InlineData("Read, Write")]
+    [InlineData("Read|Write")]
+    [InlineData("Read Write")]
+    [InlineData("Read,Admin")]
+    [InlineData("3")]
+    [InlineData("5")]
+    public void AFlagsEnumRejectsACombination(string text)
+    {
+        AssertEnumCase<Access>(text, null, "Access");
+    }
+
+    [Fact]
+    public void AnEnumOfAnyUnderlyingTypeIsReadByTheNamesOfItsMembers()
+    {
+        AssertEnumCase<Level>("low", Level.Low, "Level");
+        AssertEnumCase<Level>("High", Level.High, "Level");
+        AssertEnumCase<Level>("255", null, "Level");
+        AssertEnumCase<Offset>("Min", Offset.Min, "Offset");
+        AssertEnumCase<Offset>("MAX", Offset.Max, "Offset");
+        AssertEnumCase<Offset>("-9223372036854775808", null, "Offset");
+        AssertEnumCase<Huge>("top", Huge.Top, "Huge");
+        AssertEnumCase<Huge>("AboveLong", Huge.AboveLong, "Huge");
+        AssertEnumCase<Huge>("18446744073709551615", null, "Huge");
+        AssertEnumCase<Huge>("9223372036854775808", null, "Huge");
+    }
+
+    [Theory]
+    [InlineData("Nothing")]
+    [InlineData("None")]
+    [InlineData("0")]
+    [InlineData("x")]
+    public void AnEnumWithNoMembersRejectsEveryText(string text)
+    {
+        AssertEnumCase<Nothing>(text, null, "Nothing");
+    }
+
+    [Fact]
+    public void AnEnumThePathLeavesOutIsAbsent()
+    {
+        WithinEnums("/orders/{id}/{status?}", "/orders/1", context =>
+        {
+            AssertAbsent(() => context.Path<Status>("status"));
+            AssertAbsent(() => context.Path<Status?>("status"));
+            Assert.False(context.TryGetPath("status", out Status status));
+            Assert.Equal(default, status);
+            Assert.False(context.TryGetPath("status", out Status? nullable));
+            Assert.Null(nullable);
+        });
+
+        WithinEnums("/orders/{id}/{status?}", "/orders/1/shipped", context =>
+        {
+            Assert.True(context.TryGetPath("status", out Status? status));
+            Assert.Equal(Status.Shipped, status);
+        });
+    }
+
+    [Fact]
+    public void AnEnumReadRejectsANullNameOnceTheEnumIsRegistered()
+    {
+        WithinEnums("/orders/{status}", "/orders/pending", context =>
+        {
+            Assert.Equal("name", Assert.Throws<ArgumentNullException>(() => context.Path<Status>(null!)).ParamName);
+            Assert.Equal(
+                "name",
+                Assert.Throws<ArgumentNullException>(() => context.TryGetPath(null!, out Status? _)).ParamName);
+        });
+    }
+
+    // A table knows only the enums registered on its own builder, whatever other enums that builder registered.
+    [Fact]
+    public void AnEnumThatIsNotRegisteredIsAProgrammingErrorThatEscapesMatch()
+    {
+        RouteTable table = new RouteTableBuilder()
+            .AddEnumValueCodec<Access>()
+            .Map("/orders/{status}", c => new ProductRoute(c.Path<Status>("status").ToString()))
+            .Build();
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(
+            () => table.Match(new Uri("/orders/pending", UriKind.Relative)));
+
+        Assert.Contains("AddEnumValueCodec", exception.Message, StringComparison.Ordinal);
+    }
+
+    // The message for a value that is not valid names the enum by its simple name, as the built-in types are named by
+    // their keywords; the message for an enum that is not registered names it as written in code, with the types it is
+    // declared in, so that it can be found.
+    [Fact]
+    public void ANestedEnumIsNamedSimplyForAValueAndFullyForARegistration()
+    {
+        WithinEnums("/{v}", "/x", context =>
+        {
+            RouteValueException invalid = Assert.Throws<RouteValueException>(() => context.Path<Status>("v"));
+            Assert.EndsWith(" Status.", invalid.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain(nameof(RouteMatchContextTypedPathTests), invalid.Message, StringComparison.Ordinal);
+        });
+
+        Within("/{v}", "/x", context =>
+        {
+            AssertUnregistered(() => context.Path<Status>("v"), "'" + StatusName + "'", StatusName);
+        });
+    }
+
+    [Fact]
+    public void ANameThatIsNotAMemberFailsTheMatchAndNoLaterTemplateIsTried()
+    {
+        var laterCalled = false;
+        RouteTable table = new RouteTableBuilder()
+            .AddEnumValueCodec<Status>()
+            .Map("/orders/{status}", c => new ProductRoute(c.Path<Status>("status").ToString()))
+            .Map("/{*rest}", _ =>
+            {
+                laterCalled = true;
+                return new SettingsRoute();
+            })
+            .Build();
+
+        RouteMatchResult result = table.Match(new Uri("/orders/2", UriKind.Relative));
+
+        Assert.False(result.IsSuccess);
+        Assert.Null(result.Route);
+        Assert.Equal("/orders/{status}", result.Definition?.Template.Value);
+        RouteDiagnostic diagnostic = Assert.Single(result.Diagnostics);
+        Assert.Equal(RouteDiagnosticCodes.ValueInvalid, diagnostic.Code);
+        Assert.Equal("status", diagnostic.Data["name"]);
+        Assert.Contains(PathValue, (string?)diagnostic.Data["reason"], StringComparison.Ordinal);
+        Assert.EndsWith(" Status.", (string?)diagnostic.Data["reason"], StringComparison.Ordinal);
+        Assert.False(laterCalled);
+
+        Assert.Equal(new ProductRoute("Shipped"), table.Match(new Uri("/orders/SHIPPED", UriKind.Relative)).Route);
+    }
+
+    [Theory]
+    [InlineData("enum")]
+    [InlineData("enum?")]
+    [InlineData("try enum")]
+    [InlineData("try enum?")]
+    public void AnEnumReadThatFailsNeverQuotesTheValue(string type)
+    {
+        RouteValueException? thrown = null;
+        RouteTable table = new RouteTableBuilder()
+            .AddEnumValueCodec<Status>()
+            .Map("/orders/{id}", c =>
+            {
+                try
+                {
+                    _ = type switch
+                    {
+                        "enum" => c.Path<Status>("id").ToString(),
+                        "enum?" => c.Path<Status?>("id").ToString(),
+                        "try enum" => c.TryGetPath("id", out Status s).ToString() + s,
+                        _ => c.TryGetPath("id", out Status? n).ToString() + n,
+                    };
+                }
+                catch (RouteValueException exception)
+                {
+                    thrown = exception;
+                    throw;
+                }
+
+                return new SettingsRoute();
+            })
+            .Build();
+
+        RouteMatchResult result = table.Match(new Uri($"/orders/{Secret}?k=1", UriKind.Relative));
+
+        Assert.NotNull(thrown);
+        Assert.Equal("id", thrown.ValueName);
+        Assert.Null(thrown.InnerException);
+        Assert.Contains(NotValid, thrown.Message, StringComparison.Ordinal);
+        Assert.Contains(PathValue, thrown.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(Secret, thrown.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(Secret, thrown.ToString(), StringComparison.Ordinal);
+
+        RouteDiagnostic diagnostic = Assert.Single(result.Diagnostics);
+        Assert.DoesNotContain(Secret, diagnostic.Message, StringComparison.Ordinal);
+        foreach ((string key, object? value) in diagnostic.Data)
+        {
+            if (key != "path")
+                Assert.DoesNotContain(Secret, (string?)value, StringComparison.Ordinal);
+        }
+
+        Assert.Contains(Secret, (string?)diagnostic.Data["path"], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void NoConstraintIsNamedAfterEnums()
+    {
+        RouteTableBuilder builder = new RouteTableBuilder().AddEnumValueCodec<Status>();
+
+        ArgumentException exception = Assert.Throws<ArgumentException>(
+            () => builder.Map("/orders/{status:enum}", _ => new SettingsRoute()));
+
+        Assert.Equal("template", exception.ParamName);
+        Assert.Contains("unknown constraint 'enum'", exception.Message, StringComparison.Ordinal);
+        Assert.Null(RouteConstraint.Find("enum"));
+    }
+
+    // An enum read must cost no more than the string read of the same value: the name table gives the value without a
+    // box, which would be at least a pointer per read and is more than the bound allows in all.
+    [Theory]
+    [InlineData("enum", "Shipped")]
+    [InlineData("enum?", "shipped")]
+    [InlineData("try enum", "SHIPPED")]
+    [InlineData("try enum?", "Shipped")]
+    [InlineData("long enum", "max")]
+    public void AnEnumReadAllocatesNoMoreThanTheStringRead(string type, string text)
+    {
+        const int Reads = 16;
+        Func<RouteMatchContext, int> enumRead = type switch
+        {
+            "enum" => c => (int)c.Path<Status>("id"),
+            "enum?" => c => (int)c.Path<Status?>("id")!.Value,
+            "try enum" => c => c.TryGetPath("id", out Status value) ? (int)value : 0,
+            "long enum" => c => (int)c.Path<Offset>("id"),
+            _ => c => c.TryGetPath("id", out Status? value) ? (int)value!.Value : 0,
+        };
+
+        long enumBytes = AllocatedBytesPerMatch(ReadingTable(enumRead, Reads, EnumBuilder()), text);
+        long stringBytes = AllocatedBytesPerMatch(ReadingTable(c => c.Path("id").Length, Reads, EnumBuilder()), text);
+
+        Assert.True(
+            enumBytes - stringBytes < Reads * IntPtr.Size,
+            $"{type}: enum {enumBytes} bytes, string {stringBytes} bytes");
+    }
+
+    // A built-in type is decided by its typeof tests before the codecs are looked at, so registrations cost its reads
+    // nothing.
+    [Fact]
+    public void ABuiltInReadAllocatesNoMoreOnATableWithRegistrations()
+    {
+        const int Reads = 16;
+        Func<RouteMatchContext, int> read =
+            c => c.Path<int>("id") + (c.TryGetPath("id", out long? n) ? (int)n!.Value : 0);
+
+        long withBytes = AllocatedBytesPerMatch(ReadingTable(read, Reads, EnumBuilder()), "42");
+        long withoutBytes = AllocatedBytesPerMatch(ReadingTable(read, Reads), "42");
+
+        Assert.True(withBytes - withoutBytes < IntPtr.Size, $"with {withBytes} bytes, without {withoutBytes} bytes");
+    }
+
+    // The name of Status as the message for an enum that is not registered gives it.
+    private const string StatusName = nameof(RouteMatchContextTypedPathTests) + ".Status";
+
     private static CultureInfo Invariant => CultureInfo.InvariantCulture;
+
+    // A builder with every enum of these tests registered.
+    private static RouteTableBuilder EnumBuilder()
+    {
+        return new RouteTableBuilder()
+            .AddEnumValueCodec<Status>()
+            .AddEnumValueCodec<Access>()
+            .AddEnumValueCodec<Level>()
+            .AddEnumValueCodec<Offset>()
+            .AddEnumValueCodec<Huge>()
+            .AddEnumValueCodec<Nothing>();
+    }
+
+    // The text read as T and as T? by both methods, on a table that registers the enums: its value, or rejected
+    // naming the type.
+    private static void AssertEnumCase<T>(string text, T? expected, string typeName)
+        where T : struct, Enum
+    {
+        WithinEnums("/{v}", "/" + Uri.EscapeDataString(text), context =>
+        {
+            if (expected is { } value)
+            {
+                Assert.Equal(value, context.Path<T>("v"));
+                Assert.Equal(value, context.Path<T?>("v"));
+                Assert.True(context.TryGetPath("v", out T read), text);
+                Assert.Equal(value, read);
+                Assert.True(context.TryGetPath("v", out T? nullable), text);
+                Assert.Equal(value, nullable);
+            }
+            else
+            {
+                AssertInvalid(() => context.Path<T>("v"), "v", typeName);
+                AssertInvalid(() => context.Path<T?>("v"), "v", typeName);
+                AssertInvalid(() => context.TryGetPath("v", out T _), "v", typeName);
+                AssertInvalid(() => context.TryGetPath("v", out T? _), "v", typeName);
+            }
+        });
+    }
+
+    private static void AssertUnregistered(Action read, string typeName, string enumName)
+    {
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(read);
+
+        Assert.Contains(PathValue, exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(Unsupported, exception.Message, StringComparison.Ordinal);
+        Assert.Contains("not registered", exception.Message, StringComparison.Ordinal);
+        Assert.Contains($"AddEnumValueCodec<{enumName}>", exception.Message, StringComparison.Ordinal);
+        Assert.Contains(typeName, exception.Message, StringComparison.Ordinal);
+    }
 
     private static void AssertEquivalent<T>(string constraint, Func<string, T> parse)
     {
@@ -1261,13 +1664,23 @@ public sealed class RouteMatchContextTypedPathTests
         Assert.Contains(Unsupported, exception.Message, StringComparison.Ordinal);
         Assert.Contains("nullable", exception.Message, StringComparison.Ordinal);
         Assert.Contains("read the value as a string", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("any enum registered with", exception.Message, StringComparison.Ordinal);
         Assert.Contains(typeName, exception.Message, StringComparison.Ordinal);
     }
 
-    // A table whose create function reads the value of id the given number of times.
-    private static RouteTable ReadingTable(Func<RouteMatchContext, int> read, int reads)
+    private static void AssertNotAnEnum(Action read, string typeName)
     {
-        return new RouteTableBuilder()
+        AssertUnsupported(read, typeName);
+        Assert.DoesNotContain("not registered", Assert.Throws<InvalidOperationException>(read).Message);
+    }
+
+    // A table whose create function reads the value of id the given number of times.
+    private static RouteTable ReadingTable(
+        Func<RouteMatchContext, int> read,
+        int reads,
+        RouteTableBuilder? builder = null)
+    {
+        return (builder ?? new RouteTableBuilder())
             .Map("/orders/{id}", c =>
             {
                 var sum = 0;
@@ -1320,12 +1733,21 @@ public sealed class RouteMatchContextTypedPathTests
         return result;
     }
 
+    private static void WithinEnums(string template, string uri, Action<RouteMatchContext> check)
+    {
+        Within(template, uri, check, EnumBuilder());
+    }
+
     // Runs the checks inside the create function, because a context is valid only during that call; an assertion
     // that fails there propagates out of Match unchanged.
-    private static void Within(string template, string uri, Action<RouteMatchContext> check)
+    private static void Within(
+        string template,
+        string uri,
+        Action<RouteMatchContext> check,
+        RouteTableBuilder? builder = null)
     {
         var called = false;
-        RouteTable table = new RouteTableBuilder()
+        RouteTable table = (builder ?? new RouteTableBuilder())
             .Map(template, c =>
             {
                 check(c);
@@ -1345,4 +1767,47 @@ public sealed class RouteMatchContextTypedPathTests
 
         public sealed class Inner2<TInner>;
     }
+
+    // Cancelled and Canceled are two names for one value, and that value is negative, which Enum.TryParse would accept
+    // as -1.
+    public enum Status
+    {
+        Pending,
+        InProgress,
+        Shipped,
+        Cancelled = -1,
+        Canceled = -1,
+    }
+
+    [Flags]
+    public enum Access
+    {
+        None = 0,
+        Read = 1,
+        Write = 2,
+        ReadWrite = Read | Write,
+        Admin = 4,
+    }
+
+    private enum Level : byte
+    {
+        Low = 1,
+        High = 255,
+    }
+
+    private enum Offset : long
+    {
+        Min = long.MinValue,
+        Max = long.MaxValue,
+    }
+
+    // AboveLong is beyond the range of long, so a value that only ulong holds is read from its name.
+    private enum Huge : ulong
+    {
+        Small = 1,
+        AboveLong = 9223372036854775808,
+        Top = ulong.MaxValue,
+    }
+
+    private enum Nothing;
 }

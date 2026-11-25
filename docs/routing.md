@@ -260,7 +260,7 @@ A create function reads the query of the URI with `TryGetQuery(name, out value)`
 - Names are compared ordinally without regard to case, as path parameter names are.
 - `TryGetQuery` gives the first value when a name repeats, so `?tab=a&tab=b` gives `a`. That is what a browser's `URLSearchParams.get` and most web frameworks return, so the app and a web page handling the same link agree on which value they read; code that needs every value uses `GetQueryValues`. Names that differ only by case are one name here, unlike in a browser, so `?Tab=x&tab=y` gives `x`. `TryGetQuery` gives the empty string for a name with no value, as in `?flag` or `?flag=`. It returns `false` with `null` when the query does not have the name, and never throws for a missing value.
 - `GetQueryValues` gives every value of a name in order, including repeated and empty values, and an empty list when there are none. The list cannot be changed.
-- `TryGetQuery<T>` and `GetQueryValues<T>` read values as numbers, `bool` or `Guid`, as described in [Typed query values](#typed-query-values).
+- `TryGetQuery<T>` and `GetQueryValues<T>` read values as numbers, `bool`, `Guid` or a registered enum, as described in [Typed query values](#typed-query-values).
 
 The query is read and parsed only when a create function first asks for a value, at most once per match, so a URI that matches nothing, and a route that reads no query values, pay nothing for the query. Nothing limits the size of a query, and the cost of reading it grows linearly with its length. `System.Uri` itself accepts a query of a million characters, absolute or relative, so an app that receives links from outside should bound their length before calling `Match`; nothing else does. Like the path, the query can carry a secret, so it never appears in a diagnostic.
 
@@ -337,7 +337,7 @@ When a template matches, its create function is called once with a `RouteMatchCo
 
 - `Path(name)` returns a captured value, decoded, and throws `KeyNotFoundException` when the template has no such parameter or it is an [optional](#optional-parameters) or [catch-all](#catch-all-parameters) parameter that the path left out. Use it for a required parameter.
 - `TryGetPath(name, out value)` returns `true` with the value when the path has one, and `false` with `null` in the cases where `Path` throws. Use it for an optional or catch-all parameter, as in `c.TryGetPath("tab", out string? tab) ? tab : null`.
-- `Path<T>(name)` and `TryGetPath<T>(name, out value)` read a value as a number, `bool` or `Guid`, as described in [Typed values](#typed-values).
+- `Path<T>(name)` and `TryGetPath<T>(name, out value)` read a value as a number, `bool`, `Guid` or a registered enum, as described in [Typed values](#typed-values).
 - Names are compared without regard to case.
 - `PathValues` is the dictionary `RouteTemplate.Match` returned. Treat it as read-only.
 - `TryGetQuery(name, out value)` and `GetQueryValues(name)` read the query, as described in [Query values](#query-values), and `TryGetQuery<T>(name, out value)` and `GetQueryValues<T>(name)` read query values as typed values, as described in [Typed query values](#typed-query-values).
@@ -347,7 +347,7 @@ An exception the create function throws propagates out of `Match` unchanged, and
 
 ### Typed values
 
-`Path<T>(name)` and `TryGetPath<T>(name, out value)` read a captured value as one of these types: `string`, `bool`, `Guid`, `decimal`, `double`, `float` and the integer types `sbyte`, `byte`, `short`, `ushort`, `int`, `uint`, `long` and `ulong`, and the nullable form of each of them but `string`, such as `int?`. A `string` is the captured text unchanged. The others follow these rules, which are the same in every culture and apply to the text exactly as captured, without trimming:
+`Path<T>(name)` and `TryGetPath<T>(name, out value)` read a captured value as one of these types: `string`, `bool`, `Guid`, `decimal`, `double`, `float`, the integer types `sbyte`, `byte`, `short`, `ushort`, `int`, `uint`, `long` and `ulong`, any enum registered on the builder as described in [Enum values](#enum-values), and the nullable form of each of them but `string`, such as `int?`. A `string` is the captured text unchanged. The others, apart from enums, follow these rules, which are the same in every culture and apply to the text exactly as captured, without trimming:
 
 - `int`, `long`, `decimal`, `bool` and `Guid`: a value converts exactly when it satisfies the [built-in constraint](#constraints) of the same name, by the same rule, so `Path<int>` accepts exactly the text that `{id:int}` accepts, and `Path<Guid>` only the hyphenated form that `{id:guid}` accepts.
 - The other integer types follow the rule of `int` within their own range: an optional `+` or `-` followed by one or more ASCII digits, leading zeros allowed, whose value the type can hold. `300` is not a `byte` and `-1` is not a `uint`, but `-0` and `+5` are, as they are for `int`.
@@ -386,11 +386,61 @@ public sealed record ListRoute(int? Page) : AppRoute;
 
 With the constraint of the same name in the template, such as `{id:int}` read with `Path<int>`, the conversion cannot fail, because a value that does not satisfy the constraint never reaches the create function. A different constraint does not give that guarantee: `{id:long}` read with `Path<int>` lets `/3000000000` through, and `{id:int}` read with `Path<bool>` lets `/1` through, and each then fails the match. No constraint is named after the other number types: a template with `{n:byte}` or `{n:double}` is not valid. Use `{n:int}`, `{n:long}` or `{n:decimal}`, or no constraint, and let the typed read check the range: `{n:long}` read with `Path<byte>` lets `/300` through, which then fails the match. Choose a constraint at least as wide as the type, or none: `{n:long}` with `Path<ulong>` makes a URI with a value above 9223372036854775807 fail to match the template at all rather than reach the read, so for `ulong` use `{n:decimal}` or no constraint. A wider constraint only widens the range, it does not check the type: `{n:decimal}` read with `Path<ulong>` also lets `/1.5` and `/-1` through, and each then fails the match, with no other template tried. Every value that `{n:decimal}` accepts converts to `float` and `double`, rounded, since their range is larger. Without a constraint, a value that does not convert fails the match for that URI, and no other template is tried, even one that would also match the path. The exception's `ValueName` is the name the create function passed, and its message names the parameter and the type, as in `The path value of 'id' is not a valid int.`, but never quotes the value, which can carry a secret from the URI.
 
-Other types, such as `Int128`, `Half`, `char`, `DateTime`, enums, and their nullable forms, are not supported in this version. Using one throws `InvalidOperationException` whether or not the path has the value, and it propagates out of `Match`, since it is a mistake in the app rather than in the URI.
+Other types, such as `Int128`, `Half`, `char` and `DateTime`, and their nullable forms, are not supported in this version, and neither is an enum that is not registered. Using one throws `InvalidOperationException` whether or not the path has the value, and it propagates out of `Match`, since it is a mistake in the app rather than in the URI.
+
+#### Enum values
+
+An enum is read once it is registered on the builder with `AddEnumValueCodec<TEnum>()`:
+
+```csharp
+RouteTable table = new RouteTableBuilder()
+    .AddEnumValueCodec<OrderStatus>()
+    .Map("/orders/{status}", c => new OrdersRoute(c.Path<OrderStatus>("status")))
+    .Build();
+
+Console.WriteLine(table.Match(new Uri("/orders/shipped", UriKind.Relative)).Route); // OrdersRoute { Status = Shipped }
+
+RouteMatchResult result = table.Match(new Uri("/orders/2", UriKind.Relative));
+Console.WriteLine(result.IsSuccess);                     // False
+Console.WriteLine(result.Diagnostics[0].Data["reason"]); // The path value of 'status' is not a valid OrderStatus.
+
+public enum OrderStatus { Pending, InProgress, Shipped }
+
+public sealed record OrdersRoute(OrderStatus Status) : AppRoute;
+```
+
+Once registered, `Path<T>`, `TryGetPath<T>` and `TryGetQuery<T>` read the enum and its nullable form, and `GetQueryValues<T>` reads the enum. As for the other types, `GetQueryValues<T>` does not read the nullable form, registered or not. A value converts by these rules:
+
+- The text must be the name of a member, and gives the value of that member. Case is ignored, ordinally, so `shipped` and `SHIPPED` are `Shipped` in every culture, and the Turkish dotted and dotless i match neither `i` nor `I`.
+- Only names convert. A number, such as `2`, `-1` or `0x1`, does not: it would tie links to the order the members are declared in, so adding or moving a member would change what an old link means. A list of names, such as `Pending,Shipped`, does not convert either. Nothing is trimmed, so ` Shipped` is not valid, and the empty value of a query, as in `?status=`, is not valid.
+- Two names for the same value both convert, to that value.
+- An enum with `[Flags]` can be registered, but only the name of a single member converts, never a combination such as `Read,Write`.
+- An enum with no members can be registered, and then no text converts.
+- A text that does not convert rejects the match with a `RouteValueException`, as for the other types, and no later template is tried. The message names the enum by its simple name, even for an enum declared inside another type, and never quotes the value.
+
+The names of a registered enum are part of the links of the app: renaming a member changes which links work, so rename one only as you would change a route template.
+
+Registering applies to the whole table, so it can come before or after the `Map` calls whose create functions read the enum. Registering the same enum again does nothing. A table that is already built does not change; call `Build` again for a table that includes a later registration. `AddEnumValueCodec` throws `ArgumentException` for an enum with two members whose names differ only by case, such as `A` and `a`, since a text that named one would name both. Reading an enum that is not registered throws `InvalidOperationException` whose message names `AddEnumValueCodec`, whether or not the value is present, and it propagates out of `Match`.
+
+There is no constraint named after enums, so a template with `{status:enum}` is not valid, and a template cannot keep a name that is not a member away from its create function; that name fails the match instead. For another spelling, such as `in-progress`, read the string and map it yourself:
+
+```csharp
+RouteTable table = new RouteTableBuilder()
+    .Map("/orders/{status}", c => new OrdersRoute(c.Path("status") switch
+    {
+        "pending" => OrderStatus.Pending,
+        "in-progress" => OrderStatus.InProgress,
+        "shipped" => OrderStatus.Shipped,
+        _ => throw new RouteValueException("status", "The status is not one of the known spellings."),
+    }))
+    .Build();
+
+// /orders/in-progress gives OrdersRoute { Status = InProgress }, and /orders/InProgress fails the match.
+```
 
 #### Typed query values
 
-`TryGetQuery<T>(name, out value)` and `GetQueryValues<T>(name)` read query values as the same types, by the same rules, so `TryGetQuery<int>` accepts exactly the text that `Path<int>` accepts and gives the same value. The query is read, decoded and compared by name as described in [Query values](#query-values).
+`TryGetQuery<T>(name, out value)` and `GetQueryValues<T>(name)` read query values as the same types, registered enums included, by the same rules, so `TryGetQuery<int>` accepts exactly the text that `Path<int>` accepts and gives the same value. The query is read, decoded and compared by name as described in [Query values](#query-values).
 
 ```csharp
 RouteTable table = new RouteTableBuilder()
@@ -409,7 +459,7 @@ public sealed record ProductsRoute(int Page, string Tags) : AppRoute;
 ```
 
 - `TryGetQuery<T>` returns `false` with the default value of `T`, which is `null` for a nullable type, only when the query does not have the name or there is no query.
-- A value that is present but does not convert rejects the match with a `RouteValueException`, as a path value does. An empty value is present: `?page=` and `?page` give the empty string, which is not a valid number, `bool` or `Guid`, so `TryGetQuery<int>` rejects both. `TryGetQuery<string>` gives the empty string, as `TryGetQuery` does.
+- A value that is present but does not convert rejects the match with a `RouteValueException`, as a path value does. An empty value is present: `?page=` and `?page` give the empty string, which is not a valid number, `bool`, `Guid` or enum, so `TryGetQuery<int>` rejects both. `TryGetQuery<string>` gives the empty string, as `TryGetQuery` does.
 - The first value decides, as for `TryGetQuery`: `?page=x&page=2` read as `int` fails the match, although the second value is valid, and `?page=2&page=x` gives 2.
 - `GetQueryValues<T>` gives every value in order, converted, or fails: one value that does not convert, an empty one included, rejects the match, so `?id=3&id=5` read as `int` gives 3 and 5, and `?id=3&id=x` fails. A name the query does not have gives an empty list. The list cannot be changed, and `GetQueryValues<string>` gives the same values as `GetQueryValues`.
 - `GetQueryValues<T>` does not support a nullable type, such as `int?`, since an element of the list is never absent; read the list as `int`. It throws `InvalidOperationException`, as an unsupported type does, whether or not the query has the name.
@@ -484,4 +534,4 @@ The diagnostic codes in this version are `route.not_matched`, for a URI that no 
 
 ### Threads
 
-A built table is immutable and safe to use from several threads at once. Mapping more routes on the builder does not change a table it has already built; call `Build` again for a table that includes them. A builder itself is not thread-safe, and a create function that runs on several threads must be safe to call that way.
+A built table is immutable and safe to use from several threads at once. Mapping more routes or registering more enums on the builder does not change a table it has already built; call `Build` again for a table that includes them. A builder itself is not thread-safe, and a create function that runs on several threads must be safe to call that way.

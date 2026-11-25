@@ -344,10 +344,14 @@ public sealed class RouteMatchContextTypedQueryTests
     [InlineData("short?")]
     [InlineData("list byte")]
     [InlineData("list double")]
+    [InlineData("enum")]
+    [InlineData("enum?")]
+    [InlineData("list enum")]
     public void AFailedConversionNeverQuotesTheValue(string type)
     {
         RouteValueException? thrown = null;
         RouteTable table = new RouteTableBuilder()
+            .AddEnumValueCodec<Status>()
             .Map("/orders", c =>
             {
                 try
@@ -389,6 +393,15 @@ public sealed class RouteMatchContextTypedQueryTests
                             break;
                         case "list double":
                             _ = c.GetQueryValues<double>("token");
+                            break;
+                        case "enum":
+                            c.TryGetQuery("token", out Status _);
+                            break;
+                        case "enum?":
+                            c.TryGetQuery("token", out Status? _);
+                            break;
+                        case "list enum":
+                            _ = c.GetQueryValues<Status>("token");
                             break;
                         default:
                             _ = c.GetQueryValues<Guid>("token");
@@ -457,7 +470,11 @@ public sealed class RouteMatchContextTypedQueryTests
                     AssertUnsupported(() => context.TryGetQuery(name!, out nint? _), "'IntPtr?'");
                     AssertUnsupported(() => context.TryGetQuery(name!, out nuint _), "'UIntPtr'");
                     AssertUnsupported(() => context.TryGetQuery(name!, out DateTime _), "'DateTime'");
-                    AssertUnsupported(() => context.TryGetQuery(name!, out DayOfWeek? _), "'DayOfWeek?'");
+                    AssertUnregistered(() => context.TryGetQuery(name!, out DayOfWeek? _), "'DayOfWeek?'", "DayOfWeek");
+                    AssertUnregistered(
+                        () => context.TryGetQuery(name!, out Status _),
+                        "'" + StatusName + "'",
+                        StatusName);
                     AssertUnsupported(() => context.TryGetQuery(name!, out List<int>? _), "'List<Int32>'");
                     AssertUnsupported(() => context.TryGetQuery(name!, out object? _), "'Object'");
                     AssertListUnsupported(() => context.GetQueryValues<Half>(name!), "'Half'");
@@ -466,7 +483,11 @@ public sealed class RouteMatchContextTypedQueryTests
                     AssertListUnsupported(() => context.GetQueryValues<char>(name!), "'Char'");
                     AssertListUnsupported(() => context.GetQueryValues<nint>(name!), "'IntPtr'");
                     AssertListUnsupported(() => context.GetQueryValues<DateTime>(name!), "'DateTime'");
-                    AssertListUnsupported(() => context.GetQueryValues<DayOfWeek>(name!), "'DayOfWeek'");
+                    AssertListUnregistered(() => context.GetQueryValues<DayOfWeek>(name!), "'DayOfWeek'", "DayOfWeek");
+                    AssertListUnregistered(
+                        () => context.GetQueryValues<Status>(name!),
+                        "'" + StatusName + "'",
+                        StatusName);
                     AssertListUnsupported(() => context.GetQueryValues<int[]>(name!), "'Int32[]'");
                     AssertListUnsupported(() => context.GetQueryValues<object>(name!), "'Object'");
 
@@ -483,6 +504,23 @@ public sealed class RouteMatchContextTypedQueryTests
                     AssertNullableList(() => context.GetQueryValues<ulong?>(name!), "'UInt64?'", "'UInt64'");
                     AssertNullableList(() => context.GetQueryValues<float?>(name!), "'Single?'", "'Single'");
                     AssertNullableList(() => context.GetQueryValues<double?>(name!), "'Double?'", "'Double'");
+                    AssertNullableList(() => context.GetQueryValues<DayOfWeek?>(name!), "'DayOfWeek?'", "'DayOfWeek'");
+                    AssertNullableList(
+                        () => context.GetQueryValues<Status?>(name!),
+                        "'" + StatusName + "?'",
+                        "'" + StatusName + "'");
+                }
+            });
+
+            // Registering the enum does not make its nullable form a list type.
+            WithinEnums(uri, context =>
+            {
+                foreach (string? name in new[] { "v", "missing", null })
+                {
+                    AssertNullableList(
+                        () => context.GetQueryValues<Status?>(name!),
+                        "'" + StatusName + "?'",
+                        "'" + StatusName + "'");
                 }
             });
         }
@@ -630,14 +668,147 @@ public sealed class RouteMatchContextTypedQueryTests
             $"{type}: typed {typedBytes} bytes, parsed {parsedBytes} bytes");
     }
 
+    [Fact]
+    public void AnEnumFollowsEveryRule()
+    {
+        AssertRules("Pending", Status.Pending, "SHIPPED", Status.Shipped, "Status", EnumBuilder);
+        AssertRules("canceled", Status.Cancelled, "inProgress", Status.InProgress, "Status", EnumBuilder);
+    }
+
+    [Theory]
+    [InlineData("Pending", Status.Pending)]
+    [InlineData("pending", Status.Pending)]
+    [InlineData("INPROGRESS", Status.InProgress)]
+    [InlineData("Cancelled", Status.Cancelled)]
+    [InlineData("Canceled", Status.Cancelled)]
+    [InlineData("", null)]
+    [InlineData("0", null)]
+    [InlineData("2", null)]
+    [InlineData("-1", null)]
+    [InlineData("+2", null)]
+    [InlineData("99", null)]
+    [InlineData("0x1", null)]
+    [InlineData("Pending,Shipped", null)]
+    [InlineData("Pending, Shipped", null)]
+    [InlineData(" Pending", null)]
+    [InlineData("Pending ", null)]
+    [InlineData("Pend\u0131ng", null)]
+    [InlineData("PEND\u0130NG", null)]
+    [InlineData("\u0130nProgress", null)]
+    [InlineData("in-progress", null)]
+    public void AnEnumQueryValueIsReadByTheRulesOfAPathValue(string text, Status? expected)
+    {
+        AssertCase(text, expected, "Status", EnumBuilder);
+    }
+
+    [Theory]
+    [InlineData("Read", Access.Read)]
+    [InlineData("readwrite", Access.ReadWrite)]
+    [InlineData("Read,Write", null)]
+    [InlineData("Read, Write", null)]
+    [InlineData("3", null)]
+    public void AFlagsEnumQueryValueIsTheNameOfASingleMember(string text, Access? expected)
+    {
+        AssertCase(text, expected, "Access", EnumBuilder);
+    }
+
+    // + is a space in a query, so it cannot be part of a name, and a list of names in one value is not read as several.
+    [Fact]
+    public void AnEnumQueryValueIsDecodedBeforeItIsRead()
+    {
+        foreach (string uri in new[] { "/q?v=+Pending", "/q?v=Pending+", "/q?v=%2BPending", "/q?v=Pending%2CShipped" })
+        {
+            WithinEnums(uri, context =>
+            {
+                AssertInvalid(() => context.TryGetQuery("v", out Status _), "v", "Status");
+                AssertInvalid(() => context.GetQueryValues<Status>("v"), "v", "Status");
+            });
+        }
+
+        WithinEnums("/q?v=Pend%69ng&v=Shipped", context =>
+        {
+            Assert.True(context.TryGetQuery("v", out Status? status));
+            Assert.Equal(Status.Pending, status);
+            Assert.Equal([Status.Pending, Status.Shipped], context.GetQueryValues<Status>("v"));
+        });
+    }
+
+    [Fact]
+    public void AnEnumQueryValueThatIsNotAMemberFailsTheMatch()
+    {
+        RouteTable table = new RouteTableBuilder()
+            .Map("/orders", c => new ProductRoute(c.TryGetQuery("status", out Status s) ? s.ToString() : "none"))
+            .AddEnumValueCodec<Status>()
+            .Build();
+
+        RouteMatchResult result = table.Match(new Uri("/orders?status=1", UriKind.Relative));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("/orders", result.Definition?.Template.Value);
+        RouteDiagnostic diagnostic = Assert.Single(result.Diagnostics);
+        Assert.Equal(RouteDiagnosticCodes.ValueInvalid, diagnostic.Code);
+        Assert.Equal("status", diagnostic.Data["name"]);
+        Assert.Contains(QueryValue, (string?)diagnostic.Data["reason"], StringComparison.Ordinal);
+        Assert.EndsWith(" Status.", (string?)diagnostic.Data["reason"], StringComparison.Ordinal);
+        Assert.Equal(new ProductRoute("none"), table.Match(new Uri("/orders", UriKind.Relative)).Route);
+        Assert.Equal(
+            new ProductRoute("InProgress"),
+            table.Match(new Uri("/orders?status=inprogress", UriKind.Relative)).Route);
+    }
+
+    // An enum read must cost no more than the string read of the same name, and a list of enums no more than the string
+    // list and an array of the same size: the name table gives each value without a box.
+    [Theory]
+    [InlineData("enum")]
+    [InlineData("enum?")]
+    [InlineData("list enum")]
+    public void AnEnumReadAllocatesNoMoreThanTheStringReadOfTheSameName(string type)
+    {
+        const int Reads = 16;
+        Func<RouteMatchContext, int> enumRead = type switch
+        {
+            "enum" => c => c.TryGetQuery("id", out Status value) ? (int)value : 0,
+            "enum?" => c => c.TryGetQuery("id", out Status? value) ? (int)value!.Value : 0,
+            _ => c => (int)c.GetQueryValues<Status>("id")[1],
+        };
+        Func<RouteMatchContext, int> stringRead = type switch
+        {
+            "list enum" => c => ParsedList(c, s => s.Length)[1],
+            _ => c => c.TryGetQuery("id", out string? value) ? value.Length : 0,
+        };
+
+        var uri = new Uri("/orders?id=Shipped&id=shipped&id=SHIPPED", UriKind.Relative);
+        long enumBytes = AllocatedBytesPerMatch(ReadingTable(enumRead, Reads, EnumBuilder()), uri);
+        long stringBytes = AllocatedBytesPerMatch(ReadingTable(stringRead, Reads, EnumBuilder()), uri);
+
+        Assert.True(
+            enumBytes - stringBytes < Reads * IntPtr.Size,
+            $"{type}: enum {enumBytes} bytes, string {stringBytes} bytes");
+    }
+
+    // The name of Status as the message for an enum that is not registered gives it.
+    private const string StatusName = nameof(RouteMatchContextTypedQueryTests) + ".Status";
+
     private static CultureInfo Invariant => CultureInfo.InvariantCulture;
 
+    // A builder with every enum of these tests registered.
+    private static RouteTableBuilder EnumBuilder()
+    {
+        return new RouteTableBuilder().AddEnumValueCodec<Status>().AddEnumValueCodec<Access>();
+    }
+
     // Every rule, for one value type and its nullable form. The two valid texts are different values.
-    private static void AssertRules<T>(string first, T firstValue, string second, T secondValue, string typeName)
+    private static void AssertRules<T>(
+        string first,
+        T firstValue,
+        string second,
+        T secondValue,
+        string typeName,
+        Func<RouteTableBuilder>? builder = null)
         where T : struct
     {
         // Present and valid.
-        Within($"/q?v={first}", context =>
+        Within(builder, $"/q?v={first}", context =>
         {
             Assert.True(context.TryGetQuery("v", out T value));
             AssertSameValue(firstValue, value);
@@ -650,7 +821,7 @@ public sealed class RouteMatchContextTypedQueryTests
         // nullable type.
         foreach (string uri in new[] { "/q", "/q?", "/q?w=" + first, "/q?vv=" + first, "/q#v=" + first })
         {
-            Within(uri, context =>
+            Within(builder, uri, context =>
             {
                 Assert.False(context.TryGetQuery("v", out T value));
                 Assert.Equal(default, value);
@@ -664,7 +835,7 @@ public sealed class RouteMatchContextTypedQueryTests
         // Present but not valid, an empty value in both spellings included.
         foreach (string uri in new[] { "/q?v=x", "/q?v=", "/q?v", "/q?v=%20", "/q?w=1&v&v=" + first })
         {
-            Within(uri, context =>
+            Within(builder, uri, context =>
             {
                 AssertInvalid(() => context.TryGetQuery("v", out T _), "v", typeName);
                 AssertInvalid(() => context.TryGetQuery("v", out T? _), "v", typeName);
@@ -673,13 +844,13 @@ public sealed class RouteMatchContextTypedQueryTests
         }
 
         // The first value decides, in both orders.
-        Within($"/q?v=x&v={first}", context =>
+        Within(builder, $"/q?v=x&v={first}", context =>
         {
             AssertInvalid(() => context.TryGetQuery("v", out T _), "v", typeName);
             AssertInvalid(() => context.TryGetQuery("v", out T? _), "v", typeName);
         });
 
-        Within($"/q?v={first}&v=x", context =>
+        Within(builder, $"/q?v={first}&v=x", context =>
         {
             Assert.True(context.TryGetQuery("v", out T value));
             AssertSameValue(firstValue, value);
@@ -688,7 +859,7 @@ public sealed class RouteMatchContextTypedQueryTests
         });
 
         // Every value in order, repeated ones included, or none.
-        Within($"/q?v={second}&w=x&v={first}&v={second}", context =>
+        Within(builder, $"/q?v={second}&w=x&v={first}&v={second}", context =>
         {
             Assert.True(context.TryGetQuery("v", out T value));
             AssertSameValue(secondValue, value);
@@ -700,7 +871,7 @@ public sealed class RouteMatchContextTypedQueryTests
 
         foreach (string uri in new[] { $"/q?v={first}&v=x&v={second}", $"/q?v={first}&v={second}&v" })
         {
-            Within(uri, context =>
+            Within(builder, uri, context =>
             {
                 AssertInvalid(() => context.GetQueryValues<T>("v"), "v", typeName);
                 Assert.True(context.TryGetQuery("v", out T value));
@@ -709,7 +880,7 @@ public sealed class RouteMatchContextTypedQueryTests
         }
 
         // Names are compared without regard to case, and the exception has the name the caller gave.
-        Within($"/q?Value={first}&Bad=x", context =>
+        Within(builder, $"/q?Value={first}&Bad=x", context =>
         {
             foreach (string name in new[] { "value", "VALUE", "Value" })
             {
@@ -731,7 +902,7 @@ public sealed class RouteMatchContextTypedQueryTests
         // A null name is rejected, with or without a query.
         foreach (string uri in new[] { $"/q?v={first}", "/q" })
         {
-            Within(uri, context =>
+            Within(builder, uri, context =>
             {
                 AssertNullName(() => context.TryGetQuery(null!, out T _));
                 AssertNullName(() => context.TryGetQuery(null!, out T? _));
@@ -825,11 +996,15 @@ public sealed class RouteMatchContextTypedQueryTests
             AssertCase<T>(item.Text, isValid(item) ? T.Parse(item.Text, Invariant) : null, typeName);
     }
 
-    private static void AssertCase<T>(string text, T? expected, string typeName)
+    private static void AssertCase<T>(
+        string text,
+        T? expected,
+        string typeName,
+        Func<RouteTableBuilder>? builder = null)
         where T : struct
     {
         string escaped = Uri.EscapeDataString(text);
-        Within($"/q?v={escaped}&v={escaped}", context =>
+        Within(builder, $"/q?v={escaped}&v={escaped}", context =>
         {
             if (expected is { } value)
             {
@@ -944,6 +1119,33 @@ public sealed class RouteMatchContextTypedQueryTests
         Assert.Contains(Unsupported, exception.Message, StringComparison.Ordinal);
         Assert.Contains("nullable", exception.Message, StringComparison.Ordinal);
         Assert.Contains("read the value as a string", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("any enum registered with", exception.Message, StringComparison.Ordinal);
+        Assert.Contains(typeName, exception.Message, StringComparison.Ordinal);
+    }
+
+    private static void AssertUnregistered(Action read, string typeName, string enumName)
+    {
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(read);
+
+        Assert.Contains(QueryValue, exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(ListOfQueryValues, exception.Message, StringComparison.Ordinal);
+        AssertUnregisteredMessage(exception, typeName, enumName);
+    }
+
+    private static void AssertListUnregistered(Action read, string typeName, string enumName)
+    {
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(read);
+
+        Assert.Contains(ListOfQueryValues, exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(NeverAbsent, exception.Message, StringComparison.Ordinal);
+        AssertUnregisteredMessage(exception, typeName, enumName);
+    }
+
+    private static void AssertUnregisteredMessage(InvalidOperationException exception, string typeName, string enumName)
+    {
+        Assert.Contains(Unsupported, exception.Message, StringComparison.Ordinal);
+        Assert.Contains("not registered", exception.Message, StringComparison.Ordinal);
+        Assert.Contains($"AddEnumValueCodec<{enumName}>", exception.Message, StringComparison.Ordinal);
         Assert.Contains(typeName, exception.Message, StringComparison.Ordinal);
     }
 
@@ -955,6 +1157,7 @@ public sealed class RouteMatchContextTypedQueryTests
         Assert.Contains(ListOfQueryValues, exception.Message, StringComparison.Ordinal);
         Assert.Contains(Unsupported, exception.Message, StringComparison.Ordinal);
         Assert.Contains("read the values as strings", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("any enum registered with", exception.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("nullable", exception.Message, StringComparison.Ordinal);
         Assert.DoesNotContain(NeverAbsent, exception.Message, StringComparison.Ordinal);
         Assert.Contains(typeName, exception.Message, StringComparison.Ordinal);
@@ -972,9 +1175,12 @@ public sealed class RouteMatchContextTypedQueryTests
     }
 
     // A table whose create function reads the query values of id the given number of times.
-    private static RouteTable ReadingTable(Func<RouteMatchContext, int> read, int reads)
+    private static RouteTable ReadingTable(
+        Func<RouteMatchContext, int> read,
+        int reads,
+        RouteTableBuilder? builder = null)
     {
-        return new RouteTableBuilder()
+        return (builder ?? new RouteTableBuilder())
             .Map("/orders", c =>
             {
                 var sum = 0;
@@ -1013,16 +1219,28 @@ public sealed class RouteMatchContextTypedQueryTests
         Within("/q", uri, check);
     }
 
+    private static void WithinEnums(string uri, Action<RouteMatchContext> check)
+    {
+        Within(EnumBuilder, uri, check);
+    }
+
+    // On a table from the given builder, or from a new one that registers nothing.
+    private static void Within(Func<RouteTableBuilder>? builder, string uri, Action<RouteMatchContext> check)
+    {
+        Within("/q", uri, check, builder: builder);
+    }
+
     // Runs the checks inside the create function, because a context is valid only during that call; an assertion
     // that fails there propagates out of Match unchanged.
     private static void Within(
         string template,
         string uri,
         Action<RouteMatchContext> check,
-        UriKind kind = UriKind.Relative)
+        UriKind kind = UriKind.Relative,
+        Func<RouteTableBuilder>? builder = null)
     {
         var called = false;
-        RouteTable table = new RouteTableBuilder()
+        RouteTable table = (builder?.Invoke() ?? new RouteTableBuilder())
             .Map(template, c =>
             {
                 check(c);
@@ -1033,5 +1251,25 @@ public sealed class RouteMatchContextTypedQueryTests
 
         Assert.True(table.Match(new Uri(uri, kind)).IsSuccess);
         Assert.True(called);
+    }
+
+    // Cancelled and Canceled are two names for one value, and that value is negative, which Enum.TryParse would accept
+    // as -1.
+    public enum Status
+    {
+        Pending,
+        InProgress,
+        Shipped,
+        Cancelled = -1,
+        Canceled = -1,
+    }
+
+    [Flags]
+    public enum Access
+    {
+        None = 0,
+        Read = 1,
+        Write = 2,
+        ReadWrite = Read | Write,
     }
 }
