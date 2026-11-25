@@ -75,11 +75,11 @@ public sealed class RouteTable
     /// The query never affects which route matches. A create function reads it through
     /// <see cref="RouteMatchContext.TryGetQuery(string, out string)"/> and
     /// <see cref="RouteMatchContext.GetQueryValues(string)"/>: for an absolute URI it is <see cref="Uri.Query"/>, as
-    /// <see cref="Uri"/> reports it, and for a relative one the original text from the first <c>?</c> that comes
-    /// before any <c>#</c>, up to the next <c>#</c>. Some schemes, such as <c>ftp</c>, have no query in
-    /// <see cref="Uri"/>, so a <c>?</c> in them is part of the path. It is
-    /// read and parsed only when a create function first asks for a value, at most once per match, so a URI that
-    /// matches nothing, and a route that reads no query values, pay nothing for it. It never appears in a diagnostic.
+    /// <see cref="Uri"/> reports it, and for a relative one, or a file URI read as relative, the original text from
+    /// the first <c>?</c> that comes before any <c>#</c>, up to the next <c>#</c>. Some schemes, such as <c>ftp</c>,
+    /// have no query in <see cref="Uri"/>, so a <c>?</c> in them is part of the path. The query is read and parsed
+    /// only when a create function first asks for a value, at most once per match, so a URI that matches nothing, and
+    /// a route that reads no query values, pay nothing for it. It never appears in a diagnostic.
     /// </para>
     /// <para>
     /// The path is matched as <see cref="RouteTemplate.Match(string)"/> matches it. In this version, definitions are

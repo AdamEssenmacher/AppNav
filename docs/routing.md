@@ -263,7 +263,7 @@ The query is read and parsed only when a create function first asks for a value,
 
 For an absolute URI the query is the one `System.Uri` reports, and the values are decoded from it, which is not always what the link's author wrote:
 
-- `System.Uri` drops `%20` sequences at the very end of a URI that contains, anywhere including the host, a non-ASCII character, a percent-encoded byte from `%80` to `%FF`, or a percent-encoded unreserved character such as `%41`: the path of `https://example.com/%C3%A9%20` is `/%C3%A9`, and the query of `https://example.com/%41?v=%20` is `?v=`. Any character after them, even a lone `#` or `&`, keeps them. The table does not work around this.
+- `System.Uri` drops `%20` sequences at the very end of some URIs, [as described above](#what-is-read-from-a-uri), so the last value of a query can lose trailing spaces.
 - `System.Uri` trims spaces, tabs and line breaks from the start and end of an absolute URI, so `https://example.com/a?v=a ` gives `a`, while the relative `/a?v=a ` keeps the space.
 - For the schemes [listed above](#what-is-read-from-a-uri) that have no query, such as `ftp://host/a?x=1`, there are no query values; the `?` and what follows it are part of the path.
 - A `Uri` created with `UriCreationOptions.DangerousDisablePathAndQueryCanonicalization` is read exactly as `System.Uri` exposes it, and the table does not support it specially: its `Query` can include the fragment, as `?x=1#f` for `https://example.com/a?x=1#f`, and its `AbsolutePath` can include a `#`.

@@ -96,9 +96,9 @@ public sealed class RouteMatchContext
     /// </returns>
     /// <remarks>
     /// The query is <see cref="Uri.Query"/> as <see cref="Uri"/> reports it for an absolute URI, and the original
-    /// text for a relative one, as described for <see cref="RouteTable.Match(Uri)"/>. It is split into pairs on
-    /// <c>&amp;</c> and decoded as form data, so <c>+</c> is a space. Use <see cref="GetQueryValues(string)"/> for
-    /// every value of a name that can repeat.
+    /// text for a relative one or for a file URI that the table reads as relative, as described for
+    /// <see cref="RouteTable.Match(Uri)"/>. It is split into pairs on <c>&amp;</c> and decoded as form data, so
+    /// <c>+</c> is a space. Use <see cref="GetQueryValues(string)"/> for every value of a name that can repeat.
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="name"/> is <see langword="null"/>.</exception>
     public bool TryGetQuery(string name, [NotNullWhen(true)] out string? value)
