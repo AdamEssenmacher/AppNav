@@ -285,6 +285,9 @@ public sealed class RouteTableAmbiguousTemplateTests
         Assert.Equal("/orders/{x:alpha}", Winner(table, $"/orders/{Letters}"));
         Assert.Equal("/orders/{key}", Winner(table, "/orders/6f9619ff8b86d011b42d00cf4fc964ff"));
         Assert.Equal("/orders/{key}", Winner(table, $"/orders/{ZeroGuid}"));
+
+        // Digits alone are not enough: 32 of them that are out of range for the number are not that number.
+        Assert.Equal("/orders/{key}", Winner(table, "/orders/12345678901234567890123456789012"));
     }
 
     // A guid still overlaps itself, so two templates of one shape with a guid at the same position are told apart
