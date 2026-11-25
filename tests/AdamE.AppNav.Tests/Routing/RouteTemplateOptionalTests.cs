@@ -76,7 +76,7 @@ public sealed class RouteTemplateOptionalTests
 
     [Theory]
     [InlineData("/{i?d*}", "{i?d*}")]
-    [InlineData("/{*id?}", "{*id?}")]
+    [InlineData("/{?*id}", "{?*id}")]
     [InlineData("/{id?:in*t}", "{id?:in*t}")]
     public void ParseReportsAnAsteriskBeforeAMisplacedQuestionMark(string value, string segment)
     {
