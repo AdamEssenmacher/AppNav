@@ -8,11 +8,10 @@ namespace AdamE.AppNav.Tests.Routing;
 public sealed class QueryStringTests
 {
     [Fact]
-    public void ParseRejectsNull()
+    public void ParseReadsOnlyTheSpanItIsGiven()
     {
-        ArgumentNullException exception = Assert.Throws<ArgumentNullException>(() => QueryString.Parse(null!));
-
-        Assert.Equal("query", exception.ParamName);
+        Assert.Equal("a:1", Describe(QueryString.Parse("/p?a=1#b=2".AsSpan(2, 4))));
+        Assert.Same(QueryString.Parse(""), QueryString.Parse("/p?a=1".AsSpan(6)));
     }
 
     [Theory]
@@ -54,6 +53,7 @@ public sealed class QueryStringTests
     [InlineData("a=1+2+3", "a:1 2 3")]
     [InlineData("a+b+c=1", "a b c:1")]
     [InlineData("a=%2B", "a:+")]
+    [InlineData("a=a+%2541", "a:a %41")]
     [InlineData("a=%2b+%2B", "a:+ +")]
     [InlineData("a=%26&b=2", "a:&;b:2")]
     [InlineData("a%3Db=c", "a=b:c")]

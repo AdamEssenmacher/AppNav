@@ -207,7 +207,7 @@ Apart from the dot segment rule, these checks apply to the text as written, befo
 
 ## The route table
 
-A route is a sealed record that derives from `AppRoute`. A `RouteTableBuilder` maps a template to each route type, with a function that creates the route from the values the template captured, and `Build` turns the mappings into a `RouteTable`. `Match` reads the path of a URI and returns a `RouteMatchResult`.
+A route is a sealed record that derives from `AppRoute`. A `RouteTableBuilder` maps a template to each route type, with a function that creates the route from the values the template captured and the query of the URI, and `Build` turns the mappings into a `RouteTable`. `Match` matches the path of a URI and returns a `RouteMatchResult`.
 
 ```csharp
 using AdamE.AppNav;
@@ -217,18 +217,19 @@ RouteTable table = new RouteTableBuilder()
     .Map("/settings", _ => new SettingsRoute())
     .Map("/products/{id:int}/{tab?}", c => new ProductRoute(
         c.Path("id"),
-        c.TryGetPath("tab", out string? tab) ? tab : null))
+        c.TryGetPath("tab", out string? tab) ? tab : null,
+        c.TryGetQuery("sort", out string? sort) ? sort : null))
     .Build();
 
-RouteMatchResult result = table.Match(new Uri("myapp:///products/42/reviews"));
+RouteMatchResult result = table.Match(new Uri("myapp:///products/42/reviews?sort=newest"));
 if (result.IsSuccess)
-    Console.WriteLine(result.Route); // ProductRoute { Id = 42, Tab = reviews }
+    Console.WriteLine(result.Route); // ProductRoute { Id = 42, Tab = reviews, Sort = newest }
 
 Console.WriteLine(table.Match(new Uri("/orders", UriKind.Relative)).IsSuccess); // False
 
 public sealed record SettingsRoute : AppRoute;
 
-public sealed record ProductRoute(string Id, string? Tab) : AppRoute;
+public sealed record ProductRoute(string Id, string? Tab, string? Sort) : AppRoute;
 ```
 
 > **Note: write custom-scheme links with three slashes.** In `myapp://products/42`, `System.Uri` reads `products` as the host, which the table ignores, so the path is `/42`. That path does not reach the products route, but a `/{slug}` or `/{*rest}` route matches it. Likewise `myapp://open?tab=1` is read as the path `/`, which matches a root route. Write such links as `myapp:///products/42`, which has no host and the path `/products/42`.
@@ -237,14 +238,37 @@ A route carries application identity only: the values that name its destination,
 
 ### What is read from a URI
 
-- Only the path is read. The scheme, user information, host, port, query and fragment are ignored.
+- Only the path decides which route matches. The scheme, user information, host, port and fragment are ignored, and the query is read only by a create function that asks for it, as described in [Query values](#query-values).
 - The table checks neither the scheme nor the host, so `https://other.example/account` and `file:///account` match exactly as the app's own links do. Deciding which sources to accept belongs to the code that receives the link, before or after matching.
 - For an absolute URI, the path is `Uri.AbsolutePath`, so `https://example.com/settings`, `myapp:///settings` and `myapp:/settings` all have the path `/settings`. A URI whose path is empty, such as `mailto:a@b.c`, is read as the root path, which the template `/` matches.
 - The path of an absolute URI is the one `System.Uri` produces. It decodes percent-encoded unreserved characters (`%41` becomes `A`), percent-encodes spaces and non-ASCII characters, and keeps repeated slashes. In a URI with an authority, even an empty one as in `myapp:///a/../b`, it also removes [dot segments](#dot-segments), so that path is `/b`. In a URI with no authority at all, such as `app:/a/../b`, it keeps them, so that path does not match. `app:x/y` has the path `x/y`, which matches `/x/y`.
+- For some schemes `System.Uri` has no query, so a `?` is part of the path: `ftp://host/a?x=1` has the path `/a%3Fx=1`, which a `/{slug}` route captures as `a?x=1`. The schemes are `ftp`, `news`, `nntp`, `gopher`, `telnet`, `uuid` and `vsmacros`, and a UNC path written with backslashes, such as `\\server\share\a?x=1`.
 - For a relative URI, such as `new Uri("/settings?tab=1", UriKind.Relative)`, `System.Uri` parses nothing, so the path is its `OriginalString` up to the first `?` or `#`, whichever comes first. Nothing else is done to it: it is not trimmed, and the leading `/` is optional, as for `RouteTemplate.Match`. An empty relative URI, or one that is only a query or fragment, has an empty path, which matches the root template `/`.
-- Build app-relative links with `UriKind.Relative` or `UriKind.RelativeOrAbsolute`. `new Uri("/settings?tab=1")`, with no `UriKind`, is a `file:` URI on Unix-like platforms and throws on Windows; the table reads such a URI as relative, from the text the caller wrote, so it matches `/settings`.
+- Build app-relative links with `UriKind.Relative` or `UriKind.RelativeOrAbsolute`. `new Uri("/settings?tab=1")`, with no `UriKind`, is a `file:` URI on Unix-like platforms and throws on Windows; the table reads such a URI as relative, from the text the caller wrote, so it matches `/settings`. This applies only when the text starts with `/`: `new Uri(" /a?x=1")`, with leading white space, is a file URI read as absolute, with the `?` in its path and no query values.
 
-`System.Uri` drops the encoded spaces at the very end of a URI that contains non-ASCII text anywhere, raw or percent-encoded: the path of `https://example.com/%C3%A9%20` is `/%C3%A9`. A `?` or `#` after them, even with nothing following, keeps them. The route table does not work around this.
+`System.Uri` drops `%20` sequences at the very end of a URI that contains, anywhere including the host, a non-ASCII character, a percent-encoded byte from `%80` to `%FF`, or a percent-encoded unreserved character such as `%41`: the path of `https://example.com/%C3%A9%20` is `/%C3%A9`, and the query of `https://example.com/%41?v=%20` is `?v=`. Any character after them, even a lone `#` or `&`, keeps them. The table does not work around this.
+
+### Query values
+
+A create function reads the query of the URI with `TryGetQuery(name, out value)` and `GetQueryValues(name)`. The query is never used to choose a route: `/settings?tab=/products/1` matches `/settings`, and a relative URI that is only a query, such as `?tab=1`, matches the root template `/` and keeps its query.
+
+- For an absolute URI, the query is `Uri.Query`, which excludes the fragment except as noted below. For a relative URI, and for an implicit file URI whose text starts with `/`, which the table reads as relative, it is the `OriginalString` from the first `?` that comes before any `#`, up to the next `#`, so `/a?tab=1#x` has the query `?tab=1` and `/a#x?tab=1` has none.
+- One leading `?` is removed. Pairs are separated by `&` only, and empty pairs are skipped. The first `=` separates the name from the value, so a second `?` or `=` is part of a name or value. A name without `=` has an empty value, and an empty name, as in `?=x`, is kept under the name `""`.
+- Names and values are decoded after splitting, so `%26` and `%3D` are data. `+` is a space, as in form encoding, although in a path it is a literal `+`: `/files/a+b?v=a+b` captures `a+b` from the path and gives `a b` for `v`. Write `%2B` for a literal `+` in a query. Percent sequences are decoded once, so `%2541` is `%41`, and a sequence that is not valid, or not valid UTF-8, is kept as written.
+- Names are compared ordinally without regard to case, as path parameter names are.
+- `TryGetQuery` gives the first value when a name repeats, so `?tab=a&tab=b` gives `a`. That is what a browser's `URLSearchParams.get` and most web frameworks return, so the app and a web page handling the same link agree on which value they read; code that needs every value uses `GetQueryValues`. Names that differ only by case are one name here, unlike in a browser, so `?Tab=x&tab=y` gives `x`. `TryGetQuery` gives the empty string for a name with no value, as in `?flag` or `?flag=`. It returns `false` with `null` when the query does not have the name, and never throws for a missing value.
+- `GetQueryValues` gives every value of a name in order, including repeated and empty values, and an empty list when there are none. The list cannot be changed.
+
+The query is read and parsed only when a create function first asks for a value, at most once per match, so a URI that matches nothing, and a route that reads no query values, pay nothing for the query. Nothing limits the size of a query, and the cost of reading it grows linearly with its length. `System.Uri` itself accepts a query of a million characters, absolute or relative, so an app that receives links from outside should bound their length before calling `Match`; nothing else does. Like the path, the query can carry a secret, so it never appears in a diagnostic.
+
+For an absolute URI the query is the one `System.Uri` reports, and the values are decoded from it, which is not always what the link's author wrote:
+
+- `System.Uri` drops `%20` sequences at the very end of some URIs, [as described above](#what-is-read-from-a-uri), so the last value of a query can lose trailing spaces.
+- `System.Uri` trims spaces, tabs and line breaks from the start and end of an absolute URI, so `https://example.com/a?v=a ` gives `a`, while the relative `/a?v=a ` keeps the space.
+- For the schemes [listed above](#what-is-read-from-a-uri) that have no query, such as `ftp://host/a?x=1`, there are no query values; the `?` and what follows it are part of the path.
+- A `Uri` created with `UriCreationOptions.DangerousDisablePathAndQueryCanonicalization` is read exactly as `System.Uri` exposes it, and the table does not support it specially: its `Query` can include the fragment, as `?x=1#f` for `https://example.com/a?x=1#f`, and its `AbsolutePath` can include a `#`.
+
+A relative URI is read from its original text, so its values are decoded from exactly what was written.
 
 ### Which route wins
 
@@ -258,6 +282,7 @@ When a template matches, its create function is called once with a `RouteMatchCo
 - `TryGetPath(name, out value)` returns `true` with the value when the path has one, and `false` with `null` in the cases where `Path` throws. Use it for an optional or catch-all parameter, as in `c.TryGetPath("tab", out string? tab) ? tab : null`.
 - Names are compared without regard to case.
 - `PathValues` is the dictionary `RouteTemplate.Match` returned. Treat it as read-only.
+- `TryGetQuery(name, out value)` and `GetQueryValues(name)` read the query, as described in [Query values](#query-values).
 - `SourceUri` is the URI that was matched.
 
 An exception the create function throws propagates out of `Match` unchanged, and no later template is tried. A create function that returns `null` makes `Match` throw `InvalidOperationException`.
