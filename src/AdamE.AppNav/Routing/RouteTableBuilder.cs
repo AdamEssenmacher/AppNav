@@ -237,8 +237,8 @@ public sealed class RouteTableBuilder
     /// <see cref="AddEnumValueCodec{TEnum}"/>. The message names the enum, the route type, the template and
     /// <see cref="AddEnumValueCodec{TEnum}"/>.
     /// <para/>
-    /// The templates are checked first, then the format functions, each in the order the routes were mapped. In every
-    /// case, the builder is not changed.
+    /// The templates are checked first, then that no route type has two format functions, then the enums the format
+    /// functions write, each in the order the routes were mapped. In every case, the builder is not changed.
     /// </exception>
     public RouteTable Build()
     {

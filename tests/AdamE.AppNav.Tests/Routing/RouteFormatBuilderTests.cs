@@ -258,6 +258,21 @@ public sealed class RouteFormatBuilderTests
         Assert.True(home >= 0 && start > home, exception.Message);
     }
 
+    // Registering the enum would not make the second mapping valid, so the second format function is what Build
+    // reports: otherwise fixing the table would take two rounds.
+    [Fact]
+    public void ASecondFormatFunctionIsReportedBeforeAnEnumThatIsNotRegistered()
+    {
+        RouteTableBuilder builder = new RouteTableBuilder()
+            .Map("/a/{status}", c => new StatusRoute(c.Path<Status>("status")), f => f.Path("status", r => r.Status))
+            .Map("/b/{status}", c => new StatusRoute(c.Path<Status>("status")), f => f.Path("status", r => r.Status));
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(builder.Build);
+
+        Assert.Contains(BothFormat, exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(NotRegistered, exception.Message, StringComparison.Ordinal);
+    }
+
     // Only mappings with format functions are limited, so several templates can create a route while one writes it.
     [Fact]
     public void MappingsWithoutFormatFunctionsAreNotLimited()

@@ -282,21 +282,22 @@ public sealed class RouteTable
         return formatter.Format(route);
     }
 
-    // Binds each format function to the table's codecs, which reports an enum that is not registered, and keys it by
-    // its route type, which may have only one. Both are checked in the order the routes were mapped, so the error does
+    // Keys each format function by its route type, which may have only one, and binds it to the table's codecs, which
+    // reports an enum that is not registered. Each check runs in the order the routes were mapped, so the error does
     // not change from one build to the next.
     private static FrozenDictionary<Type, RouteFormatter> BindFormatters(
         RouteDefinition[] definitions,
         FrozenDictionary<Type, object> codecs)
     {
-        var formatters = new Dictionary<Type, RouteFormatter>();
+        // Every second format function is reported before anything is bound, so that it is reported even when a
+        // format function also writes an enum that is not registered: registering the enum would not make the table
+        // valid, and fixing it would take two rounds.
         var owners = new Dictionary<Type, RouteDefinition>();
         foreach (RouteDefinition definition in definitions)
         {
             if (definition.Formatter is null)
                 continue;
 
-            RouteFormatter bound = definition.Formatter.Bind(codecs);
             if (owners.TryGetValue(definition.RouteType, out RouteDefinition? earlier))
             {
                 throw new InvalidOperationException(
@@ -307,7 +308,13 @@ public sealed class RouteTable
             }
 
             owners.Add(definition.RouteType, definition);
-            formatters.Add(definition.RouteType, bound);
+        }
+
+        var formatters = new Dictionary<Type, RouteFormatter>(owners.Count);
+        foreach (RouteDefinition definition in definitions)
+        {
+            if (definition.Formatter is not null)
+                formatters.Add(definition.RouteType, definition.Formatter.Bind(codecs));
         }
 
         return formatters.ToFrozenDictionary();
