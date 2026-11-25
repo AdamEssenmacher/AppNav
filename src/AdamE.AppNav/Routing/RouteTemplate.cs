@@ -48,6 +48,15 @@ namespace AdamE.AppNav.Routing;
 /// or does not decode to valid UTF-8, is kept as written.
 /// </para>
 /// <para>
+/// A literal is compared with a decoded path segment ordinally and case-sensitively, code unit by code unit, in
+/// every culture alike. No Unicode normalization is applied to templates, paths or captured values, so the same
+/// visible text in two normalization forms does not match: <c>/caf%C3%A9</c>, with the single character U+00E9, does
+/// not match <c>/cafe%CC%81</c>, with <c>e</c> followed by the combining accent U+0301. A captured value keeps the
+/// form the path had. To accept both forms, write templates in NFC and, before matching, replace each path segment
+/// with its decoded text normalized to NFC and percent-encoded again; normalizing the path as written changes
+/// nothing that is percent-encoded, because percent-encoded text is ASCII.
+/// </para>
+/// <para>
 /// A dot segment, one whose decoded text is exactly <c>.</c> or <c>..</c>, is never part of a route, because a URI
 /// parser may remove it when it resolves a path. <see cref="Uri"/> removes it, written or percent-encoded, from a URI
 /// with an authority, such as <c>https://host/a/../b</c>, and keeps it, decoding <c>%2E</c>, in one without, such as
@@ -170,9 +179,9 @@ public sealed class RouteTemplate
     /// A path matches when it has at least as many segments as the template has before its first optional or
     /// catch-all parameter and, unless the template ends in a catch-all parameter, no more than the template has in
     /// all, and each segment in the position of a literal or an ordinary parameter is accepted by it: a decoded
-    /// segment in a literal's position equals that literal, compared ordinally and case-sensitively, and a decoded
-    /// segment in a parameter's position satisfies the parameter's constraint, if it has one. The optional parameters
-    /// after the path's last segment are left out.
+    /// segment in a literal's position equals that literal, compared ordinally and case-sensitively without Unicode
+    /// normalization, and a decoded segment in a parameter's position satisfies the parameter's constraint, if it has
+    /// one. The optional parameters after the path's last segment are left out.
     /// </para>
     /// <para>
     /// A catch-all parameter captures every remaining segment, each decoded, joined with a single <c>/</c>. Repeated,

@@ -243,6 +243,8 @@ public sealed class RouteTemplateConstraintTests
     [InlineData("e\u0301")]
     [InlineData("e%CC%81")]
     [InlineData("\u0301")]
+    [InlineData("\u0928\u092E\u0938\u094D\u0924\u0947")]
+    [InlineData("%E0%A4%A8%E0%A4%AE%E0%A4%B8%E0%A5%8D%E0%A4%A4%E0%A5%87")]
     [InlineData("\u0663")]
     [InlineData("\U0001D7D9")]
     [InlineData("\U0001F600")]
