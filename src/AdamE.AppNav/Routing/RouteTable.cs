@@ -20,9 +20,10 @@ public sealed class RouteTable
     // The codecs registered on the builder, each under the type it reads, handed to every context.
     private readonly FrozenDictionary<Type, object> _codecs;
 
-    // The formatter of each route type whose mapping has a format function, bound to the codecs above, keyed by the
-    // exact route type, which Format looks a route up by.
-    private readonly FrozenDictionary<Type, RouteFormatter> _formatters;
+    // The formatter of each route type whose mapping has a format function, bound to the codecs above, with the
+    // position of that mapping in _matchOrder, keyed by the exact route type, which Format looks a route up by. Only
+    // the definitions before that position can match a written path first, so Format checks those alone.
+    private readonly FrozenDictionary<Type, (RouteFormatter Formatter, int Position)> _formatters;
 
     // Every route type that some mapping creates, so that Format can tell a type that is not mapped at all from one
     // that is mapped without a format function, and say which fix applies.
@@ -47,13 +48,17 @@ public sealed class RouteTable
         });
 
         _matchOrder = new RouteDefinition[order.Length];
+        var positions = new int[order.Length];
         for (var i = 0; i < order.Length; i++)
+        {
             _matchOrder[i] = definitions[order[i]];
+            positions[order[i]] = i;
+        }
 
         // A read-only wrapper, so that a caller cannot cast Definitions back to the array and change the table.
         Definitions = Array.AsReadOnly(definitions);
         _codecs = codecs;
-        _formatters = BindFormatters(definitions, codecs);
+        _formatters = BindFormatters(definitions, positions, codecs);
 
         var routeTypes = new HashSet<Type>(definitions.Length);
         foreach (RouteDefinition definition in definitions)
@@ -173,45 +178,48 @@ public sealed class RouteTable
         // decoding grow with the path plus the definitions tried rather than with their product.
         string[] pathSegments = RouteText.SplitSegments(path);
         var decodedCount = 0;
-        foreach (RouteDefinition definition in _matchOrder)
+        int position = FindFirstMatch(
+            pathSegments,
+            ref decodedCount,
+            _matchOrder.Length,
+            capture: true,
+            out IReadOnlyDictionary<string, string>? values);
+        if (position < 0)
         {
-            IReadOnlyDictionary<string, string>? values = definition.Template.Match(pathSegments, ref decodedCount);
-            if (values is null)
-                continue;
-
-            // The first matching definition decides the route, so its create function's exceptions are the
-            // application's to see, and falling through to a later definition would hide them. Only the one the create
-            // function throws to reject a value is caught, by its exact type, around this call alone, so that one from
-            // anywhere else, and every other exception, passes through untouched.
-            AppRoute? route;
-            try
-            {
-                route = definition.CreateRoute(new RouteMatchContext(uri, values, queryStart, _codecs));
-            }
-            catch (RouteValueException exception)
-            {
-                return ValueInvalid(definition, path, exception);
-            }
-            catch (Exception exception) when (BreakInDebugger(exception))
-            {
-                // Never entered: the filter only tells a debugger about the exception and declines it, so it goes on
-                // to the caller exactly as it was thrown.
-                throw;
-            }
-
-            return RouteMatchResult.Success(
-                route ?? throw new InvalidOperationException(
-                    $"The create function for route type '{definition.RouteType}', mapped to the template " +
-                    $"'{definition.Template.Value}', returned null; it must return a route."),
-                definition);
+            // A deep-link path can carry a secret, such as a sign-in token, and messages tend to be logged, so the path
+            // is only in Data, exactly as it was matched, where logging it is the caller's decision.
+            return RouteMatchResult.Failure(new RouteDiagnostic(
+                RouteDiagnosticCodes.NotMatched,
+                "No route matches the path of the URI.",
+                new Dictionary<string, object?>(1, StringComparer.Ordinal) { ["path"] = path }));
         }
 
-        // A deep-link path can carry a secret, such as a sign-in token, and messages tend to be logged, so the path is
-        // only in Data, exactly as it was matched, where logging it is the caller's decision.
-        return RouteMatchResult.Failure(new RouteDiagnostic(
-            RouteDiagnosticCodes.NotMatched,
-            "No route matches the path of the URI.",
-            new Dictionary<string, object?>(1, StringComparer.Ordinal) { ["path"] = path }));
+        // The first matching definition decides the route, so its create function's exceptions are the application's
+        // to see, and falling through to a later definition would hide them. Only the one the create function throws
+        // to reject a value is caught, by its exact type, around this call alone, so that one from anywhere else, and
+        // every other exception, passes through untouched.
+        RouteDefinition definition = _matchOrder[position];
+        AppRoute? route;
+        try
+        {
+            route = definition.CreateRoute(new RouteMatchContext(uri, values!, queryStart, _codecs));
+        }
+        catch (RouteValueException exception)
+        {
+            return ValueInvalid(definition, path, exception);
+        }
+        catch (Exception exception) when (BreakInDebugger(exception))
+        {
+            // Never entered: the filter only tells a debugger about the exception and declines it, so it goes on to
+            // the caller exactly as it was thrown.
+            throw;
+        }
+
+        return RouteMatchResult.Success(
+            route ?? throw new InvalidOperationException(
+                $"The create function for route type '{definition.RouteType}', mapped to the template " +
+                $"'{definition.Template.Value}', returned null; it must return a route."),
+            definition);
     }
 
     /// <summary>
@@ -233,11 +241,25 @@ public sealed class RouteTable
     /// functions are not called. A <see langword="null"/> value leaves out an optional or catch-all parameter.
     /// </para>
     /// <para>
-    /// The template of the mapping reads back what this method writes: matching the path against it gives every value
-    /// that was written, and the typed read of the same type as a value reads its text back to an equal value. Whether
-    /// <see cref="Match(Uri)"/> picks that mapping for the path depends on the rest of the table: a template that
-    /// ranks higher and matches the same path wins instead, as <c>/products/new</c> does over
-    /// <c>/products/{name}</c> for the path written for the name <c>new</c>.
+    /// When this method returns a path, <see cref="Match(Uri)"/> of that path selects the mapping that wrote it, and
+    /// each value reads back equal through the typed read of its type, so the route that matches is equal to the one
+    /// written provided the create function and the format function agree, which the table cannot check. A path that
+    /// a template ranking higher would match first is not returned: with <c>/products/new</c> and
+    /// <c>/products/{name}</c> in one table, the name <c>new</c> cannot be written, because <c>/products/new</c> would
+    /// open the other route. Which template a path selects is decided exactly as <see cref="Match(Uri)"/> decides it,
+    /// by the templates alone, and no create function is called. That check comes after every other, and calls no
+    /// value function. A mapping of the same route type that ranks higher also counts, because the table cannot know
+    /// that its create function makes the same route.
+    /// </para>
+    /// <para>
+    /// The promise is about <see cref="Match(Uri)"/> of the returned text as a relative URI, as in
+    /// <c>new Uri(path, UriKind.Relative)</c>, and of an absolute URI with that path, except where <see cref="Uri"/>
+    /// itself changes the path of an absolute URI. It does so in one case, described in the remarks on
+    /// <see cref="Match(Uri)"/>: it drops <c>%20</c> sequences at the very end. So a value that ends with a space,
+    /// written last in the path, may be read back without it from an absolute link, and may then match another
+    /// template: with <c>/&#233;/new</c> and <c>/&#233;/{name}</c>, the name <c>new </c> is written as
+    /// <c>/%C3%A9/new%20</c>, which matches as that name as a relative URI, while
+    /// <c>https://app/%C3%A9/new%20</c> opens the route of <c>/&#233;/new</c>.
     /// </para>
     /// <para>
     /// The table is not changed, and several threads can call this method and <see cref="Match(Uri)"/> at once.
@@ -258,6 +280,13 @@ public sealed class RouteTable
     /// and the parameter and says what is wrong, but never quotes the value, which can be a secret, such as a sign-in
     /// token. It has no inner exception. When more than one value cannot be written, which one is reported is not
     /// specified.
+    /// <para>-or-</para>
+    /// The path written for the route is matched first by the template of another mapping, one that ranks higher, so
+    /// <see cref="Match(Uri)"/> of it would select that mapping instead, whether or not that mapping has a format
+    /// function. The exception's <see cref="ArgumentException.ParamName"/> is <c>route</c>, and its message names the
+    /// route type and both templates, but neither the route's values nor the path. It has no inner exception. To fix
+    /// the table, change the templates so that they cannot match the same path, for example by constraining a
+    /// parameter or by giving one of them a literal of its own.
     /// </exception>
     /// <exception cref="Exception">
     /// Any exception that a value function throws, unchanged.
@@ -267,7 +296,7 @@ public sealed class RouteTable
         ArgumentNullException.ThrowIfNull(route);
 
         Type type = route.GetType();
-        if (!_formatters.TryGetValue(type, out RouteFormatter? formatter))
+        if (!_formatters.TryGetValue(type, out (RouteFormatter Formatter, int Position) writer))
         {
             throw new InvalidOperationException(_routeTypes.Contains(type)
                 ? $"The route type '{RouteValueTypes.DisplayName(type)}' cannot be written as a path, because it is " +
@@ -279,14 +308,80 @@ public sealed class RouteTable
                   "derived from it; map the type itself with a format function.");
         }
 
-        return formatter.Format(route);
+        string path = writer.Formatter.Format(route);
+
+        // A definition ranked first has none above it that could match the path first, so it pays nothing more.
+        RouteDefinition? first = writer.Position == 0 ? null : FindMatchedFirst(path, writer.Position);
+        if (first is null)
+            return path;
+
+        // The message names both templates, but neither the route's values nor the path, which can carry a secret.
+        // The capturing template can contain a literal equal to a value, as '/products/new' does for the name 'new',
+        // but such a value is text the application wrote into its own template, not a secret.
+        RouteDefinition owner = _matchOrder[writer.Position];
+        throw new ArgumentException(
+            $"The route type '{RouteValueTypes.DisplayName(type)}' cannot be written as a path by the template " +
+            $"'{owner.Template.Value}': the path it writes is matched first by the template " +
+            $"'{first.Template.Value}', which ranks higher, so a link to it would open that route instead. " +
+            "Change the templates so that they cannot match the same path, for example by constraining a parameter " +
+            "or by giving one of them a literal of its own.",
+            nameof(route));
+    }
+
+    // Returns the definition that Match would select for a path that the definition at position wrote, when it is one
+    // ranked above that definition, or null when none is. The path is split as Match splits the path of a relative
+    // URI, which is the written text itself, because a written path has no '?' or '#' that is not percent-encoded.
+    private RouteDefinition? FindMatchedFirst(string path, int position)
+    {
+        string[] pathSegments = RouteText.SplitSegments(path);
+        var decodedCount = 0;
+        int first = FindFirstMatch(pathSegments, ref decodedCount, position, capture: false, out _);
+        if (first >= 0)
+            return _matchOrder[first];
+
+        Debug.Assert(
+            _matchOrder[position].Template.Matches(pathSegments, ref decodedCount),
+            "A formatter writes only paths that its own template matches.");
+        return null;
+    }
+
+    // Returns the position in _matchOrder of the first definition, before end, whose template matches the segments,
+    // or -1 when none does. Match and Format both select here, so that Format refuses exactly the paths that Match
+    // would give to another definition. Only Match needs the captured values: without capture, a template that
+    // matches builds no dictionary, so Format's walk allocates nothing beyond the decoded segments.
+    private int FindFirstMatch(
+        string[] pathSegments,
+        ref int decodedCount,
+        int end,
+        bool capture,
+        out IReadOnlyDictionary<string, string>? values)
+    {
+        for (var i = 0; i < end; i++)
+        {
+            RouteTemplate template = _matchOrder[i].Template;
+            if (capture)
+            {
+                values = template.Match(pathSegments, ref decodedCount);
+                if (values is not null)
+                    return i;
+            }
+            else if (template.Matches(pathSegments, ref decodedCount))
+            {
+                values = null;
+                return i;
+            }
+        }
+
+        values = null;
+        return -1;
     }
 
     // Keys each format function by its route type, which may have only one, and binds it to the table's codecs, which
     // reports an enum that is not registered. Each check runs in the order the routes were mapped, so the error does
     // not change from one build to the next.
-    private static FrozenDictionary<Type, RouteFormatter> BindFormatters(
+    private static FrozenDictionary<Type, (RouteFormatter Formatter, int Position)> BindFormatters(
         RouteDefinition[] definitions,
+        int[] positions,
         FrozenDictionary<Type, object> codecs)
     {
         // Every second format function is reported before anything is bound, so that it is reported even when a
@@ -310,11 +405,12 @@ public sealed class RouteTable
             owners.Add(definition.RouteType, definition);
         }
 
-        var formatters = new Dictionary<Type, RouteFormatter>(owners.Count);
-        foreach (RouteDefinition definition in definitions)
+        var formatters = new Dictionary<Type, (RouteFormatter Formatter, int Position)>(owners.Count);
+        for (var i = 0; i < definitions.Length; i++)
         {
-            if (definition.Formatter is not null)
-                formatters.Add(definition.RouteType, definition.Formatter.Bind(codecs));
+            RouteFormatter? formatter = definitions[i].Formatter;
+            if (formatter is not null)
+                formatters.Add(definitions[i].RouteType, (formatter.Bind(codecs), positions[i]));
         }
 
         return formatters.ToFrozenDictionary();
