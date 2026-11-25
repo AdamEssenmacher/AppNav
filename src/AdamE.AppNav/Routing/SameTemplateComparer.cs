@@ -5,13 +5,23 @@ namespace AdamE.AppNav.Routing;
 // text was written do not count, so two templates that are the same match exactly the same paths and rank equally,
 // and a route table could never reach the one mapped second. It compares parsed segments rather than canonical
 // strings, because a decoded literal can contain any character, including any separator such a string would use.
+//
+// SameShape compares everything but which constraint a parameter has, only whether it has one. Templates of the same
+// shape rank equally at every position, and only they can rank equally and match the same path, because literals are
+// always required and different literals never accept the same segment; so a route table needs to look for such a
+// pair only among templates of the same shape.
 internal sealed class SameTemplateComparer : IEqualityComparer<RouteTemplate>
 {
-    public static SameTemplateComparer Instance { get; } = new();
+    private readonly bool _compareConstraints;
 
-    private SameTemplateComparer()
+    private SameTemplateComparer(bool compareConstraints)
     {
+        _compareConstraints = compareConstraints;
     }
+
+    public static SameTemplateComparer Instance { get; } = new(compareConstraints: true);
+
+    public static SameTemplateComparer SameShape { get; } = new(compareConstraints: false);
 
     public bool Equals(RouteTemplate? x, RouteTemplate? y)
     {
@@ -38,10 +48,12 @@ internal sealed class SameTemplateComparer : IEqualityComparer<RouteTemplate>
         foreach (RouteSegment segment in obj.Segments)
         {
             hash.Add(segment.Kind);
-            if (segment.IsParameter)
+            if (!segment.IsParameter)
+                hash.Add(segment.Text, StringComparer.Ordinal);
+            else if (_compareConstraints)
                 hash.Add(segment.Constraint);
             else
-                hash.Add(segment.Text, StringComparer.Ordinal);
+                hash.Add(segment.Constraint is null);
         }
 
         return hash.ToHashCode();
@@ -49,13 +61,16 @@ internal sealed class SameTemplateComparer : IEqualityComparer<RouteTemplate>
 
     // Whether two segments in the same position are the same. Constraints compare by reference, because each built-in
     // constraint is one instance, whatever case its name was written in.
-    private static bool IsSameSegment(in RouteSegment x, in RouteSegment y)
+    private bool IsSameSegment(in RouteSegment x, in RouteSegment y)
     {
         if (x.Kind != y.Kind)
             return false;
 
-        return x.IsParameter
+        if (!x.IsParameter)
+            return StringComparer.Ordinal.Equals(x.Text, y.Text);
+
+        return _compareConstraints
             ? ReferenceEquals(x.Constraint, y.Constraint)
-            : StringComparer.Ordinal.Equals(x.Text, y.Text);
+            : x.Constraint is null == y.Constraint is null;
     }
 }

@@ -102,6 +102,7 @@ The built-in constraints are:
 - Every check is the same in every culture and applies to the decoded text exactly as it is captured. Nothing is trimmed, so a value with white space, such as `%2042`, never satisfies a number, `bool` or `guid`. Only the characters in the table are allowed: no thousands separators, exponents, currency symbols, trailing signs or digits other than ASCII `0` to `9`, such as `٣`, and no braces or parentheses around a guid.
 - `alpha` is letters only. Digits, spaces, punctuation and combining marks are not letters, so decomposed text such as `e` followed by a combining acute accent (`e%CC%81`) does not satisfy it, though the single character `é` does. Some text keeps combining marks even in NFC, such as most Devanagari words, and never satisfies it.
 - The captured value is the decoded text, unchanged: `+007` is captured as `+007`, not `7`.
+- Some text satisfies more than one constraint, such as `0`, which is an `int`, a `long` and a `decimal`, or `true`, which is a `bool` and `alpha`. A route table cannot have two templates that differ only in such constraints, as described in [Templates that cannot be told apart](#templates-that-cannot-be-told-apart).
 - Several texts can denote one value, such as `7`, `007` and `+7`, `true` and `TRUE`, or a guid in upper and lower case. Each satisfies the constraint and is captured as written, and `Format` writes whatever text it is given, so producing one canonical link for each value is the job of the code that turns typed values into text.
 
 ## Optional parameters
@@ -272,7 +273,7 @@ A relative URI is read from its original text, so its values are decoded from ex
 
 ### Which route wins
 
-Templates are tried by precedence, and the first one that matches the path wins; later ones are not tried. Precedence comes from the templates alone, so the more specific template wins whatever order the routes were mapped in; only templates that rank equally at every position, described below, fall back to that order. Two templates are compared segment by segment from the left, and the first position where their ranks differ decides: the higher rank is tried first. A template that has no segment at a position, because it has ended, has the rank *ended* there. The ranks, highest first:
+Templates are tried by precedence, and the first one that matches the path wins; later ones are not tried. Precedence comes from the templates alone, so the more specific template wins whatever order the routes were mapped in, and `Build` rejects templates that rank equally and could both match a path, as described [below](#templates-that-cannot-be-told-apart). Two templates are compared segment by segment from the left, and the first position where their ranks differ decides: the higher rank is tried first. A template that has no segment at a position, because it has ended, has the rank *ended* there. The ranks, highest first:
 
 1. A literal, such as `settings`.
 2. A required parameter with a constraint, such as `{id:int}`.
@@ -293,7 +294,7 @@ Which constraint a parameter has, which text a literal has, and parameter names 
 
 The leftmost rule decides even when a later segment is more specific. For `/a/5/edit`, `/a/{id:int}/{*rest}` is tried before `/a/{name}/edit`, because their ranks first differ at the second segment, where a constrained parameter outranks an unconstrained one. If that is not what you want, give the edit route the same constraint, as in `/a/{id:int}/edit`, so that the two templates first differ at the literal, which wins; or do not let a catch-all share a prefix with more specific routes.
 
-For now, templates that rank equally at every position but are not [the same template](#the-same-template-twice), such as `/products/{id:int}` and `/products/{n:long}`, are tried in the order they were mapped. In this version, the same route type can be mapped to more than one template. `Definitions` lists the table's mappings in the order they were made, not the order they are tried in.
+`Build` rejects two templates that rank equally at every position and can match the same path, whether they are [the same template](#the-same-template-twice) or [cannot otherwise be told apart](#templates-that-cannot-be-told-apart), so the order routes are mapped in never affects which route wins. In this version, the same route type can be mapped to more than one template. `Definitions` lists the table's mappings in the order they were made, not the order they are tried in.
 
 #### The same template twice
 
@@ -304,9 +305,29 @@ Two templates are the same when, once parsed, they have the same number of segme
 - `/a/{x}` and `/a/{y}` are the same, and so are `/a/{id:int}` and `/a/{n:INT}`.
 - `/caf%C3%A9` and `/café` are the same, and so are `/a//b/` and `/a/b`.
 - `/Users` and `/users` are not the same, nor are `/a/{id}` and `/a/{id?}`.
-- `/a/{id:int}` and `/a/{id:long}` are not the same.
+- `/a/{id:int}` and `/a/{id:long}` are not the same, though `Build` rejects them for the reason in the next section.
 
 This applies even when both mappings are for the same route type.
+
+#### Templates that cannot be told apart
+
+`Build` also throws `InvalidOperationException` for two templates that are not the same but rank equally at every position and both match some path, such as `/products/{id:int}` and `/products/{n:long}`, which both match `/products/42`. For such a path the one mapped first would win, so the order of the mappings would decide the route. Two templates rank equally when they have the same number of segments and the same [rank](#which-route-wins) at every position, and then some path matches both exactly when, at every required position:
+
+- two literals have the same decoded text, compared [ordinally and case-sensitively](#how-text-is-compared);
+- two parameters both have no constraint; or
+- two parameters have constraints that some text satisfies both. A constraint overlaps itself. Of the [built-in constraints](#constraints), `int`, `long` and `decimal` all accept `0`; `guid` accepts 32 zeros, which is also a number, and 32 `a`s, which are also letters for `alpha`; and `bool` accepts `true`, which is also letters. No other pair overlaps: `alpha` accepts no number, and `bool` accepts no number or guid.
+
+The case you are most likely to meet is a guid beside a number. `/orders/{id:int}` and `/orders/{key:guid}` cannot share a position, because a guid written without hyphens can be all digits, and 32 zeros is an `int`, since leading zeros are allowed: `Build` reports the path `/orders/00000000000000000000000000000000`. The same holds for `long` or `decimal` beside `guid`, and for `alpha` beside `guid`, because a guid can also be all letters. No built-in constraint keeps them apart, so give one a different literal, as in `/orders/{id:int}` and `/orders/by-key/{key:guid}`.
+
+Optional parameters and a catch-all never keep two templates apart, whatever their constraints, because a path that leaves them out matches both: `/a/{x:int?}` and `/a/{y:alpha?}` both match `/a`. To have `/a`, a number and a word go to different routes, map `/a`, `/a/{x:int}` and `/a/{y:alpha}`. Keeping one of them optional also works, as in `/a/{x:int?}` and `/a/{y:alpha}`, because the two templates then rank differently and precedence decides.
+
+The message names both templates and both route types, the earlier mapping first, and one path that both match, such as `/products/0` for the example above. The path has only the required segments, with each literal as `Format` writes it, `x` for a parameter without a constraint, and a value both constraints accept. The message then says what to do. In general: keep the templates apart at a required position, with a different literal or with constraints there that no text satisfies together, make them rank differently, or remove one. When the templates have the same literals and constraints at every required position, so that only optional parameters tell them apart, it says instead to map the shorter path and each alternative as its own template with a required parameter, giving the alternatives constraints that no text satisfies together, or to remove one. When there are several such pairs, the first mapping, in the order the routes were mapped, that conflicts with an earlier one is reported, with the earliest mapping it conflicts with. Two templates that are the same are reported as the same template, not as this.
+
+Still allowed:
+
+- the same route type on several templates;
+- templates that rank differently and match the same path, because precedence decides between them: for `/a/5`, `/a/{id:int}` wins over `/a/{name}`;
+- templates that rank equally but cannot match the same path, such as `/a/{id:int}` and `/a/{w:alpha}`, or `/a` and `/b`.
 
 ### Creating the route
 
