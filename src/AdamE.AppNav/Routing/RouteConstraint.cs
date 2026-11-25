@@ -6,16 +6,17 @@ namespace AdamE.AppNav.Routing;
 // A built-in parameter constraint: a condition that a parameter's decoded segment text must satisfy. Every check is
 // culture-invariant and applies to the text exactly as given, without trimming. The shape of a number is checked
 // before its range, because the BCL parsers used for the range also accept text that a constraint does not, such as
-// trailing null characters.
+// trailing null characters. Each constraint that names a type is its TryParse method, which RouteMatchContext also
+// uses to read a value as that type, so a value converts exactly when it satisfies the constraint of the same name.
 internal sealed class RouteConstraint
 {
     private static readonly RouteConstraint[] BuiltIn =
     [
-        new("int", IsInt),
-        new("long", IsLong),
-        new("decimal", IsDecimal),
-        new("bool", IsBool),
-        new("guid", IsGuid, HintForGuid),
+        new("int", static value => TryParseInt(value, out _)),
+        new("long", static value => TryParseLong(value, out _)),
+        new("decimal", static value => TryParseDecimal(value, out _)),
+        new("bool", static value => TryParseBool(value, out _)),
+        new("guid", static value => TryParseGuid(value, out _), HintForGuid),
         new("alpha", IsAlpha),
     ];
 
@@ -96,22 +97,25 @@ internal sealed class RouteConstraint
         return builder.ToString();
     }
 
-    private static bool IsInt(string value)
+    public static bool TryParseInt(string value, out int result)
     {
+        result = 0;
         return IsSignedDigits(value) &&
-               int.TryParse(value, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out _);
+               int.TryParse(value, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out result);
     }
 
-    private static bool IsLong(string value)
+    public static bool TryParseLong(string value, out long result)
     {
+        result = 0;
         return IsSignedDigits(value) &&
-               long.TryParse(value, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out _);
+               long.TryParse(value, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out result);
     }
 
     // An optional sign followed by ASCII digits with at most one '.', and at least one digit, so '.5', '5.' and '-.5'
     // are numbers. Digits beyond the precision of decimal are rounded by the range check, not rejected.
-    private static bool IsDecimal(string value)
+    public static bool TryParseDecimal(string value, out decimal result)
     {
+        result = 0;
         int start = HasSign(value) ? 1 : 0;
         var digits = 0;
         var points = 0;
@@ -128,20 +132,22 @@ internal sealed class RouteConstraint
                    value,
                    NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint,
                    CultureInfo.InvariantCulture,
-                   out _);
+                   out result);
     }
 
-    private static bool IsBool(string value)
+    public static bool TryParseBool(string value, out bool result)
     {
-        return Ascii.EqualsIgnoreCase(value, "true") || Ascii.EqualsIgnoreCase(value, "false");
+        result = Ascii.EqualsIgnoreCase(value, "true");
+        return result || Ascii.EqualsIgnoreCase(value, "false");
     }
 
     // 32 hex digits with a hyphen after the 8th, 12th, 16th and 20th, 36 characters in all. Only this form, so that a
-    // guid is never a number or letters and overlaps no other constraint. Every text of this shape parses as a guid,
-    // and the framework's "D" parser also accepts text that is not of it, such as a '+' or a "0x" at the start of a
-    // group, and trims white space, so it is not used.
-    private static bool IsGuid(string value)
+    // guid is never a number or letters and overlaps no other constraint. The framework's "D" parser also accepts text
+    // that is not of this shape, such as a '+' or a "0x" at the start of a group, and trims white space, so it is used
+    // only for the value, after the shape is checked; it parses every text of this shape.
+    public static bool TryParseGuid(string value, out Guid result)
     {
+        result = Guid.Empty;
         if (value.Length != 36)
             return false;
 
@@ -152,7 +158,7 @@ internal sealed class RouteConstraint
                 return false;
         }
 
-        return true;
+        return Guid.TryParseExact(value, "D", out result);
     }
 
     // A guid written without hyphens, as Guid.ToString("N") writes it, is the likeliest mistake, so it is named.
@@ -186,11 +192,18 @@ internal sealed class RouteConstraint
         return true;
     }
 
-    // An optional sign followed by one or more ASCII digits.
+    // An optional sign followed by one or more ASCII digits. A plain loop, because until the JIT optimizes it the
+    // vectorized span search allocates on every call, and a typed read of a path value must not.
     private static bool IsSignedDigits(string value)
     {
         int start = HasSign(value) ? 1 : 0;
-        return value.Length > start && !value.AsSpan(start).ContainsAnyExceptInRange('0', '9');
+        for (int i = start; i < value.Length; i++)
+        {
+            if (!char.IsAsciiDigit(value[i]))
+                return false;
+        }
+
+        return value.Length > start;
     }
 
     private static bool HasSign(string value)

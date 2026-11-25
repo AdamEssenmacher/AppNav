@@ -55,9 +55,42 @@ public sealed class RouteMatchContext
     /// </exception>
     public string Path(string name)
     {
-        return TryGetPath(name, out string? value) ? value : throw new KeyNotFoundException(
-            $"The matched path has no value for path parameter '{RouteText.EscapeForMessage(name)}': the template " +
-            "has no parameter of that name, or the path left it out.");
+        return TryGetPath(name, out string? value) ? value : throw NoPathValue(name);
+    }
+
+    /// <summary>
+    /// Gets the value a path parameter captured, converted to <typeparamref name="T"/>.
+    /// </summary>
+    /// <typeparam name="T">
+    /// The type to convert to: <see cref="string"/>, <see cref="int"/>, <see cref="long"/>, <see cref="decimal"/>,
+    /// <see cref="bool"/> or <see cref="Guid"/>. A value converts to a type other than <see cref="string"/> exactly
+    /// when it satisfies the built-in constraint of the same name, such as <c>{id:int}</c>, so a value that the
+    /// constraint of the same name accepted in the template always converts. A different constraint can let through
+    /// a value that does not convert, such as <c>3000000000</c> for <c>{id:long}</c> read as <see cref="int"/>. A
+    /// <see cref="string"/> is the captured value unchanged.
+    /// </typeparam>
+    /// <param name="name">The parameter name, compared without regard to case.</param>
+    /// <returns>The captured value, decoded and converted.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// <typeparamref name="T"/> is not one of the supported types, such as <c>int?</c>, <see cref="double"/> or an
+    /// enum. This is thrown whether or not the path has a value, and propagates out of
+    /// <see cref="RouteTable.Match(Uri)"/>.
+    /// </exception>
+    /// <exception cref="ArgumentNullException"><paramref name="name"/> is <see langword="null"/>.</exception>
+    /// <exception cref="KeyNotFoundException">
+    /// The template has no parameter named <paramref name="name"/>, or it is an optional or catch-all parameter that
+    /// the path left out. Use <see cref="TryGetPath{T}(string, out T)"/> for a parameter that can be left out.
+    /// </exception>
+    /// <exception cref="RouteValueException">
+    /// The path has a value that does not convert to <typeparamref name="T"/>. Thrown from the create function,
+    /// it makes <see cref="RouteTable.Match(Uri)"/> return a failed result with one
+    /// <see cref="RouteDiagnosticCodes.ValueInvalid"/> diagnostic, and no later template is tried. Its message
+    /// names the parameter and the type but never quotes the value.
+    /// </exception>
+    public T Path<T>(string name)
+    {
+        // A true result means the value was set, which the compiler cannot see for an unconstrained T.
+        return TryGetPath(name, out T? value) ? value! : throw NoPathValue(name);
     }
 
     /// <summary>
@@ -79,6 +112,66 @@ public sealed class RouteMatchContext
         ArgumentNullException.ThrowIfNull(name);
 
         return PathValues.TryGetValue(name, out value);
+    }
+
+    /// <summary>
+    /// Gets the value a path parameter captured, converted to <typeparamref name="T"/>, if the matched path has one.
+    /// A value that is present but does not convert throws <see cref="RouteValueException"/>; this method never
+    /// returns <see langword="false"/> for one.
+    /// </summary>
+    /// <typeparam name="T">
+    /// The type to convert to, one of those listed for <see cref="Path{T}(string)"/>, by the same rules.
+    /// </typeparam>
+    /// <param name="name">The parameter name, compared without regard to case.</param>
+    /// <param name="value">
+    /// When this method returns <see langword="true"/>, the captured value, decoded and converted; otherwise the
+    /// default value of <typeparamref name="T"/>.
+    /// </param>
+    /// <returns>
+    /// <see langword="true"/> when the matched path has a value for the parameter, which is then converted;
+    /// <see langword="false"/> when it has none: the template has no parameter named <paramref name="name"/>, or it
+    /// is an optional or catch-all parameter that the path left out.
+    /// </returns>
+    /// <remarks>
+    /// Unlike most <c>Try</c> methods, this one does not return <see langword="false"/> for a value that does not
+    /// convert: a value that is missing and a value that is not valid are different, and treating a bad value as a
+    /// missing one would hide a bad link. For a lenient read, use <see cref="TryGetPath(string, out string)"/> and
+    /// convert the text yourself.
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">
+    /// <typeparamref name="T"/> is not one of the supported types. This is thrown whether or not the path has a
+    /// value, and propagates out of <see cref="RouteTable.Match(Uri)"/>.
+    /// </exception>
+    /// <exception cref="ArgumentNullException"><paramref name="name"/> is <see langword="null"/>.</exception>
+    /// <exception cref="RouteValueException">
+    /// The path has a value that does not convert to <typeparamref name="T"/>. Thrown from the create function,
+    /// it makes <see cref="RouteTable.Match(Uri)"/> return a failed result with one
+    /// <see cref="RouteDiagnosticCodes.ValueInvalid"/> diagnostic, and no later template is tried. Its message
+    /// names the parameter and the type but never quotes the value.
+    /// </exception>
+    public bool TryGetPath<T>(string name, [MaybeNullWhen(false)] out T value)
+    {
+        // Checked before the name and the value, so that using a type that can never work fails on every path, not
+        // only on one that has the value.
+        string typeName = SupportedTypeName<T>() ?? throw new InvalidOperationException(
+            $"A path value cannot be read as type '{DisplayName(typeof(T))}'. The supported types are string, int, " +
+            "long, decimal, bool and Guid; read the value as a string and convert it instead.");
+
+        if (!TryGetPath(name, out string? text))
+        {
+            value = default;
+            return false;
+        }
+
+        if (TryConvert(text, out value))
+            return true;
+
+        // A path value can carry a secret, such as a sign-in token, and the message ends up in a diagnostic that
+        // tends to be logged, so it names the parameter and the type only. It is never another exception's
+        // message and has no inner exception, since parse exceptions quote their input.
+        throw new RouteValueException(
+            name,
+            $"The value of '{RouteText.EscapeForMessage(name)}' is not a valid {typeName}.");
     }
 
     /// <summary>
@@ -141,6 +234,85 @@ public sealed class RouteMatchContext
             List<string> list => list.AsReadOnly(),
             _ => throw new UnreachableException("QueryString.Parse returned a list of an unexpected type."),
         };
+    }
+
+    private static KeyNotFoundException NoPathValue(string name)
+    {
+        return new KeyNotFoundException(
+            $"The matched path has no value for path parameter '{RouteText.EscapeForMessage(name)}': the template " +
+            "has no parameter of that name, or the path left it out.");
+    }
+
+    // A short name for a message, as Int32? for a nullable type, rather than the full name with its generic arity.
+    private static string DisplayName(Type type)
+    {
+        Type? underlying = Nullable.GetUnderlyingType(type);
+        return underlying is null ? type.Name : underlying.Name + "?";
+    }
+
+    // The tests of typeof(T) are constants once the method is compiled for a value type, so each instantiation keeps
+    // only its own branch, and no type is looked up by reflection, which trimming and AOT would not allow.
+    private static string? SupportedTypeName<T>()
+    {
+        if (typeof(T) == typeof(string))
+            return "string";
+        if (typeof(T) == typeof(int))
+            return "int";
+        if (typeof(T) == typeof(long))
+            return "long";
+        if (typeof(T) == typeof(decimal))
+            return "decimal";
+        if (typeof(T) == typeof(bool))
+            return "bool";
+        if (typeof(T) == typeof(Guid))
+            return "Guid";
+
+        return null;
+    }
+
+    // Each type uses the parse method of the constraint of the same name, so that conversion and constraint cannot
+    // disagree. The cast through object is removed by the JIT when T is that value type, so nothing is boxed, and a
+    // branch whose test and local ever disagreed would throw InvalidCastException rather than misread memory.
+    private static bool TryConvert<T>(string text, [MaybeNullWhen(false)] out T value)
+    {
+        bool converted;
+        if (typeof(T) == typeof(string))
+        {
+            value = (T)(object)text;
+            return true;
+        }
+
+        if (typeof(T) == typeof(int))
+        {
+            converted = RouteConstraint.TryParseInt(text, out int result);
+            value = (T)(object)result;
+        }
+        else if (typeof(T) == typeof(long))
+        {
+            converted = RouteConstraint.TryParseLong(text, out long result);
+            value = (T)(object)result;
+        }
+        else if (typeof(T) == typeof(decimal))
+        {
+            converted = RouteConstraint.TryParseDecimal(text, out decimal result);
+            value = (T)(object)result;
+        }
+        else if (typeof(T) == typeof(bool))
+        {
+            converted = RouteConstraint.TryParseBool(text, out bool result);
+            value = (T)(object)result;
+        }
+        else if (typeof(T) == typeof(Guid))
+        {
+            converted = RouteConstraint.TryParseGuid(text, out Guid result);
+            value = (T)(object)result;
+        }
+        else
+        {
+            throw new UnreachableException("TryConvert was called for a type that SupportedTypeName rejects.");
+        }
+
+        return converted;
     }
 
     private IReadOnlyDictionary<string, IReadOnlyList<string>> QueryValues => _queryValues ??= ParseQuery();
