@@ -655,11 +655,19 @@ public sealed class RouteMatchContextTypedPathTests
         for (var i = 0; i < 200; i++)
             Assert.True(table.Match(uri).IsSuccess);
 
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < Calls; i++)
-            table.Match(uri);
+        // The runtime sometimes allocates once on its own account among the measured matches, which can only add
+        // bytes, so the least of several samples is what the matches themselves allocate.
+        long least = long.MaxValue;
+        for (var sample = 0; sample < 5; sample++)
+        {
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            for (var i = 0; i < Calls; i++)
+                table.Match(uri);
 
-        return (GC.GetAllocatedBytesForCurrentThread() - before) / Calls;
+            least = Math.Min(least, (GC.GetAllocatedBytesForCurrentThread() - before) / Calls);
+        }
+
+        return least;
     }
 
     private static T ReadValue<T>(string text, Func<RouteMatchContext, T> read)
