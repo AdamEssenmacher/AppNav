@@ -139,8 +139,9 @@ public sealed class RouteTable
     /// matched throws, unchanged.
     /// </exception>
     // A rejected value is thrown in the application's create function and caught here, so a debugger that breaks on
-    // user-unhandled exceptions would stop on every rejected link. Only RouteValueException is caught here, so this
-    // hides no other exception from the debugger.
+    // user-unhandled exceptions would stop on every rejected link. The attribute stops that for this method, and for
+    // every other exception that passes through it too, so the call to the create function hands each of those back
+    // to the debugger itself.
     [DebuggerDisableUserUnhandledExceptions]
     public RouteMatchResult Match(Uri uri)
     {
@@ -170,6 +171,12 @@ public sealed class RouteTable
             catch (RouteValueException exception)
             {
                 return ValueInvalid(definition, path, exception);
+            }
+            catch (Exception exception) when (BreakInDebugger(exception))
+            {
+                // Never entered: the filter only tells a debugger about the exception and declines it, so it goes on
+                // to the caller exactly as it was thrown.
+                throw;
             }
 
             return RouteMatchResult.Success(
@@ -281,6 +288,16 @@ public sealed class RouteTable
     // query itself is not read: queryStart is -1 for an absolute URI, whose query is Uri.Query, and otherwise the index
     // in OriginalString of the '?' that starts it, or the length of the text when there is none, so that a URI that
     // matches nothing, and a route that reads no query values, pay nothing for it.
+    // Tells an attached debugger that an exception the create function threw is not handled here, which the attribute
+    // on Match would otherwise keep it from stopping on. The debugger takes that only from a method that has the
+    // attribute, so this one has it too. It always declines the exception, and without a debugger it does nothing.
+    [DebuggerDisableUserUnhandledExceptions]
+    private static bool BreakInDebugger(Exception exception)
+    {
+        Debugger.BreakForUserUnhandledException(exception);
+        return false;
+    }
+
     private static string ReadPath(Uri uri, out int queryStart)
     {
         // A relative URI has no parsed parts: AbsolutePath and Query throw for one, so both are read from the text. On
