@@ -187,11 +187,11 @@ public sealed class RouteTable
     // so that order would decide which route wins for that path. Only templates of the same shape can be such a pair,
     // so the definitions are grouped by shape and each is compared with the earlier members of its group only. The
     // members of a group are kept apart in pairs, or Build has already thrown, so a group holds at most one member for
-    // each combination of mutually disjoint constraints at its constrained required positions: up to 2^k for k such
-    // positions with the built-ins. The check is linear for tables whose groups are small, which is every realistic
-    // table, and quadratic in the size of a group. previous chains each group from its latest member back to its
-    // first, and the earliest member that conflicts is the one reported, so the error does not change from one build
-    // to the next.
+    // each combination of mutually disjoint constraints at its constrained required positions: up to 3^k for k such
+    // positions with the built-ins, one for each class of constraints that overlap (the numbers, bool and alpha, and
+    // guid). The check is linear for tables whose groups are small, which is every realistic table, and quadratic in
+    // the size of a group. previous chains each group from its latest member back to its first, and the earliest member
+    // that conflicts is the one reported, so the error does not change from one build to the next.
     private static void ThrowIfAmbiguous(RouteDefinition[] definitions)
     {
         var latest = new Dictionary<RouteTemplate, int>(definitions.Length, SameTemplateComparer.SameShape);
@@ -202,6 +202,9 @@ public sealed class RouteTable
             int earliest = -1;
             string? commonPath = null;
             previous[i] = latest.TryGetValue(template, out int last) ? last : -1;
+            // The built-in constraints overlap in classes, so at most one earlier member of a group can conflict with a
+            // new one, and which is reported cannot be observed today. The loop still reports the earliest, so that
+            // the documented behaviour holds for constraints that overlap without forming such classes.
             for (int j = previous[i]; j >= 0; j = previous[j])
             {
                 string? path = definitions[j].Template.FindCommonPath(template);

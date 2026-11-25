@@ -15,23 +15,26 @@ internal sealed class RouteConstraint
         new("long", IsLong),
         new("decimal", IsDecimal),
         new("bool", IsBool),
-        new("guid", IsGuid),
+        new("guid", IsGuid, HintForGuid),
         new("alpha", IsAlpha),
     ];
 
     // Whenever two built-in constraints both accept some text, they both accept one of these, tried simplest first:
-    // '0' is an int, a long and a decimal, 'a' letters, 'true' a bool and letters, 32 zeros a number and a guid, and
-    // 32 a's a guid and letters. So two built-in constraints that accept none of them together accept no text
-    // together, which the tests check against a large corpus.
-    private static readonly string[] SampleValues =
-        ["0", "a", "true", new string('0', 32), new string('a', 32)];
+    // '0' is an int, a long and a decimal, 'a' letters, 'true' a bool and letters, and the zero guid a guid, which
+    // overlaps only itself: a number has a hyphen only as its first character, and letters have none. So two built-in
+    // constraints that accept none of them together accept no text together, which the tests check against a corpus.
+    // A new built-in constraint needs a sample here for every overlap it creates, and an entry in the tests' tables of
+    // overlapping pairs, disjoint pairs and own values, and values in their corpus that satisfy it.
+    private static readonly string[] SampleValues = ["0", "a", "true", "00000000-0000-0000-0000-000000000000"];
 
     private readonly Func<string, bool> _isSatisfiedBy;
+    private readonly Func<string, string>? _hintFor;
 
-    private RouteConstraint(string name, Func<string, bool> isSatisfiedBy)
+    private RouteConstraint(string name, Func<string, bool> isSatisfiedBy, Func<string, string>? hintFor = null)
     {
         Name = name;
         _isSatisfiedBy = isSatisfiedBy;
+        _hintFor = hintFor;
     }
 
     // The supported names, quoted and listed in order, for the message that rejects an unknown one.
@@ -57,6 +60,13 @@ internal sealed class RouteConstraint
     public bool IsSatisfiedBy(string value)
     {
         return _isSatisfiedBy(value);
+    }
+
+    // Text to append to the message that rejects a value that does not satisfy this constraint, or an empty string.
+    // It never repeats the value.
+    public string HintFor(string value)
+    {
+        return _hintFor?.Invoke(value) ?? "";
     }
 
     // Returns text that both constraints accept, or null when no text satisfies both. The same pair gives the same
@@ -126,21 +136,38 @@ internal sealed class RouteConstraint
         return Ascii.EqualsIgnoreCase(value, "true") || Ascii.EqualsIgnoreCase(value, "false");
     }
 
-    // 32 hex digits, or 36 characters with a hyphen after the 8th, 12th, 16th and 20th hex digits.
+    // 32 hex digits with a hyphen after the 8th, 12th, 16th and 20th, 36 characters in all. Only this form, so that a
+    // guid is never a number or letters and overlaps no other constraint. Every text of this shape parses as a guid,
+    // and the framework's "D" parser also accepts text that is not of it, such as a '+' or a "0x" at the start of a
+    // group, and trims white space, so it is not used.
     private static bool IsGuid(string value)
     {
-        if (value.Length is not (32 or 36))
+        if (value.Length != 36)
             return false;
 
-        bool hyphenated = value.Length == 36;
         for (var i = 0; i < value.Length; i++)
         {
-            bool isHyphenPosition = hyphenated && i is 8 or 13 or 18 or 23;
+            bool isHyphenPosition = i is 8 or 13 or 18 or 23;
             if (isHyphenPosition ? value[i] != '-' : !char.IsAsciiHexDigit(value[i]))
                 return false;
         }
 
         return true;
+    }
+
+    // A guid written without hyphens, as Guid.ToString("N") writes it, is the likeliest mistake, so it is named.
+    private static string HintForGuid(string value)
+    {
+        if (value.Length != 32)
+            return "";
+
+        foreach (char c in value)
+        {
+            if (!char.IsAsciiHexDigit(c))
+                return "";
+        }
+
+        return " A guid must have hyphens, in the 8-4-4-4-12 form that Guid.ToString() writes.";
     }
 
     // One or more Unicode letters, tested per scalar value so that a letter outside the Basic Multilingual Plane, which

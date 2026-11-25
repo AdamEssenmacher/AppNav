@@ -14,6 +14,7 @@ public sealed class RouteTemplateFormatTests
     private const string NotValidUtf16 = "not valid UTF-16";
     private const string Ambiguous = "ambiguous";
     private const string UnsatisfiedConstraint = "does not satisfy its constraint";
+    private const string MissingHyphens = "must have hyphens";
 
     private static readonly Dictionary<string, string> NoValues = [];
 
@@ -182,6 +183,32 @@ public sealed class RouteTemplateFormatTests
         Assert.DoesNotContain(NoValue, exception.Message, StringComparison.Ordinal);
     }
 
+    // A guid without hyphens, the likeliest mistake, is named as such, without repeating the value; any other value
+    // that fails, for guid or another constraint, gets only the general message.
+    [Theory]
+    [InlineData("guid", "6f9619ff8b86d011b42d00cf4fc964ff", true)]
+    [InlineData("guid", "6F9619FF8B86D011B42D00CF4FC964FF", true)]
+    [InlineData("guid", "00000000000000000000000000000000", true)]
+    [InlineData("guid", "6f9619ff8b86d011b42d00cf4fc964f", false)]
+    [InlineData("guid", "6f9619ff8b86d011b42d00cf4fc964ff0", false)]
+    [InlineData("guid", "6f9619ff8b86d011b42d00cf4fc964fg", false)]
+    [InlineData("guid", "{6f9619ff8b86d011b42d00cf4fc964f}", false)]
+    [InlineData("guid", "6f9619ff-8b86-d011-b42d-00cf4fc964f", false)]
+    [InlineData("guid", "\uFF16f9619ff8b86d011b42d00cf4fc964ff", false)]
+    [InlineData("int", "6f9619ff8b86d011b42d00cf4fc964ff", false)]
+    [InlineData("alpha", "6f9619ff8b86d011b42d00cf4fc964ff", false)]
+    [InlineData("bool", "6f9619ff8b86d011b42d00cf4fc964ff", false)]
+    public void FormatNamesTheMissingHyphensOfAGuid(string constraint, string value, bool hinted)
+    {
+        RouteTemplate template = RouteTemplate.Parse($"/items/{{v:{constraint}}}");
+        var values = new Dictionary<string, string> { ["v"] = value };
+
+        ArgumentException exception = AssertRejectsValue(() => template.Format(values), "v", UnsatisfiedConstraint);
+
+        Assert.Equal(hinted, exception.Message.Contains(MissingHyphens, StringComparison.Ordinal));
+        Assert.DoesNotContain(value, exception.Message, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("/{v}")]
     [InlineData("/files/{v}")]
@@ -261,7 +288,7 @@ public sealed class RouteTemplateFormatTests
     [InlineData("decimal", "+19.95", "%2B19.95")]
     [InlineData("bool", "TRUE", "TRUE")]
     [InlineData("guid", "6f9619ff-8b86-d011-b42d-00cf4fc964ff", "6f9619ff-8b86-d011-b42d-00cf4fc964ff")]
-    [InlineData("guid", "6F9619FF8B86D011B42D00CF4FC964FF", "6F9619FF8B86D011B42D00CF4FC964FF")]
+    [InlineData("guid", "6F9619FF-8B86-D011-B42D-00CF4FC964FF", "6F9619FF-8B86-D011-B42D-00CF4FC964FF")]
     [InlineData("alpha", "caf\u00E9", "caf%C3%A9")]
     [InlineData("alpha", "\U0001D49C", "%F0%9D%92%9C")]
     [InlineData("INT", "42", "42")]
@@ -295,6 +322,13 @@ public sealed class RouteTemplateFormatTests
     [InlineData("guid", "{6f9619ff-8b86-d011-b42d-00cf4fc964ff}")]
     [InlineData("guid", "(6f9619ff-8b86-d011-b42d-00cf4fc964ff)")]
     [InlineData("guid", " 6f9619ff-8b86-d011-b42d-00cf4fc964ff")]
+    [InlineData("guid", "6f9619ff8b86d011b42d00cf4fc964ff")]
+    [InlineData("guid", "00000000000000000000000000000000")]
+    [InlineData("guid", "6f9619ff-8b86-d011-b42d-00cf4fc964ff ")]
+    [InlineData("guid", "6f9619ff-+b86-d011-b42d-00cf4fc964ff")]
+    [InlineData("guid", "+f9619ff-8b86-d011-b42d-00cf4fc964ff")]
+    [InlineData("guid", "0x9619ff-8b86-d011-b42d-00cf4fc964ff")]
+    [InlineData("guid", "6f9619ff-8b86-d011-b42d-0X0f4fc964ff")]
     [InlineData("alpha", "a1")]
     [InlineData("alpha", "a b")]
     [InlineData("alpha", "e\u0301")]
@@ -350,7 +384,7 @@ public sealed class RouteTemplateFormatTests
             ("long", ["9223372036854775807", "-9223372036854775808", "+00"]),
             ("decimal", ["19.95", ".5", "5.", "-.5", "+0.0", "79228162514264337593543950335.4"]),
             ("bool", ["true", "FALSE", "tRuE"]),
-            ("guid", ["6f9619ff-8b86-d011-b42d-00cf4fc964ff", "6F9619FF8B86D011B42D00CF4FC964FF"]),
+            ("guid", ["6f9619ff-8b86-d011-b42d-00cf4fc964ff", "6F9619FF-8B86-D011-B42D-00CF4FC964FF"]),
             ("alpha", ["a", "caf\u00E9", "\U0001D49C", "\u65E5\u672C", "\u01C5"]),
         ];
         var random = new Random(20261125);
@@ -389,7 +423,7 @@ public sealed class RouteTemplateFormatTests
     [InlineData("/products/{id:int}", "/products/%2B007")]
     [InlineData("/products/{id:int}", "/products/4%32")]
     [InlineData("/products/{id:decimal}", "/products/-.5")]
-    [InlineData("/products/{id:guid}", "/products/6F9619FF8b86d011b42d00cf4fc964ff")]
+    [InlineData("/products/{id:guid}", "/products/6F9619FF-8b86-d011-b42d-00cf4fc964ff")]
     [InlineData("/products/{id:bool}", "/products/True")]
     [InlineData("/{store:alpha}/x/{id:long}", "//caf%C3%A9//x/0042/")]
     public void FormattingTheValuesOfAConstrainedMatchProducesAPathThatMatchesAgain(string value, string path)

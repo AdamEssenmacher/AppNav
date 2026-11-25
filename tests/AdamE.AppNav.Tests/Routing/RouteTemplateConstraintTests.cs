@@ -179,12 +179,10 @@ public sealed class RouteTemplateConstraintTests
     [InlineData("6f9619ff-8b86-d011-b42d-00cf4fc964ff")]
     [InlineData("6F9619FF-8B86-D011-B42D-00CF4FC964FF")]
     [InlineData("6f9619FF-8b86-D011-b42d-00CF4fc964ff")]
-    [InlineData("6f9619ff8b86d011b42d00cf4fc964ff")]
-    [InlineData("6F9619FF8B86D011B42D00CF4FC964FF")]
-    [InlineData("00000000000000000000000000000000")]
     [InlineData("00000000-0000-0000-0000-000000000000")]
+    [InlineData("aaaaaaaa-bbbb-cccc-dddd-eeeeeeffffff")]
     [InlineData("6f9619ff%2D8b86-d011-b42d-00cf4fc964ff")]
-    public void GuidAcceptsTheHyphenatedAndThe32DigitForms(string segment)
+    public void GuidAcceptsTheHyphenatedFormInAnyCase(string segment)
     {
         AssertAccepts("guid", segment);
     }
@@ -196,7 +194,30 @@ public sealed class RouteTemplateConstraintTests
     [InlineData("{0x6f9619ff,0x8b86,0xd011,{0xb4,0x2d,0x00,0xcf,0x4f,0xc9,0x64,0xff}}")]
     [InlineData("%206f9619ff-8b86-d011-b42d-00cf4fc964ff")]
     [InlineData("6f9619ff-8b86-d011-b42d-00cf4fc964ff%20")]
+    [InlineData("6f9619ff8b86d011b42d00cf4fc964ff")]
+    [InlineData("6F9619FF8B86D011B42D00CF4FC964FF")]
+    [InlineData("00000000000000000000000000000000")]
+    [InlineData("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]
     [InlineData("6f9619ff8b86d011b42d00cf4fc964ff%00")]
+    [InlineData("6f9619ff-8b86-d011-b42d-00cf4fc964ff%00")]
+    [InlineData("6f9619ff-8b86-d011-b42d-00cf4fc964ff%0A")]
+    [InlineData("6f9619ff-8b86-d011-b42d-00cf4fc964f%20")]
+    [InlineData("6f9619ff-8b86-d011-b42d-00cf4fc96-4f")]
+    [InlineData("6f9619ff--8b86-d011-b42d-00cf4fc964f")]
+    [InlineData("6f9619ff-8b86-d011-b42d-00cf4fc964ff0")]
+    [InlineData("6f9619ff-8b86-d011-b42d-00cf4fc964gf")]
+    [InlineData("6f9619ff-8b86-d011-b42d-00cf4fc964\uFF10f")]
+    [InlineData("6f9619ff-8b86-d011-b42d-00cf4fc964\u0663f")]
+    [InlineData("6f9619ff\u20118b86-d011-b42d-00cf4fc964ff")]
+    [InlineData("6f9619ff\u2013-8b86-d011-b42d-00cf4fc964f")]
+    [InlineData("6f9619ff\u22128b86-d011-b42d-00cf4fc964ff")]
+    [InlineData("6f9619ff-8b86-d011-b42d-00cf4fc964f\u00E9")]
+    [InlineData("6f9619ff-+b86-d011-b42d-00cf4fc964ff")]
+    [InlineData("+f9619ff-8b86-d011-b42d-00cf4fc964ff")]
+    [InlineData("%2Bf9619ff-8b86-d011-b42d-00cf4fc964ff")]
+    [InlineData("0x9619ff-8b86-d011-b42d-00cf4fc964ff")]
+    [InlineData("0X9619ff-8b86-d011-b42d-00cf4fc964ff")]
+    [InlineData("6f9619ff-8b86-d011-b42d-0x0f4fc964ff")]
     [InlineData("6f9619ff8-b86-d011-b42d-00cf4fc964ff")]
     [InlineData("6f9619ff-8b86-d011-b42d00cf4fc964ff-")]
     [InlineData("6f9619ff-8b86-d011-b42d-00cf4fc964fg")]
@@ -210,6 +231,17 @@ public sealed class RouteTemplateConstraintTests
     public void GuidRejectsAnythingElse(string segment)
     {
         AssertRejects("guid", segment);
+    }
+
+    // Checked on the constraint itself, because a path never captures an empty segment, and so that a raw newline
+    // is tested as well as the encoded one above.
+    [Theory]
+    [InlineData("")]
+    [InlineData("6f9619ff-8b86-d011-b42d-00cf4fc964ff\n")]
+    [InlineData("6f9619ff-8b86-d011-b42d-00cf4fc964f\n")]
+    public void GuidRejectsTheEmptyStringAndATrailingNewline(string value)
+    {
+        Assert.False(RouteConstraint.Find("guid")!.IsSatisfiedBy(value));
     }
 
     [Theory]
@@ -270,7 +302,7 @@ public sealed class RouteTemplateConstraintTests
     [InlineData("LONG", "42", "x")]
     [InlineData("DeCiMaL", "4.2", "x")]
     [InlineData("BOOL", "true", "x")]
-    [InlineData("Guid", "6f9619ff8b86d011b42d00cf4fc964ff", "x")]
+    [InlineData("Guid", "6f9619ff-8b86-d011-b42d-00cf4fc964ff", "6f9619ff8b86d011b42d00cf4fc964ff")]
     [InlineData("ALPHA", "x", "42")]
     public void ConstraintNamesAreComparedWithoutRegardToCase(string constraint, string satisfying, string other)
     {
@@ -382,6 +414,9 @@ public sealed class RouteTemplateConstraintTests
             Assert.Equal("-4.2", RouteTemplate.Parse("/{v:decimal}").Match("/-4.2")?["v"]);
             Assert.Equal("TRUE", RouteTemplate.Parse("/{v:bool}").Match("/TRUE")?["v"]);
             Assert.NotNull(RouteTemplate.Parse("/{v:guid}").Match("/6F9619FF-8B86-D011-B42D-00CF4FC964FF"));
+            Assert.NotNull(RouteTemplate.Parse("/{v:guid}").Match("/6f9619ff-8b86-d011-b42d-00cf4fc964ff"));
+            Assert.Null(RouteTemplate.Parse("/{v:guid}").Match("/6F9619FF8B86D011B42D00CF4FC964FF"));
+            Assert.Null(RouteTemplate.Parse("/{v:guid}").Match("/6F9619FF\u20118B86-D011-B42D-00CF4FC964FF"));
             Assert.NotNull(RouteTemplate.Parse("/{id:INT}").Match("/42"));
             Assert.NotNull(RouteTemplate.Parse("/{id:ALPHA}").Match("/I\u0131"));
 
