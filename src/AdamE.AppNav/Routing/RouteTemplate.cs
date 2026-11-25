@@ -139,15 +139,14 @@ public sealed class RouteTemplate
     /// avoids, these checks apply to the text as written, before percent-decoding.
     /// </para>
     /// <para>
-    /// The first invalid segment, reading left to right, is reported. Within a segment, a control character is
-    /// reported first, then a lone surrogate, then any other problem of the segment's own text, of which a dot segment
-    /// is the last, then a segment that follows a catch-all parameter or follows an optional parameter without being
-    /// one, then a repeated name. Within a parameter, a <c>*</c> that is not first is reported first, then a <c>?</c>
-    /// that is not last, then, with a first <c>*</c> and a final <c>?</c> removed, an invalid name, then a catch-all
-    /// parameter that is optional, then a catch-all parameter with a constraint, then more than one <c>:</c>, then an
-    /// empty constraint, then an unknown one. A control character is reported even when it is also white space, such
-    /// as a tab at the start of a segment. The message shows each control character and lone surrogate as a
-    /// <c>\uXXXX</c> escape.
+    /// The rules for names and constraints apply to a parameter with a first <c>*</c> and a final <c>?</c> removed, so
+    /// <c>{?}</c> and <c>{*}</c> have an invalid name and <c>{id:?}</c> an empty constraint.
+    /// </para>
+    /// <para>
+    /// The first invalid segment, reading left to right, is the one reported. A rule that involves two segments, such
+    /// as a repeated name or a segment after a catch-all parameter, is broken by the later one. When a segment has
+    /// more than one problem, which one is reported is not specified. The message shows each control character and
+    /// lone surrogate as a <c>\uXXXX</c> escape.
     /// </para>
     /// </exception>
     public static RouteTemplate Parse(string value)
@@ -318,9 +317,8 @@ public sealed class RouteTemplate
     /// between slashes; or an optional parameter has a value although an earlier optional parameter was left out, so
     /// its segment cannot be written. These rules apply to optional and catch-all parameters that have an entry
     /// exactly as to other parameters: a <see langword="null"/> or empty value does not leave a parameter out. The
-    /// first parameter in template order that cannot be formatted is the one reported. A lone surrogate in a catch-all
-    /// value is reported before an empty part, a dot segment is reported after every other problem with the value, and
-    /// a value that is not valid is reported before it is found to follow a parameter that was left out.
+    /// first parameter in template order that cannot be formatted is the one reported. When a parameter has more than
+    /// one problem, which one is reported is not specified.
     /// </exception>
     public string Format(IReadOnlyDictionary<string, string> pathValues)
     {
