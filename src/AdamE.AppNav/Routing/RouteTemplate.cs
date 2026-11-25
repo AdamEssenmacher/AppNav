@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 
 namespace AdamE.AppNav.Routing;
@@ -447,8 +448,26 @@ public sealed class RouteTemplate
     {
         ArgumentNullException.ThrowIfNull(pathValues);
 
+        return TryFormat(pathValues, out string? path, out PathFormatFailure failure)
+            ? path
+            : throw FormatFailed(failure);
+    }
+
+    // Writes the path, or reports the first parameter in template order that cannot be written and why, so that
+    // RouteTable.Format applies exactly these checks and words its own message. Throws only for a dictionary with more
+    // than one key that equals a name ignoring case, which a dictionary that compares keys that way cannot have.
+    internal bool TryFormat(
+        IReadOnlyDictionary<string, string> pathValues,
+        [NotNullWhen(true)] out string? path,
+        out PathFormatFailure failure)
+    {
+        failure = default;
+        path = null;
         if (_segments.Length == 0)
-            return "/";
+        {
+            path = "/";
+            return true;
+        }
 
         var builder = new StringBuilder(Value.Length + (16 * _parameterCount));
         string? leftOut = null;
@@ -462,32 +481,83 @@ public sealed class RouteTemplate
 
             // Every later parameter is still looked up and checked after one is left out, so that a value given for
             // one of them is reported rather than silently dropped.
-            string? value = GetPathValue(pathValues, segment);
-            if (value is null)
+            if (!TryGetPathValue(pathValues, segment.Text, out string? value))
             {
+                if (!segment.CanBeLeftOut)
+                {
+                    failure = new PathFormatFailure(PathValueProblem.Missing, segment, null, "");
+                    return false;
+                }
+
                 leftOut ??= segment.Text;
                 continue;
             }
 
+            PathValueProblem? problem = FindProblem(segment, value);
+            if (problem is not null)
+            {
+                string hint = problem == PathValueProblem.ConstraintNotSatisfied
+                    ? segment.Constraint!.HintFor(value!)
+                    : "";
+                failure = new PathFormatFailure(problem.Value, segment, null, hint);
+                return false;
+            }
+
             if (leftOut is not null)
             {
-                throw new ArgumentException(
-                    $"Path parameter '{segment.Text}' has a value, but it cannot be written because the earlier " +
-                    $"optional parameter '{leftOut}' is left out.",
-                    nameof(pathValues));
+                failure = new PathFormatFailure(PathValueProblem.AfterLeftOut, segment, leftOut, "");
+                return false;
             }
 
             if (segment.IsCatchAll)
-                AppendCatchAll(builder, value);
+                AppendCatchAll(builder, value!);
             else
-                builder.Append('/').Append(Uri.EscapeDataString(value));
+                builder.Append('/').Append(Uri.EscapeDataString(value!));
         }
 
-        return builder.Length == 0 ? "/" : builder.ToString();
+        path = builder.Length == 0 ? "/" : builder.ToString();
+        return true;
+    }
+
+    private static ArgumentException FormatFailed(PathFormatFailure failure)
+    {
+        RouteSegment parameter = failure.Parameter;
+        string name = parameter.Text;
+        string message = failure.Problem switch
+        {
+            PathValueProblem.Missing => $"Path parameter '{name}' has no value.",
+            PathValueProblem.Null => $"Path parameter '{name}' has a null value{HowToLeaveOut(parameter)}.",
+            PathValueProblem.Empty =>
+                $"Path parameter '{name}' has an empty value" +
+                (parameter.CanBeLeftOut
+                    ? HowToLeaveOut(parameter)
+                    : "; a parameter always matches exactly one path segment") + ".",
+            PathValueProblem.LoneSurrogate =>
+                $"Path parameter '{name}' has a value that is not valid UTF-16: it contains a lone surrogate, " +
+                "which cannot be percent-encoded and read back unchanged.",
+            PathValueProblem.EmptyPart =>
+                $"Path parameter '{name}' has a value with an empty part; a catch-all value cannot start or end " +
+                "with '/' or contain '//', because a match drops empty segments and would not return it.",
+            PathValueProblem.ConstraintNotSatisfied =>
+                $"Path parameter '{name}' has a value that does not satisfy its constraint " +
+                $"'{parameter.Constraint!.Name}'." + failure.Hint,
+            PathValueProblem.DotSegment =>
+                $"Path parameter '{name}' has a value " +
+                (parameter.IsCatchAll
+                    ? "with a dot segment part ('.' or '..' between slashes), "
+                    : "that is a dot segment ('.' or '..'), ") +
+                RouteText.DotSegmentReason + ".",
+            PathValueProblem.AfterLeftOut =>
+                $"Path parameter '{name}' has a value, but it cannot be written because the earlier optional " +
+                $"parameter '{failure.LeftOut}' is left out.",
+            _ => throw new UnreachableException(),
+        };
+
+        return new ArgumentException(message, "pathValues");
     }
 
     // Writes each part of a catch-all value between slashes as its own segment, so that Match reads the slashes back
-    // as separators. GetPathValue has already rejected a value with an empty part.
+    // as separators. FindProblem has already rejected a value with an empty part.
     private static void AppendCatchAll(StringBuilder builder, string value)
     {
         ReadOnlySpan<char> rest = value;
@@ -503,73 +573,38 @@ public sealed class RouteTemplate
         }
     }
 
-    // Returns null only for an optional or catch-all parameter that has no entry.
-    private static string? GetPathValue(IReadOnlyDictionary<string, string> pathValues, RouteSegment parameter)
+    // Returns false only when the dictionary has no entry for the name, under the name as written or a key that
+    // equals it ignoring case. An entry's value can still be null, which FindProblem reports.
+    private static bool TryGetPathValue(IReadOnlyDictionary<string, string> pathValues, string name, out string? value)
     {
-        string name = parameter.Text;
-        if (!pathValues.TryGetValue(name, out string? value) && !TryGetValueIgnoringCase(pathValues, name, out value))
-        {
-            return parameter.CanBeLeftOut
-                ? null
-                : throw new ArgumentException($"Path parameter '{name}' has no value.", nameof(pathValues));
-        }
+        return pathValues.TryGetValue(name, out value) || TryGetValueIgnoringCase(pathValues, name, out value);
+    }
 
+    // The first problem with a parameter's value, in the order the documentation of Format gives, or null when it can
+    // be written.
+    private static PathValueProblem? FindProblem(RouteSegment parameter, string? value)
+    {
         if (value is null)
-        {
-            throw new ArgumentException(
-                $"Path parameter '{name}' has a null value{HowToLeaveOut(parameter)}.",
-                nameof(pathValues));
-        }
-
+            return PathValueProblem.Null;
         if (value.Length == 0)
-        {
-            throw new ArgumentException(
-                $"Path parameter '{name}' has an empty value" +
-                (parameter.CanBeLeftOut
-                    ? HowToLeaveOut(parameter)
-                    : "; a parameter always matches exactly one path segment") + ".",
-                nameof(pathValues));
-        }
-
+            return PathValueProblem.Empty;
         if (RouteText.ContainsLoneSurrogate(value))
-        {
-            throw new ArgumentException(
-                $"Path parameter '{name}' has a value that is not valid UTF-16: it contains a lone surrogate, " +
-                "which cannot be percent-encoded and read back unchanged.",
-                nameof(pathValues));
-        }
-
+            return PathValueProblem.LoneSurrogate;
         if (parameter.IsCatchAll &&
             (value[0] == '/' || value[^1] == '/' || value.Contains("//", StringComparison.Ordinal)))
         {
-            throw new ArgumentException(
-                $"Path parameter '{name}' has a value with an empty part; a catch-all value cannot start or end " +
-                "with '/' or contain '//', because a match drops empty segments and would not return it.",
-                nameof(pathValues));
+            return PathValueProblem.EmptyPart;
         }
 
         if (parameter.Constraint is { } constraint && !constraint.IsSatisfiedBy(value))
-        {
-            throw new ArgumentException(
-                $"Path parameter '{name}' has a value that does not satisfy its constraint '{constraint.Name}'." +
-                constraint.HintFor(value),
-                nameof(pathValues));
-        }
+            return PathValueProblem.ConstraintNotSatisfied;
 
         // Checked last, so that every other problem is reported first. No constraint accepts a dot segment, so for a
         // parameter with one, the constraint has already rejected it.
         if (parameter.IsCatchAll ? RouteText.HasDotSegmentPart(value) : RouteText.IsDotSegment(value))
-        {
-            throw new ArgumentException(
-                $"Path parameter '{name}' has a value " +
-                (parameter.IsCatchAll
-                    ? "with a dot segment part ('.' or '..' between slashes), "
-                    : "that is a dot segment ('.' or '..'), ") +
-                RouteText.DotSegmentReason + ".",
-                nameof(pathValues));
-        }
+            return PathValueProblem.DotSegment;
 
-        return value;
+        return null;
     }
 
     // A null or empty value does not leave a parameter out, because Match never returns one; saying how to leave it out

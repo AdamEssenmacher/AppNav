@@ -2,9 +2,9 @@ using System.Diagnostics.CodeAnalysis;
 
 namespace AdamE.AppNav.Routing;
 
-// The nullable form of a value type reads by exactly the rule of the type itself, to the same value, and its message
-// names the type itself, as for the built-in types. It is kept under its own type, so that a read for T? finds it with
-// the same lookup and cast as a read for T.
+// The nullable form of a value type reads and writes by exactly the rule of the type itself, to the same value and the
+// same text, and its message names the type itself, as for the built-in types. It is kept under its own type, so that
+// a read or a write for T? finds it with the same lookup and cast as one for T.
 internal sealed class NullableValueCodec<T> : ValueCodec<T?>
     where T : struct
 {
@@ -27,4 +27,17 @@ internal sealed class NullableValueCodec<T> : ValueCodec<T?>
         value = null;
         return false;
     }
+
+    // A route writer leaves a parameter out for null before it asks for text, so null is never written here; it has
+    // no text, as for a value of the type itself that has none.
+    public override bool TryFormat(T? value, [NotNullWhen(true)] out string? text)
+    {
+        if (value.HasValue)
+            return _codec.TryFormat(value.GetValueOrDefault(), out text);
+
+        text = null;
+        return false;
+    }
+
+    public override string NoTextReason => _codec.NoTextReason;
 }

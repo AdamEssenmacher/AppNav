@@ -8,9 +8,9 @@ namespace AdamE.AppNav.Routing;
 /// Matches URIs to typed routes, using the templates mapped by a <see cref="RouteTableBuilder"/>.
 /// </summary>
 /// <remarks>
-/// A table is immutable once built, and safe to use from several threads at once: <see cref="Match(Uri)"/> reads
-/// nothing that can change. A create function that is called from several threads must itself be safe to call that
-/// way.
+/// A table is immutable once built, and safe to use from several threads at once: <see cref="Match(Uri)"/> and
+/// <see cref="Format(AppRoute)"/> read nothing that can change. A create function, or a value function of a format
+/// function, that is called from several threads must itself be safe to call that way.
 /// </remarks>
 public sealed class RouteTable
 {
@@ -19,6 +19,14 @@ public sealed class RouteTable
 
     // The codecs registered on the builder, each under the type it reads, handed to every context.
     private readonly FrozenDictionary<Type, object> _codecs;
+
+    // The formatter of each route type whose mapping has a format function, bound to the codecs above, keyed by the
+    // exact route type, which Format looks a route up by.
+    private readonly FrozenDictionary<Type, RouteFormatter> _formatters;
+
+    // Every route type that some mapping creates, so that Format can tell a type that is not mapped at all from one
+    // that is mapped without a format function, and say which fix applies.
+    private readonly FrozenSet<Type> _routeTypes;
 
     internal RouteTable(RouteDefinition[] definitions, FrozenDictionary<Type, object> codecs)
     {
@@ -45,6 +53,13 @@ public sealed class RouteTable
         // A read-only wrapper, so that a caller cannot cast Definitions back to the array and change the table.
         Definitions = Array.AsReadOnly(definitions);
         _codecs = codecs;
+        _formatters = BindFormatters(definitions, codecs);
+
+        var routeTypes = new HashSet<Type>(definitions.Length);
+        foreach (RouteDefinition definition in definitions)
+            routeTypes.Add(definition.RouteType);
+
+        _routeTypes = routeTypes.ToFrozenSet();
     }
 
     // Read by tests only, which check the order in which templates are tried.
@@ -197,6 +212,112 @@ public sealed class RouteTable
             RouteDiagnosticCodes.NotMatched,
             "No route matches the path of the URI.",
             new Dictionary<string, object?>(1, StringComparer.Ordinal) { ["path"] = path }));
+    }
+
+    /// <summary>
+    /// Writes a route as the path of the template it is mapped to, by the format function its mapping was given.
+    /// </summary>
+    /// <param name="route">The route to write.</param>
+    /// <returns>
+    /// The route as the text of a relative URI: its path, as
+    /// <see cref="RouteTemplate.Format(IReadOnlyDictionary{string, string})"/> writes it for the values the format
+    /// function reads from the route, each written as the canonical text of its type that
+    /// <see cref="RouteFormatBuilder{TRoute}.Path{TValue}(string, Func{TRoute, TValue})"/> describes, such as
+    /// <c>/orders/42</c>. A later version will also write the route's query; this version writes the path only.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// The mapping is found by the exact type of the route, as <see cref="object.GetType()"/> gives it: a mapping of a
+    /// base type of the route does not write it. Each declared value function is called at most once, in template
+    /// order; after a value that cannot be written as text, or an exception from a value function, the later
+    /// functions are not called. A <see langword="null"/> value leaves out an optional or catch-all parameter.
+    /// </para>
+    /// <para>
+    /// The template of the mapping reads back what this method writes: matching the path against it gives every value
+    /// that was written, and the typed read of the same type as a value reads its text back to an equal value. Whether
+    /// <see cref="Match(Uri)"/> picks that mapping for the path depends on the rest of the table: a template that
+    /// ranks higher and matches the same path wins instead, as <c>/products/new</c> does over
+    /// <c>/products/{name}</c> for the path written for the name <c>new</c>.
+    /// </para>
+    /// <para>
+    /// The table is not changed, and several threads can call this method and <see cref="Match(Uri)"/> at once.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentNullException"><paramref name="route"/> is <see langword="null"/>.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// No mapping of exactly the type of <paramref name="route"/> has a format function. The message names the type
+    /// and says whether the type is not mapped at all, or is mapped but without a format function.
+    /// </exception>
+    /// <exception cref="ArgumentException">
+    /// A value of the route cannot be written: a required parameter's value is <see langword="null"/>; a value is
+    /// empty, contains a lone surrogate, does not satisfy the parameter's constraint or is a dot segment, <c>.</c> or
+    /// <c>..</c>; a catch-all value starts or ends with <c>/</c>, contains <c>//</c> or has a dot segment as a part; an
+    /// optional parameter has a value although an earlier one is left out; or a value has no text, such as a
+    /// <see cref="double"/> that is NaN or an enum value that is not the value of a member. The exception's
+    /// <see cref="ArgumentException.ParamName"/> is <c>route</c>, and its message names the route type, the template
+    /// and the parameter and says what is wrong, but never quotes the value, which can be a secret, such as a sign-in
+    /// token. It has no inner exception. When more than one value cannot be written, which one is reported is not
+    /// specified.
+    /// </exception>
+    /// <exception cref="Exception">
+    /// Any exception that a value function throws, unchanged.
+    /// </exception>
+    public string Format(AppRoute route)
+    {
+        ArgumentNullException.ThrowIfNull(route);
+
+        Type type = route.GetType();
+        if (!_formatters.TryGetValue(type, out RouteFormatter? formatter))
+        {
+            throw new InvalidOperationException(_routeTypes.Contains(type)
+                ? $"The route type '{RouteValueTypes.DisplayName(type)}' cannot be written as a path, because it is " +
+                  "mapped, but none of its mappings has a format function. Pass one to the RouteTableBuilder.Map " +
+                  "overload that takes it; for a template with no parameters, a function that declares nothing, " +
+                  "as in '_ => { }'."
+                : $"The route type '{RouteValueTypes.DisplayName(type)}' cannot be written as a path, because no " +
+                  "mapping of exactly that type exists. A mapping of a base type does not write a route of a type " +
+                  "derived from it; map the type itself with a format function.");
+        }
+
+        return formatter.Format(route);
+    }
+
+    // Keys each format function by its route type, which may have only one, and binds it to the table's codecs, which
+    // reports an enum that is not registered. Each check runs in the order the routes were mapped, so the error does
+    // not change from one build to the next.
+    private static FrozenDictionary<Type, RouteFormatter> BindFormatters(
+        RouteDefinition[] definitions,
+        FrozenDictionary<Type, object> codecs)
+    {
+        // Every second format function is reported before anything is bound, so that it is reported even when a
+        // format function also writes an enum that is not registered: registering the enum would not make the table
+        // valid, and fixing it would take two rounds.
+        var owners = new Dictionary<Type, RouteDefinition>();
+        foreach (RouteDefinition definition in definitions)
+        {
+            if (definition.Formatter is null)
+                continue;
+
+            if (owners.TryGetValue(definition.RouteType, out RouteDefinition? earlier))
+            {
+                throw new InvalidOperationException(
+                    $"The route type '{RouteValueTypes.DisplayName(definition.RouteType)}' is mapped with a format " +
+                    $"function to both '{earlier.Template.Value}' and '{definition.Template.Value}', so which " +
+                    "template writes a route of that type would be ambiguous. Give a format function to only one of " +
+                    "the mappings; the others can still create the route.");
+            }
+
+            owners.Add(definition.RouteType, definition);
+        }
+
+        var formatters = new Dictionary<Type, RouteFormatter>(owners.Count);
+        foreach (RouteDefinition definition in definitions)
+        {
+            if (definition.Formatter is not null)
+                formatters.Add(definition.RouteType, definition.Formatter.Bind(codecs));
+        }
+
+        return formatters.ToFrozenDictionary();
     }
 
     // Like the path, the name and the reason can carry text from the URI, so they are only in Data. The exception

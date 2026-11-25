@@ -10,6 +10,8 @@ AdamE.AppNav.Routing.RouteDiagnostic.Code.get -> string!
 AdamE.AppNav.Routing.RouteDiagnostic.Data.get -> System.Collections.Generic.IReadOnlyDictionary<string!, object?>!
 AdamE.AppNav.Routing.RouteDiagnostic.Message.get -> string!
 AdamE.AppNav.Routing.RouteDiagnosticCodes
+AdamE.AppNav.Routing.RouteFormatBuilder<TRoute>
+AdamE.AppNav.Routing.RouteFormatBuilder<TRoute>.Path<TValue>(string! name, System.Func<TRoute!, TValue>! value) -> AdamE.AppNav.Routing.RouteFormatBuilder<TRoute!>!
 AdamE.AppNav.Routing.RouteMatchContext
 AdamE.AppNav.Routing.RouteMatchContext.GetQueryValues(string! name) -> System.Collections.Generic.IReadOnlyList<string!>!
 AdamE.AppNav.Routing.RouteMatchContext.GetQueryValues<T>(string! name) -> System.Collections.Generic.IReadOnlyList<T>!
@@ -28,11 +30,13 @@ AdamE.AppNav.Routing.RouteMatchResult.IsSuccess.get -> bool
 AdamE.AppNav.Routing.RouteMatchResult.Route.get -> AdamE.AppNav.AppRoute?
 AdamE.AppNav.Routing.RouteTable
 AdamE.AppNav.Routing.RouteTable.Definitions.get -> System.Collections.Generic.IReadOnlyList<AdamE.AppNav.Routing.RouteDefinition!>!
+AdamE.AppNav.Routing.RouteTable.Format(AdamE.AppNav.AppRoute! route) -> string!
 AdamE.AppNav.Routing.RouteTable.Match(System.Uri! uri) -> AdamE.AppNav.Routing.RouteMatchResult!
 AdamE.AppNav.Routing.RouteTableBuilder
 AdamE.AppNav.Routing.RouteTableBuilder.AddEnumValueCodec<TEnum>() -> AdamE.AppNav.Routing.RouteTableBuilder!
 AdamE.AppNav.Routing.RouteTableBuilder.Build() -> AdamE.AppNav.Routing.RouteTable!
 AdamE.AppNav.Routing.RouteTableBuilder.Map<TRoute>(string! template, System.Func<AdamE.AppNav.Routing.RouteMatchContext!, TRoute!>! createRoute) -> AdamE.AppNav.Routing.RouteTableBuilder!
+AdamE.AppNav.Routing.RouteTableBuilder.Map<TRoute>(string! template, System.Func<AdamE.AppNav.Routing.RouteMatchContext!, TRoute!>! createRoute, System.Action<AdamE.AppNav.Routing.RouteFormatBuilder<TRoute!>!>! format) -> AdamE.AppNav.Routing.RouteTableBuilder!
 AdamE.AppNav.Routing.RouteTableBuilder.RouteTableBuilder() -> void
 AdamE.AppNav.Routing.RouteTemplate
 AdamE.AppNav.Routing.RouteTemplate.Format(System.Collections.Generic.IReadOnlyDictionary<string!, string!>! pathValues) -> string!

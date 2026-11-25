@@ -8,7 +8,9 @@ namespace AdamE.AppNav;
 /// <remarks>
 /// <para>
 /// Derive a sealed record for each destination, with one property for each value that identifies it, and map it to a
-/// template with <see cref="Routing.RouteTableBuilder.Map{TRoute}(string, Func{Routing.RouteMatchContext, TRoute})"/>.
+/// template with <see cref="Routing.RouteTableBuilder.Map{TRoute}(string, Func{Routing.RouteMatchContext, TRoute})"/>,
+/// or with the overload that also takes a format function, which makes the route writable as a path by
+/// <see cref="Routing.RouteTable.Format(AppRoute)"/>.
 /// </para>
 /// <para>
 /// Two routes of the same type with equal members are the same destination, so give a route only members with value
