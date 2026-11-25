@@ -104,7 +104,7 @@ The built-in constraints are:
 - The captured value is the decoded text, unchanged: `+007` is captured as `+007`, not `7`.
 - Some text satisfies more than one constraint, such as `0`, which is an `int`, a `long` and a `decimal`, or `true`, which is a `bool` and `alpha`. A route table cannot have two templates that differ only in such constraints, as described in [Templates that cannot be told apart](#templates-that-cannot-be-told-apart).
 - Several texts can denote one value, such as `7`, `007` and `+7`, `true` and `TRUE`, or a guid in upper and lower case. Each satisfies the constraint and is captured as written, and `Format` writes whatever text it is given, so producing one canonical link for each value is the job of the code that turns typed values into text.
-- To accept a guid with or without hyphens, use a parameter without a constraint and parse the value in the create function. Three things follow. A create function cannot decline a match, so it must decide what route a value that is not a guid gives. A position holds only one parameter without a constraint among templates of one shape, unless another required position keeps the templates apart. And beside `{id:int}` or `{x:alpha}`, a value without hyphens that is also a valid number, such as 32 zeros, or is made only of letters still goes to the constrained route, which ranks higher.
+- To accept a guid with or without hyphens, use a parameter without a constraint and parse the value in the create function. Three things follow. A value that is not a guid still matches the template, so the create function must [reject it](#rejecting-a-value), which fails the match for that URI rather than letting another template try it. A position holds only one parameter without a constraint among templates of one shape, unless another required position keeps the templates apart. And beside `{id:int}` or `{x:alpha}`, a value without hyphens that is also a valid number, such as 32 zeros, or is made only of letters still goes to the constrained route, which ranks higher.
 
 ## Optional parameters
 
@@ -341,15 +341,49 @@ When a template matches, its create function is called once with a `RouteMatchCo
 - `TryGetQuery(name, out value)` and `GetQueryValues(name)` read the query, as described in [Query values](#query-values).
 - `SourceUri` is the URI that was matched.
 
-An exception the create function throws propagates out of `Match` unchanged, and no later template is tried. A create function that returns `null` makes `Match` throw `InvalidOperationException`.
+An exception the create function throws propagates out of `Match` unchanged, and no later template is tried, except a `RouteValueException`, which rejects a value as described [below](#rejecting-a-value). A create function that returns `null` makes `Match` throw `InvalidOperationException`.
 
-### When nothing matches
+### Rejecting a value
 
-A URI that no template matches is not an error. The table itself does not throw for the content of a URI; an exception thrown by a create function propagates to the caller.
+A create function that finds a captured or query value unusable throws `RouteValueException` with the name of the value, and an optional message that says why. `Match` then returns a failed result instead of throwing:
 
-When `IsSuccess` is true, `Route` and `Definition` are not `null`. When it is false, `Route` is `null` and `Diagnostics` has at least one entry. A URI that no template matches gives one diagnostic whose `Code` is `RouteDiagnosticCodes.NotMatched` (`route.not_matched`). Its `Message` never contains text from the URI, because a deep-link path can carry a secret, such as a sign-in or reset token, and messages tend to be logged. The path is in `Data` under the key `path`, exactly as it was read, and logging it is the caller's decision. `Data` cannot be changed, even through a cast.
+```csharp
+using System.Globalization;
+using AdamE.AppNav;
+using AdamE.AppNav.Routing;
 
-Diagnostic codes are lower-case words joined by `_`, grouped by `.` from the general to the specific. A code, once published, does not change meaning, so compare codes rather than messages.
+RouteTable table = new RouteTableBuilder()
+    .Map("/orders/{id:int}", c =>
+    {
+        int id = int.Parse(c.Path("id"), CultureInfo.InvariantCulture);
+        return id > 0 ? new OrderRoute(id) : throw new RouteValueException("id", "An order id is positive.");
+    })
+    .Build();
+
+RouteMatchResult result = table.Match(new Uri("/orders/0", UriKind.Relative));
+Console.WriteLine(result.IsSuccess);                  // False
+Console.WriteLine(result.Diagnostics[0].Code);        // route.value.invalid
+Console.WriteLine(result.Diagnostics[0].Data["name"]); // id
+
+public sealed record OrderRoute(int Id) : AppRoute;
+```
+
+- The result has one diagnostic whose `Code` is `RouteDiagnosticCodes.ValueInvalid` (`route.value.invalid`). Its `Data` holds the exception's `ValueName` under `name`, the template as written under `template`, the exception's message under `reason`, and the path as it was matched under `path`, all strings. Its `Message` holds none of them, and the text of the query itself is not included. The exception itself, with its inner exception, is not kept.
+- `Route` is `null`, and `Definition` is the definition whose template matched.
+- No later template is tried, even one that also matches the path: the template that matched owns the URI.
+- Only a `RouteValueException` thrown by the create function of the definition that matched, while `Match` is calling it, is turned into a result. Every other exception propagates unchanged, and a `RouteValueException` thrown anywhere else is an ordinary exception. A create function that calls `Match` itself gets a result from the inner call, not the exception.
+- `reason` is whatever text the app gives as the message. The default message names the value but does not quote it; a message that quotes the value can carry a secret from the URI. Do not pass another exception's `Message`, as in `new RouteValueException("id", e.Message, e)`: many .NET parse methods quote their input, so `int.Parse` on `tok-123` says `The input string 'tok-123' was not in a correct format.` Pass the parse exception as the inner exception if you like; the table does not keep it.
+- If the fallback needs the other captured values, such as the user in `/users/{u}/orders/{id}`, return a fallback route from the create function instead of rejecting, because a failed result carries only the definition and the name of the value.
+
+A route says no in one of two ways. A [constraint](#constraints) makes its template not match, so another template can match the path; use one when a value of another shape belongs to another route. Rejecting a value in the create function fails the match for that URI; use it when the template is the right one but the value cannot be used, such as a number out of range or a query value of the wrong form.
+
+### When a match fails
+
+A URI that no template matches is not an error. The table itself does not throw for the content of a URI; an exception thrown by a create function, other than a `RouteValueException`, propagates to the caller.
+
+When `IsSuccess` is true, `Route` and `Definition` are not `null`. When it is false, `Route` is `null`, `Diagnostics` has at least one entry, and `Definition` is the definition whose template matched when there was one, as for a [rejected value](#rejecting-a-value), or `null`. A URI that no template matches gives one diagnostic whose `Code` is `RouteDiagnosticCodes.NotMatched` (`route.not_matched`). Its `Message` never contains text from the URI, because a deep-link path can carry a secret, such as a sign-in or reset token, and messages tend to be logged. The path is in `Data` under the key `path`, exactly as it was read, and logging it is the caller's decision. `Data` cannot be changed, even through a cast.
+
+The diagnostic codes in this version are `route.not_matched`, for a URI that no template matches, and `route.value.invalid`, for a [rejected value](#rejecting-a-value). Codes are lower-case words joined by `_`, grouped by `.` from the general to the specific. A code, once published, does not change meaning, so compare codes rather than messages.
 
 ### Threads
 

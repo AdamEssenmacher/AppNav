@@ -7,8 +7,9 @@ namespace AdamE.AppNav.Routing;
 /// </summary>
 /// <remarks>
 /// When <see cref="IsSuccess"/> is <see langword="true"/>, <see cref="Route"/> and <see cref="Definition"/> are not
-/// <see langword="null"/>. When it is <see langword="false"/>, <see cref="Route"/> is <see langword="null"/> and
-/// <see cref="Diagnostics"/> has at least one entry.
+/// <see langword="null"/>. When it is <see langword="false"/>, <see cref="Route"/> is <see langword="null"/>,
+/// <see cref="Diagnostics"/> has at least one entry, and <see cref="Definition"/> is the definition whose template
+/// matched when there was one, as for a value that its create function rejected, or <see langword="null"/>.
 /// </remarks>
 public sealed class RouteMatchResult
 {
@@ -33,7 +34,8 @@ public sealed class RouteMatchResult
 
     /// <summary>
     /// Gets the definition whose template matched. Not <see langword="null"/> when <see cref="IsSuccess"/> is
-    /// <see langword="true"/>.
+    /// <see langword="true"/>. When the match failed, it is the definition whose create function rejected a value
+    /// with a <see cref="RouteValueException"/>, or <see langword="null"/> when no template matched.
     /// </summary>
     public RouteDefinition? Definition { get; }
 
@@ -48,9 +50,9 @@ public sealed class RouteMatchResult
         return new RouteMatchResult(route, definition, []);
     }
 
-    internal static RouteMatchResult Failure(RouteDiagnostic diagnostic)
+    internal static RouteMatchResult Failure(RouteDiagnostic diagnostic, RouteDefinition? definition = null)
     {
         // A collection expression gives a list that cannot be changed through a cast.
-        return new RouteMatchResult(null, null, [diagnostic]);
+        return new RouteMatchResult(null, definition, [diagnostic]);
     }
 }
