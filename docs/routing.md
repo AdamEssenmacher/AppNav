@@ -104,7 +104,7 @@ The built-in constraints are:
 - The captured value is the decoded text, unchanged: `+007` is captured as `+007`, not `7`.
 - Some text satisfies more than one constraint, such as `0`, which is an `int`, a `long` and a `decimal`, or `true`, which is a `bool` and `alpha`. A route table cannot have two templates that differ only in such constraints, as described in [Templates that cannot be told apart](#templates-that-cannot-be-told-apart).
 - Several texts can denote one value, such as `7`, `007` and `+7`, `true` and `TRUE`, or a guid in upper and lower case. Each satisfies the constraint and is captured as written, and `Format` writes whatever text it is given, so producing one canonical link for each value is the job of the code that turns typed values into text.
-- To accept a guid with or without hyphens, use a parameter without a constraint and parse the value in the create function. Three things follow. A value that is not a guid still matches the template, so the create function must [reject it](#rejecting-a-value), which fails the match for that URI rather than letting another template try it. A position holds only one parameter without a constraint among templates of one shape, unless another required position keeps the templates apart. And beside `{id:int}` or `{x:alpha}`, a value without hyphens that is also a valid number, such as 32 zeros, or is made only of letters still goes to the constrained route, which ranks higher.
+- To accept a guid with or without hyphens, use a parameter without a constraint and parse the value in the create function, reading it as a string: `Path<Guid>` follows the rule of `guid` and accepts only the hyphenated form. Three things follow. A value that is not a guid still matches the template, so the create function must [reject it](#rejecting-a-value), which fails the match for that URI rather than letting another template try it. A position holds only one parameter without a constraint among templates of one shape, unless another required position keeps the templates apart. And beside `{id:int}` or `{x:alpha}`, a value without hyphens that is also a valid number, such as 32 zeros, or is made only of letters still goes to the constrained route, which ranks higher.
 
 ## Optional parameters
 
@@ -218,7 +218,7 @@ using AdamE.AppNav.Routing;
 RouteTable table = new RouteTableBuilder()
     .Map("/settings", _ => new SettingsRoute())
     .Map("/products/{id:int}/{tab?}", c => new ProductRoute(
-        c.Path("id"),
+        c.Path<int>("id"),
         c.TryGetPath("tab", out string? tab) ? tab : null,
         c.TryGetQuery("sort", out string? sort) ? sort : null))
     .Build();
@@ -231,7 +231,7 @@ Console.WriteLine(table.Match(new Uri("/orders", UriKind.Relative)).IsSuccess); 
 
 public sealed record SettingsRoute : AppRoute;
 
-public sealed record ProductRoute(string Id, string? Tab, string? Sort) : AppRoute;
+public sealed record ProductRoute(int Id, string? Tab, string? Sort) : AppRoute;
 ```
 
 > **Note: write custom-scheme links with three slashes.** In `myapp://products/42`, `System.Uri` reads `products` as the host, which the table ignores, so the path is `/42`. That path does not reach the products route, but a `/{slug}` or `/{*rest}` route matches it. Likewise `myapp://open?tab=1` is read as the path `/`, which matches a root route. Write such links as `myapp:///products/42`, which has no host and the path `/products/42`.
@@ -336,6 +336,7 @@ When a template matches, its create function is called once with a `RouteMatchCo
 
 - `Path(name)` returns a captured value, decoded, and throws `KeyNotFoundException` when the template has no such parameter or it is an [optional](#optional-parameters) or [catch-all](#catch-all-parameters) parameter that the path left out. Use it for a required parameter.
 - `TryGetPath(name, out value)` returns `true` with the value when the path has one, and `false` with `null` in the cases where `Path` throws. Use it for an optional or catch-all parameter, as in `c.TryGetPath("tab", out string? tab) ? tab : null`.
+- `Path<T>(name)` and `TryGetPath<T>(name, out value)` read a value as a number, `bool` or `Guid`, as described in [Typed values](#typed-values).
 - Names are compared without regard to case.
 - `PathValues` is the dictionary `RouteTemplate.Match` returned. Treat it as read-only.
 - `TryGetQuery(name, out value)` and `GetQueryValues(name)` read the query, as described in [Query values](#query-values).
@@ -343,19 +344,38 @@ When a template matches, its create function is called once with a `RouteMatchCo
 
 An exception the create function throws propagates out of `Match` unchanged, and no later template is tried, except a `RouteValueException`, which rejects a value as described [below](#rejecting-a-value). A create function that returns `null` makes `Match` throw `InvalidOperationException`.
 
+### Typed values
+
+`Path<T>(name)` and `TryGetPath<T>(name, out value)` read a captured value as one of these types: `string`, `int`, `long`, `decimal`, `bool` and `Guid`. A `string` is the captured text unchanged. A value converts to each of the others exactly when it satisfies the [built-in constraint](#constraints) of the same name, by the same rule, in every culture, so `Path<int>` accepts exactly the text that `{id:int}` accepts, and `Path<Guid>` only the hyphenated form that `{id:guid}` accepts. There is no typed read for `alpha`, which is a constraint on text, not a type. A catch-all value converts from its whole text, slashes included.
+
+A `decimal` keeps what the text says about scale and sign: `5.00` and `5` are equal values that print as `5.00` and `5`, and `-0` is a negative zero, equal to `0` and printed as `0`, for which `decimal.IsNegative` is `true`. Digits beyond the precision of `decimal` round, so `1.00000000000000000000000000001` gives `1.0000000000000000000000000000`. Different texts can therefore give equal values, as they can for the other types: `+007` and `7` are both the `int` 7.
+
+- `Path<T>(name)` throws `KeyNotFoundException` when the path has no value for the name, as `Path(name)` does. Use it for a required parameter.
+- `TryGetPath<T>(name, out value)` returns `false` with the default value of `T` when the path has no value for the name. Use it for an optional or catch-all parameter.
+
+> **Note: a value that is present but not valid is not a missing value.** `TryGetPath<T>` does not return `false` for text that does not convert, as most `Try` methods would. Absent returns `false`; present but not valid rejects the match: both methods throw a `RouteValueException`, which fails the match as described in [Rejecting a value](#rejecting-a-value), so a bad link is never treated as a link without the value. For a lenient fallback, read the string and use `int.TryParse`, or the parse method of the type you need:
+>
+> ```csharp
+> int page = c.TryGetPath("page", out string? text)
+>     && int.TryParse(text, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out int parsed) ? parsed : 1;
+> ```
+
+With the constraint of the same name in the template, such as `{id:int}` read with `Path<int>`, the conversion cannot fail, because a value that does not satisfy the constraint never reaches the create function. A different constraint does not give that guarantee: `{id:long}` read with `Path<int>` lets `/3000000000` through, and `{id:int}` read with `Path<bool>` lets `/1` through, and each then fails the match. Without a constraint, a value that does not convert fails the match for that URI, and no other template is tried, even one that would also match the path. The exception's `ValueName` is the name the create function passed, and its message names the value and the type, as in `The value of 'id' is not a valid int.`, but never quotes the value, which can carry a secret from the URI.
+
+Other types, including nullable forms such as `int?`, other number types and enums, are not supported in this version. Using one throws `InvalidOperationException` whether or not the path has the value, and it propagates out of `Match`, since it is a mistake in the app rather than in the URI.
+
 ### Rejecting a value
 
 A create function that finds a captured or query value unusable throws `RouteValueException` with the name of the value, and an optional message that says why. `Match` then returns a failed result instead of throwing:
 
 ```csharp
-using System.Globalization;
 using AdamE.AppNav;
 using AdamE.AppNav.Routing;
 
 RouteTable table = new RouteTableBuilder()
     .Map("/orders/{id:int}", c =>
     {
-        int id = int.Parse(c.Path("id"), CultureInfo.InvariantCulture);
+        int id = c.Path<int>("id");
         return id > 0 ? new OrderRoute(id) : throw new RouteValueException("id", "An order id is positive.");
     })
     .Build();
