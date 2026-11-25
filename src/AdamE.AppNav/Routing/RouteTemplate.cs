@@ -1,5 +1,4 @@
 using System.Collections.ObjectModel;
-using System.Globalization;
 using System.Text;
 
 namespace AdamE.AppNav.Routing;
@@ -64,11 +63,7 @@ namespace AdamE.AppNav.Routing;
 /// </remarks>
 public sealed class RouteTemplate
 {
-    private const string InvalidParameterName =
-        "has an invalid parameter name; a parameter name starts with an ASCII letter or '_', " +
-        "followed by ASCII letters, digits or '_'";
-
-    private readonly Segment[] _segments;
+    private readonly RouteSegment[] _segments;
     private readonly int _parameterCount;
 
     // The number of segments before the first optional or catch-all parameter, which is the fewest segments a matching
@@ -78,13 +73,27 @@ public sealed class RouteTemplate
     // Whether the last segment is a catch-all parameter, which takes every path segment after the required ones.
     private readonly bool _endsInCatchAll;
 
-    private RouteTemplate(string value, Segment[] segments, int parameterCount, int requiredCount, bool endsInCatchAll)
+    private RouteTemplate(string value, RouteSegment[] segments)
     {
         Value = value;
         _segments = segments;
+
+        // The parser accepts segments that can be left out only after every other segment, and a catch-all parameter
+        // only as the last one, so the first segment that can be left out is where the required segments end.
+        var parameterCount = 0;
+        int requiredCount = segments.Length;
+        for (var i = 0; i < segments.Length; i++)
+        {
+            if (segments[i].IsParameter)
+                parameterCount++;
+
+            if (segments[i].CanBeLeftOut && requiredCount == segments.Length)
+                requiredCount = i;
+        }
+
         _parameterCount = parameterCount;
         _requiredCount = requiredCount;
-        _endsInCatchAll = endsInCatchAll;
+        _endsInCatchAll = segments.Length > 0 && segments[^1].IsCatchAll;
     }
 
     /// <summary>
@@ -127,73 +136,7 @@ public sealed class RouteTemplate
         if (!value.StartsWith('/'))
             throw new ArgumentException("Route templates must start with '/'.", nameof(value));
 
-        string[] segments = SplitSegments(value);
-        var parsed = new Segment[segments.Length];
-        // Each parameter name, ignoring case, with the index of the segment that used it, so that a repeated name can
-        // quote the earlier segment as written.
-        var seenNames = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        int firstOptional = -1;
-        int catchAll = -1;
-
-        for (var i = 0; i < segments.Length; i++)
-        {
-            string segment = segments[i];
-            ParameterText? parameter = FindParameter(segment);
-            if (FindSegmentProblem(segment, parameter) is { } problem)
-            {
-                throw new ArgumentException(
-                    $"Route template segment '{EscapeForMessage(segment)}' {problem}.",
-                    nameof(value));
-            }
-
-            // These two are checked before the repeated name because they depend only on the segment's position, and
-            // apply to literals as well as parameters. At most one applies: a catch-all after an optional parameter is
-            // rejected here, and nothing after a catch-all is accepted.
-            if (catchAll >= 0)
-            {
-                throw new ArgumentException(
-                    $"Route template segment '{EscapeForMessage(segment)}' follows the catch-all parameter " +
-                    $"'{segments[catchAll]}'; a catch-all parameter must be the last segment.",
-                    nameof(value));
-            }
-
-            if (firstOptional >= 0 && parameter is not { IsOptional: true })
-            {
-                throw new ArgumentException(
-                    $"Route template segment '{EscapeForMessage(segment)}' follows the optional parameter " +
-                    $"'{segments[firstOptional]}'; " +
-                    (parameter is { IsCatchAll: true }
-                        ? "a catch-all parameter cannot follow an optional parameter."
-                        : "only optional parameters can follow an optional parameter."),
-                    nameof(value));
-            }
-
-            if (parameter is not { } found)
-            {
-                parsed[i] = Segment.Literal(Uri.UnescapeDataString(segment));
-                continue;
-            }
-
-            string name = found.Name;
-            if (!seenNames.TryAdd(name, i))
-            {
-                throw new ArgumentException(
-                    $"Route template segment '{EscapeForMessage(segment)}' repeats the name of an earlier " +
-                    $"parameter, '{segments[seenNames[name]]}'; parameter names are compared without regard to case.",
-                    nameof(value));
-            }
-
-            if (found.IsOptional && firstOptional < 0)
-                firstOptional = i;
-
-            if (found.IsCatchAll)
-                catchAll = i;
-
-            parsed[i] = Segment.Parameter(name, found.Constraint, found.IsOptional, found.IsCatchAll);
-        }
-
-        int requiredCount = firstOptional >= 0 ? firstOptional : catchAll >= 0 ? catchAll : parsed.Length;
-        return new RouteTemplate(value, parsed, seenNames.Count, requiredCount, catchAll >= 0);
+        return new RouteTemplate(value, RouteTemplateParser.Parse(value));
     }
 
     /// <summary>
@@ -238,7 +181,7 @@ public sealed class RouteTemplate
     {
         ArgumentNullException.ThrowIfNull(path);
 
-        string[] pathSegments = SplitSegments(path);
+        string[] pathSegments = RouteText.SplitSegments(path);
         if (pathSegments.Length < _requiredCount || (!_endsInCatchAll && pathSegments.Length > _segments.Length))
             return null;
 
@@ -270,7 +213,7 @@ public sealed class RouteTemplate
         var values = new Dictionary<string, string>(capturedCount, StringComparer.OrdinalIgnoreCase);
         for (var i = 0; i < positionalCount; i++)
         {
-            Segment segment = _segments[i];
+            RouteSegment segment = _segments[i];
             if (segment.IsParameter)
                 values.Add(segment.Text, pathSegments[i]);
         }
@@ -348,7 +291,7 @@ public sealed class RouteTemplate
 
         var builder = new StringBuilder(Value.Length + (16 * _parameterCount));
         string? leftOut = null;
-        foreach (Segment segment in _segments)
+        foreach (RouteSegment segment in _segments)
         {
             if (!segment.IsParameter)
             {
@@ -400,7 +343,7 @@ public sealed class RouteTemplate
     }
 
     // Returns null only for an optional or catch-all parameter that has no entry.
-    private static string? GetPathValue(IReadOnlyDictionary<string, string> pathValues, Segment parameter)
+    private static string? GetPathValue(IReadOnlyDictionary<string, string> pathValues, RouteSegment parameter)
     {
         string name = parameter.Text;
         if (!pathValues.TryGetValue(name, out string? value) && !TryGetValueIgnoringCase(pathValues, name, out value))
@@ -427,7 +370,7 @@ public sealed class RouteTemplate
                 nameof(pathValues));
         }
 
-        if (ContainsLoneSurrogate(value))
+        if (RouteText.ContainsLoneSurrogate(value))
         {
             throw new ArgumentException(
                 $"Path parameter '{name}' has a value that is not valid UTF-16: it contains a lone surrogate, " +
@@ -456,7 +399,7 @@ public sealed class RouteTemplate
 
     // A null or empty value does not leave a parameter out, because Match never returns one; saying how to leave it out
     // keeps that from looking like a bug.
-    private static string HowToLeaveOut(Segment parameter)
+    private static string HowToLeaveOut(RouteSegment parameter)
     {
         if (!parameter.CanBeLeftOut)
             return "";
@@ -492,8 +435,8 @@ public sealed class RouteTemplate
             if (foundKey is not null)
             {
                 throw new ArgumentException(
-                    $"Path parameter '{name}' is ambiguous: keys '{EscapeForMessage(foundKey)}' and " +
-                    $"'{EscapeForMessage(entry.Key)}' both equal it ignoring case.",
+                    $"Path parameter '{name}' is ambiguous: keys '{RouteText.EscapeForMessage(foundKey)}' and " +
+                    $"'{RouteText.EscapeForMessage(entry.Key)}' both equal it ignoring case.",
                     nameof(pathValues));
             }
 
@@ -502,184 +445,6 @@ public sealed class RouteTemplate
         }
 
         return foundKey is not null;
-    }
-
-    private static bool ContainsLoneSurrogate(string value)
-    {
-        int start = value.AsSpan().IndexOfAnyInRange('\uD800', '\uDFFF');
-        if (start < 0)
-            return false;
-
-        for (int i = start; i < value.Length; i++)
-        {
-            if (char.IsHighSurrogate(value[i]) && i + 1 < value.Length && char.IsLowSurrogate(value[i + 1]))
-                i++;
-            else if (char.IsSurrogate(value[i]))
-                return true;
-        }
-
-        return false;
-    }
-
-    // Returns the parameter's name and constraint text, split at the first ':' after a first '*' and a final '?' are
-    // removed, the built-in constraint that text names, if any, and whether there was a first '*' and a final '?',
-    // when the segment is a whole-segment parameter, valid or not; null when the segment is a literal.
-    private static ParameterText? FindParameter(string segment)
-    {
-        if (segment.Length < 2 || segment[0] != '{' || segment[^1] != '}')
-            return null;
-
-        ReadOnlySpan<char> text = segment.AsSpan(1, segment.Length - 2);
-        if (text.ContainsAny('{', '}'))
-            return null;
-
-        // Only the last '?' is removed, so any other '?' stays in the name or the constraint text to be reported.
-        bool isOptional = text.Length > 0 && text[^1] == '?';
-        if (isOptional)
-            text = text[..^1];
-
-        // Likewise only the first '*' is removed.
-        bool isCatchAll = text.Length > 0 && text[0] == '*';
-        if (isCatchAll)
-            text = text[1..];
-
-        int separator = text.IndexOf(':');
-        if (separator < 0)
-            return new ParameterText(text.ToString(), null, null, isOptional, isCatchAll);
-
-        string constraintText = text[(separator + 1)..].ToString();
-        return new ParameterText(
-            text[..separator].ToString(),
-            constraintText,
-            RouteConstraint.Find(constraintText),
-            isOptional,
-            isCatchAll);
-    }
-
-    private static string? FindSegmentProblem(string segment, ParameterText? parameter)
-    {
-        // Checked first: a control character is invisible where the template is written, and its rule covers the
-        // whole segment, so a tab or line feed at an edge is reported here rather than as white space.
-        if (ContainsControlCharacter(segment))
-            return "contains a control character";
-
-        // Checked next, for the same reason: a lone surrogate cannot be seen or percent-encoded, and its rule covers
-        // the whole segment.
-        if (ContainsLoneSurrogate(segment))
-            return "contains a lone surrogate, which is not valid UTF-16";
-
-        if (parameter is { } found)
-            return FindParameterProblem(found);
-
-        // Checked before braces, so that a space next to an otherwise valid parameter, as in ' {id}', is reported as
-        // the white space it is.
-        if (char.IsWhiteSpace(segment[0]) || char.IsWhiteSpace(segment[^1]))
-            return "starts or ends with white space";
-
-        if (segment.Contains('{', StringComparison.Ordinal) || segment.Contains('}', StringComparison.Ordinal))
-            return "contains '{' or '}' outside a parameter; a parameter is a whole segment, written '{name}'";
-
-        if (segment.Contains('?', StringComparison.Ordinal) || segment.Contains('#', StringComparison.Ordinal))
-            return "contains '?' or '#'";
-
-        return null;
-    }
-
-    private static string? FindParameterProblem(ParameterText parameter)
-    {
-        // Both checked across the name and the constraint, so that '{id?:int}' and '{id:in?t}' are reported alike.
-        if (parameter.Name.Contains('*', StringComparison.Ordinal) || parameter.ConstraintText.AsSpan().Contains('*'))
-        {
-            return "contains '*' other than at the start; '*' is only allowed at the start of a parameter, written " +
-                "'{*name}'";
-        }
-
-        if (parameter.Name.Contains('?', StringComparison.Ordinal) || parameter.ConstraintText.AsSpan().Contains('?'))
-        {
-            return "contains '?' other than at the end; '?' is only allowed at the end of a parameter, written " +
-                "'{name?}' or '{name:constraint?}'";
-        }
-
-        if (!IsParameterName(parameter.Name))
-            return InvalidParameterName;
-
-        // Both checked before the constraint text, which a catch-all cannot have at all, so that '{*rest:slug}' is
-        // reported as having a constraint rather than an unknown one, which would suggest the wrong fix.
-        if (parameter is { IsCatchAll: true, IsOptional: true })
-        {
-            return "is an optional catch-all parameter; a catch-all parameter cannot be optional, because it " +
-                "already matches when nothing is left of the path";
-        }
-
-        if (parameter is { IsCatchAll: true, ConstraintText: not null })
-            return "is a catch-all parameter with a constraint; a catch-all parameter cannot have a constraint";
-
-        if (parameter.ConstraintText is not { } constraintText)
-            return null;
-
-        // The constraint is the text after the first ':', so '{id::int}' and '{id:int:}' have a constraint that is not
-        // empty but contains ':', and are reported as the extra ':' rather than as an empty or unknown constraint.
-        if (constraintText.Contains(':', StringComparison.Ordinal))
-            return "contains more than one ':'; a parameter is written '{name}' or '{name:constraint}'";
-
-        if (constraintText.Length == 0)
-            return "has no constraint after ':'; a parameter is written '{name}' or '{name:constraint}'";
-
-        if (parameter.Constraint is null)
-        {
-            return $"has an unknown constraint '{constraintText}'; the supported constraints are " +
-                $"{RouteConstraint.SupportedNames}, ignoring case";
-        }
-
-        return null;
-    }
-
-    private static bool IsParameterName(string name)
-    {
-        if (name.Length == 0 || !(char.IsAsciiLetter(name[0]) || name[0] == '_'))
-            return false;
-
-        for (var i = 1; i < name.Length; i++)
-        {
-            if (!(char.IsAsciiLetterOrDigit(name[i]) || name[i] == '_'))
-                return false;
-        }
-
-        return true;
-    }
-
-    private static bool ContainsControlCharacter(string segment)
-    {
-        foreach (char c in segment)
-        {
-            if (char.IsControl(c))
-                return true;
-        }
-
-        return false;
-    }
-
-    // Writes each control character and each lone surrogate as a \uXXXX escape, so that quoting a segment in a
-    // message cannot break the line or the terminal it is printed to, or produce text that is not valid UTF-16. Other
-    // characters, including valid surrogate pairs, are quoted as written.
-    private static string EscapeForMessage(string segment)
-    {
-        if (!ContainsControlCharacter(segment) && !ContainsLoneSurrogate(segment))
-            return segment;
-
-        var builder = new StringBuilder(segment.Length + 8);
-        for (var i = 0; i < segment.Length; i++)
-        {
-            char c = segment[i];
-            if (char.IsHighSurrogate(c) && i + 1 < segment.Length && char.IsLowSurrogate(segment[i + 1]))
-                builder.Append(c).Append(segment[++i]);
-            else if (char.IsControl(c) || char.IsSurrogate(c))
-                builder.Append(CultureInfo.InvariantCulture, $"\\u{(int)c:X4}");
-            else
-                builder.Append(c);
-        }
-
-        return builder.ToString();
     }
 
     // Decodes the segments from start on in place and joins them with '/', or returns null when there is nothing to
@@ -724,77 +489,5 @@ public sealed class RouteTemplate
         }
 
         return builder.Length == 0 ? null : builder.ToString();
-    }
-
-    private static string[] SplitSegments(string path)
-    {
-        return path.Split('/', StringSplitOptions.RemoveEmptyEntries);
-    }
-
-    // A parameter segment's text, without a first '*' or a final '?', split at the first ':' into the name and, when
-    // there is a ':', the constraint text, with the built-in constraint that the text names, or null when it names
-    // none.
-    private readonly record struct ParameterText(
-        string Name,
-        string? ConstraintText,
-        RouteConstraint? Constraint,
-        bool IsOptional,
-        bool IsCatchAll);
-
-    private readonly struct Segment
-    {
-        private Segment(
-            string text,
-            string encodedText,
-            bool isParameter,
-            RouteConstraint? constraint,
-            bool isOptional,
-            bool isCatchAll)
-        {
-            Text = text;
-            EncodedText = encodedText;
-            IsParameter = isParameter;
-            Constraint = constraint;
-            IsOptional = isOptional;
-            IsCatchAll = isCatchAll;
-        }
-
-        // A literal's decoded text, which path segments are compared with, or a parameter's name.
-        public string Text { get; }
-
-        // A literal's text percent-encoded as Format writes it; empty for a parameter.
-        public string EncodedText { get; }
-
-        public bool IsParameter { get; }
-
-        // A parameter's constraint; null for a literal or a parameter without one.
-        public RouteConstraint? Constraint { get; }
-
-        // Whether this is a parameter written with a final '?', which a path may leave out.
-        public bool IsOptional { get; }
-
-        // Whether this is a parameter written with a first '*', which takes the rest of the path.
-        public bool IsCatchAll { get; }
-
-        // Whether Format leaves this parameter out when it has no entry.
-        public bool CanBeLeftOut => IsOptional || IsCatchAll;
-
-        public static Segment Literal(string text)
-        {
-            return new Segment(text, Uri.EscapeDataString(text), false, null, false, false);
-        }
-
-        public static Segment Parameter(string name, RouteConstraint? constraint, bool isOptional, bool isCatchAll)
-        {
-            return new Segment(name, string.Empty, true, constraint, isOptional, isCatchAll);
-        }
-
-        // Whether a decoded path segment can stand in this segment's position.
-        public bool Accepts(string decoded)
-        {
-            return IsParameter
-                ? Constraint is null || Constraint.IsSatisfiedBy(decoded)
-                : StringComparer.Ordinal.Equals(Text, decoded);
-        }
     }
 }
