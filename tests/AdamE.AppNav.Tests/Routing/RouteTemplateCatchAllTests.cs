@@ -316,7 +316,7 @@ public sealed class RouteTemplateCatchAllTests
     [InlineData("/files/a%2Fb", "a/b")]
     [InlineData("/files/a%2fb/c", "a/b/c")]
     [InlineData("/files/%FF/x", "%FF/x")]
-    [InlineData("/files/./..", "./..")]
+    [InlineData("/files/.../a..b/.c", ".../a..b/.c")]
     [InlineData("/files/+/%20", "+/ ")]
     public void ACapturedCatchAllValueIsTheDecodedRemainingSegmentsJoinedWithOneSlash(string path, string expected)
     {
@@ -412,7 +412,7 @@ public sealed class RouteTemplateCatchAllTests
     [InlineData(" / ", "/files/%20/%20")]
     [InlineData("%2F", "/files/%252F")]
     [InlineData("%/?/#", "/files/%25/%3F/%23")]
-    [InlineData("./..", "/files/./..")]
+    [InlineData(".../..a", "/files/.../..a")]
     [InlineData("café/\U0001F600", "/files/caf%C3%A9/%F0%9F%98%80")]
     [InlineData("{v}/+", "/files/%7Bv%7D/%2B")]
     public void FormatWritesEachPartOfACatchAllValueAsItsOwnEncodedSegment(string value, string expected)
@@ -622,7 +622,7 @@ public sealed class RouteTemplateCatchAllTests
     [InlineData("/files/{*path}", "/files/%2Fa%2F%2F/b%2F")]
     [InlineData("/files/{*path}", "/files/%2F")]
     [InlineData("/{*rest}", "")]
-    [InlineData("/{*rest}", "/x/y/./..")]
+    [InlineData("/{*rest}", "/x/y/.../.well-known")]
     [InlineData("/items/{id:int}/{*rest}", "/items/%2B007/a/b")]
     public void FormattingTheValuesOfAMatchWithACatchAllProducesAPathThatMatchesAgain(string value, string path)
     {
@@ -643,12 +643,13 @@ public sealed class RouteTemplateCatchAllTests
     {
         (string? Constraint, string[] Values)[] kinds =
         [
-            (null, ["a", " ", "%", "/", "a/b", "%2F", "?", "#", "{v}", "é", "\U0001F600", "\0", "\n", ".", ".."]),
+            (null, ["a", " ", "%", "/", "a/b", "%2F", "?", "#", "{v}", "é", "\U0001F600", "\0", "\n", "...", "a..b"]),
             ("int", ["0", "+007", "-2147483648"]),
             ("bool", ["true", "FALSE"]),
             ("alpha", ["café", "\U0001D49C"]),
         ];
-        string[] parts = ["a", " ", "%", "%2F", "?", "#", "{v}", "é", "\U0001F600", "\0", "\n", ".", "..", "+", "~"];
+        string[] parts =
+            ["a", " ", "%", "%2F", "?", "#", "{v}", "é", "\U0001F600", "\0", "\n", "...", "..a", "%2E", "+", "~"];
         var random = new Random(20261127);
 
         for (var i = 0; i < 500; i++)
@@ -703,13 +704,16 @@ public sealed class RouteTemplateCatchAllTests
             Assert.NotNull(matched);
             Assert.Equal(Sorted(expected), Sorted(matched));
             Assert.Equal(path, parsed.Format(matched));
+
+            RouteTemplateDotSegmentTests.AssertUriKeepsEverySegment(path);
         }
     }
 
     [Fact]
     public void GeneratedPathsMatchedByACatchAllTemplateMatchAgainOnceFormatted()
     {
-        string[] pieces = ["", "a", "7", " ", "%20", "%2F", "%2f", "%FF", "%", "+", ".", "..", "é", "%C3%A9", "x/y"];
+        string[] pieces =
+            ["", "a", "7", " ", "%20", "%2F", "%2f", "%FF", "%", "+", ".", "..", "%2E", "...", "é", "%C3%A9", "x/y"];
         RouteTemplate[] templates =
         [
             RouteTemplate.Parse("/{*rest}"),
@@ -729,6 +733,9 @@ public sealed class RouteTemplateCatchAllTests
 
             RouteTemplate template = templates[random.Next(templates.Length)];
             IReadOnlyDictionary<string, string>? matched = template.Match(path.ToString());
+            if (HasDotSegment(path.ToString()))
+                Assert.Null(matched);
+
             if (matched is null)
                 continue;
 
@@ -742,6 +749,21 @@ public sealed class RouteTemplateCatchAllTests
         }
 
         Assert.True(matchedCount > 100, $"Only {matchedCount} generated paths matched.");
+    }
+
+    // Whether any segment of the path, or any part a decoded '%2F' divides one into, is '.' or '..' once decoded.
+    private static bool HasDotSegment(string path)
+    {
+        foreach (string segment in path.Split('/'))
+        {
+            foreach (string part in Uri.UnescapeDataString(segment).Split('/'))
+            {
+                if (part is "." or "..")
+                    return true;
+            }
+        }
+
+        return false;
     }
 
     // Reads entries written 'key=value;key=value'; an empty string is an empty dictionary.

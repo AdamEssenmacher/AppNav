@@ -572,7 +572,7 @@ public sealed class RouteTemplateOptionalTests
     {
         (string? Constraint, string[] Values)[] kinds =
         [
-            (null, ["a", " ", "%", "/", "a/b", "%2F", "?", "#", "{v}", "é", "\U0001F600", "\0", "\n", ".", ".."]),
+            (null, ["a", " ", "%", "/", "a/b", "%2F", "?", "#", "{v}", "é", "\U0001F600", "\0", "\n", "...", ".a."]),
             ("int", ["0", "+007", "-2147483648"]),
             ("decimal", [".5", "-1.25"]),
             ("bool", ["true", "FALSE"]),
@@ -622,6 +622,8 @@ public sealed class RouteTemplateOptionalTests
             Assert.NotNull(matched);
             Assert.Equal(Sorted(expected), Sorted(matched));
             Assert.Equal(path, parsed.Format(matched));
+
+            RouteTemplateDotSegmentTests.AssertUriKeepsEverySegment(path);
         }
     }
 

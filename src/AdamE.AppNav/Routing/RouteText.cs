@@ -3,14 +3,41 @@ using System.Text;
 
 namespace AdamE.AppNav.Routing;
 
-// The text rules that parsing, matching and formatting share: how a template or a path divides into segments, and
-// which characters cannot be written, percent-encoded or quoted in a message as they are, namely control characters
-// and lone surrogates. Kept in one place so that templates and paths divide alike and every message quotes alike.
+// The text rules that parsing, matching and formatting share: how a template or a path divides into segments, which
+// decoded segments are dot segments, and which characters cannot be written, percent-encoded or quoted in a message
+// as they are, namely control characters and lone surrogates. Kept in one place so that templates and paths divide
+// alike, every rule rejects the same dot segments and every message quotes alike.
 internal static class RouteText
 {
+    // Ends the messages that reject a dot segment, so that each gives the same reason.
+    public const string DotSegmentReason =
+        "which a URI parser may remove when it resolves a path, so it is never part of a route";
+
     public static string[] SplitSegments(string path)
     {
         return path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+    }
+
+    // Whether decoded text is exactly '.' or '..'. Other text that contains dots, such as '...' or '.well-known', is
+    // not, because a URI parser removes only these two.
+    public static bool IsDotSegment(ReadOnlySpan<char> decoded)
+    {
+        return decoded is "." or "..";
+    }
+
+    // Whether any part of decoded text between slashes is a dot segment, as a catch-all value's parts are.
+    public static bool HasDotSegmentPart(ReadOnlySpan<char> decoded)
+    {
+        if (!decoded.Contains('.'))
+            return false;
+
+        foreach (Range range in decoded.Split('/'))
+        {
+            if (IsDotSegment(decoded[range]))
+                return true;
+        }
+
+        return false;
     }
 
     public static bool ContainsLoneSurrogate(string value)
