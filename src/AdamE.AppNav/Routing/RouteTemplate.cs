@@ -36,10 +36,17 @@ namespace AdamE.AppNav.Routing;
 /// present segments fill the template's positions from left to right.
 /// </para>
 /// <para>
+/// A parameter written <c>{*name}</c> is a catch-all: it matches the rest of the path, zero or more segments, and
+/// captures their decoded text joined with <c>/</c>. The <c>*</c> must be the first character inside the braces,
+/// and a catch-all cannot have a constraint or be optional. It must be the last segment, and cannot follow an
+/// optional parameter, so that the segments it captures always start at the same position, whatever the path.
+/// </para>
+/// <para>
 /// Templates and paths are divided the same way. Leading, trailing and repeated slashes do not create segments, so
 /// <c>/a//b/</c> has the same segments as <c>/a/b</c>, and <c>/</c> is the root template, which has no segments.
-/// Each segment is then percent-decoded once, so <c>%2F</c> is part of its segment and does not divide it. A percent
-/// sequence that is not valid, or does not decode to valid UTF-8, is kept as written.
+/// Each segment is then percent-decoded once, so <c>%2F</c> is part of its segment and does not divide it, except
+/// in the segments a catch-all parameter captures, where it acts as <c>/</c>. A percent sequence that is not valid,
+/// or does not decode to valid UTF-8, is kept as written.
 /// </para>
 /// <para>
 /// A segment cannot contain a control character (one for which <see cref="char.IsControl(char)"/> is
@@ -64,15 +71,20 @@ public sealed class RouteTemplate
     private readonly Segment[] _segments;
     private readonly int _parameterCount;
 
-    // The number of segments before the first optional parameter, which is the fewest segments a matching path has.
+    // The number of segments before the first optional or catch-all parameter, which is the fewest segments a matching
+    // path has.
     private readonly int _requiredCount;
 
-    private RouteTemplate(string value, Segment[] segments, int parameterCount, int requiredCount)
+    // Whether the last segment is a catch-all parameter, which takes every path segment after the required ones.
+    private readonly bool _endsInCatchAll;
+
+    private RouteTemplate(string value, Segment[] segments, int parameterCount, int requiredCount, bool endsInCatchAll)
     {
         Value = value;
         _segments = segments;
         _parameterCount = parameterCount;
         _requiredCount = requiredCount;
+        _endsInCatchAll = endsInCatchAll;
     }
 
     /// <summary>
@@ -89,20 +101,23 @@ public sealed class RouteTemplate
     /// <exception cref="ArgumentException">
     /// <para>
     /// <paramref name="value"/> is empty or consists only of white space or does not start with <c>/</c>; a segment
-    /// contains a control character or a lone surrogate; a parameter contains <c>*</c>, contains <c>?</c> other than
-    /// as its last character, has an invalid name, repeats the name of an earlier parameter, ignoring case, contains
-    /// more than one <c>:</c>, or has an empty or unknown constraint; a literal segment starts or ends with white
-    /// space, or contains <c>{</c>, <c>}</c>, <c>?</c> or <c>#</c>; or a literal or a parameter that is not optional
-    /// follows an optional parameter. These checks apply to the text as written, before percent-decoding.
+    /// contains a control character or a lone surrogate; a parameter contains <c>*</c> other than as its first
+    /// character, contains <c>?</c> other than as its last character, has an invalid name, repeats the name of an
+    /// earlier parameter, ignoring case, contains more than one <c>:</c>, or has an empty or unknown constraint; a
+    /// catch-all parameter is optional or has a constraint; a literal segment starts or ends with white space, or
+    /// contains <c>{</c>, <c>}</c>, <c>?</c> or <c>#</c>; a literal or a parameter that is not optional, including a
+    /// catch-all parameter, follows an optional parameter; or any segment follows a catch-all parameter. These checks
+    /// apply to the text as written, before percent-decoding.
     /// </para>
     /// <para>
     /// The first invalid segment, reading left to right, is reported. Within a segment, a control character is
     /// reported first, then a lone surrogate, then any other problem of the segment's own text, then a segment that
-    /// follows an optional parameter without being one, then a repeated name. Within a parameter, <c>*</c> is
-    /// reported first, then a <c>?</c> that is not last, then, with a final <c>?</c> removed, an invalid name, then
-    /// more than one <c>:</c>, then an empty constraint, then an unknown one. A control character is reported even
-    /// when it is also white space, such as a tab at the start of a segment. The message shows each control character
-    /// and lone surrogate as a <c>\uXXXX</c> escape.
+    /// follows a catch-all parameter or follows an optional parameter without being one, then a repeated name. Within
+    /// a parameter, a <c>*</c> that is not first is reported first, then a <c>?</c> that is not last, then, with a
+    /// first <c>*</c> and a final <c>?</c> removed, an invalid name, then a catch-all parameter that is optional, then
+    /// a catch-all parameter with a constraint, then more than one <c>:</c>, then an empty constraint, then an unknown
+    /// one. A control character is reported even when it is also white space, such as a tab at the start of a segment.
+    /// The message shows each control character and lone surrogate as a <c>\uXXXX</c> escape.
     /// </para>
     /// </exception>
     public static RouteTemplate Parse(string value)
@@ -118,6 +133,7 @@ public sealed class RouteTemplate
         // quote the earlier segment as written.
         var seenNames = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         int firstOptional = -1;
+        int catchAll = -1;
 
         for (var i = 0; i < segments.Length; i++)
         {
@@ -130,22 +146,35 @@ public sealed class RouteTemplate
                     nameof(value));
             }
 
-            // Checked before the repeated name because it depends only on the segment's position, and applies to
-            // literals as well as parameters.
+            // These two are checked before the repeated name because they depend only on the segment's position, and
+            // apply to literals as well as parameters. At most one applies: a catch-all after an optional parameter is
+            // rejected here, and nothing after a catch-all is accepted.
+            if (catchAll >= 0)
+            {
+                throw new ArgumentException(
+                    $"Route template segment '{EscapeForMessage(segment)}' follows the catch-all parameter " +
+                    $"'{segments[catchAll]}'; a catch-all parameter must be the last segment.",
+                    nameof(value));
+            }
+
             if (firstOptional >= 0 && parameter is not { IsOptional: true })
             {
                 throw new ArgumentException(
                     $"Route template segment '{EscapeForMessage(segment)}' follows the optional parameter " +
-                    $"'{segments[firstOptional]}'; only optional parameters can follow an optional parameter.",
+                    $"'{segments[firstOptional]}'; " +
+                    (parameter is { IsCatchAll: true }
+                        ? "a catch-all parameter cannot follow an optional parameter."
+                        : "only optional parameters can follow an optional parameter."),
                     nameof(value));
             }
 
-            if (parameter is not { Name: var name, Constraint: var constraint, IsOptional: var isOptional })
+            if (parameter is not { } found)
             {
                 parsed[i] = Segment.Literal(Uri.UnescapeDataString(segment));
                 continue;
             }
 
+            string name = found.Name;
             if (!seenNames.TryAdd(name, i))
             {
                 throw new ArgumentException(
@@ -154,13 +183,17 @@ public sealed class RouteTemplate
                     nameof(value));
             }
 
-            if (isOptional && firstOptional < 0)
+            if (found.IsOptional && firstOptional < 0)
                 firstOptional = i;
 
-            parsed[i] = Segment.Parameter(name, constraint, isOptional);
+            if (found.IsCatchAll)
+                catchAll = i;
+
+            parsed[i] = Segment.Parameter(name, found.Constraint, found.IsOptional, found.IsCatchAll);
         }
 
-        return new RouteTemplate(value, parsed, seenNames.Count, firstOptional < 0 ? parsed.Length : firstOptional);
+        int requiredCount = firstOptional >= 0 ? firstOptional : catchAll >= 0 ? catchAll : parsed.Length;
+        return new RouteTemplate(value, parsed, seenNames.Count, requiredCount, catchAll >= 0);
     }
 
     /// <summary>
@@ -173,23 +206,31 @@ public sealed class RouteTemplate
     /// <returns>
     /// The values captured by the template's parameters, keyed by parameter name as written in the template and
     /// looked up without regard to case, or <see langword="null"/> when the path does not match. An optional
-    /// parameter that the path leaves out has no entry. Each match that captures a value returns its own dictionary;
-    /// treat it as read-only. When nothing is captured, the dictionary is empty.
+    /// parameter that the path leaves out has no entry, and neither has a catch-all parameter when nothing is left of
+    /// the path. Each match that captures a value returns its own dictionary; treat it as read-only. When nothing is
+    /// captured, the dictionary is empty.
     /// </returns>
     /// <remarks>
     /// <para>
-    /// A path matches when it has at least as many segments as the template has before its first optional parameter
-    /// and no more than the template has in all, and each segment the path has is accepted by the template segment in
-    /// the same position: a decoded segment in a literal's position equals that literal, compared ordinally and
-    /// case-sensitively, and a decoded segment in a parameter's position satisfies the parameter's constraint, if it
-    /// has one. The optional parameters after the path's last segment are left out.
+    /// A path matches when it has at least as many segments as the template has before its first optional or
+    /// catch-all parameter and, unless the template ends in a catch-all parameter, no more than the template has in
+    /// all, and each segment in the position of a literal or an ordinary parameter is accepted by it: a decoded
+    /// segment in a literal's position equals that literal, compared ordinally and case-sensitively, and a decoded
+    /// segment in a parameter's position satisfies the parameter's constraint, if it has one. The optional parameters
+    /// after the path's last segment are left out.
+    /// </para>
+    /// <para>
+    /// A catch-all parameter captures every remaining segment, each decoded, joined with a single <c>/</c>. Repeated,
+    /// leading and trailing slashes are therefore not reproduced. A <c>%2F</c> in a remaining segment behaves exactly
+    /// like <c>/</c>, including that it does not create an empty part, so <c>/files/a%2F</c> captures <c>a</c> and a
+    /// catch-all whose remaining segments decode to nothing but slashes has no entry.
     /// </para>
     /// <para>
     /// A segment that does not satisfy a constraint is not an error: the path simply does not match, even when the
-    /// parameter is optional, because a segment that is present is never treated as left out. A captured value is the
-    /// decoded path segment, unchanged even when a constraint checked it, so it contains <c>/</c> where the path has
-    /// <c>%2F</c>. White space is significant, <c>+</c> is not a space, and <c>.</c> and <c>..</c> are ordinary
-    /// segments.
+    /// parameter is optional, because a segment that is present is never treated as left out. The value captured by a
+    /// parameter that is not a catch-all is the decoded path segment, unchanged even when a constraint checked it, so
+    /// it contains <c>/</c> where the path has <c>%2F</c>. White space is significant, <c>+</c> is not a space, and
+    /// <c>.</c> and <c>..</c> are ordinary segments.
     /// </para>
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="path"/> is <see langword="null"/>.</exception>
@@ -198,12 +239,15 @@ public sealed class RouteTemplate
         ArgumentNullException.ThrowIfNull(path);
 
         string[] pathSegments = SplitSegments(path);
-        if (pathSegments.Length < _requiredCount || pathSegments.Length > _segments.Length)
+        if (pathSegments.Length < _requiredCount || (!_endsInCatchAll && pathSegments.Length > _segments.Length))
             return null;
 
-        // Every segment is decoded in place and checked, against its literal or its parameter's constraint, before the
-        // dictionary is allocated, so a path that does not match allocates no dictionary.
-        for (var i = 0; i < pathSegments.Length; i++)
+        // The segments in the template's own positions; with a catch-all, those before it.
+        int positionalCount = _endsInCatchAll ? _requiredCount : pathSegments.Length;
+
+        // Every positional segment is decoded in place and checked, against its literal or its parameter's constraint,
+        // before anything else is allocated, so a path that does not match allocates no dictionary.
+        for (var i = 0; i < positionalCount; i++)
         {
             string decoded = Uri.UnescapeDataString(pathSegments[i]);
             if (!_segments[i].Accepts(decoded))
@@ -212,18 +256,27 @@ public sealed class RouteTemplate
             pathSegments[i] = decoded;
         }
 
-        // The segments the path leaves out are all optional parameters, because only optional parameters are trailing.
-        int capturedCount = _parameterCount - (_segments.Length - pathSegments.Length);
+        // Null when nothing is left, or only slashes decoded from '%2F', so that the catch-all has no entry.
+        string? rest = _endsInCatchAll ? CaptureRemaining(pathSegments, positionalCount) : null;
+
+        // Without a catch-all, the segments the path leaves out are all optional parameters, because only optional
+        // parameters are trailing. With one, the catch-all is the only parameter that can be left out.
+        int capturedCount = _endsInCatchAll
+            ? _parameterCount - (rest is null ? 1 : 0)
+            : _parameterCount - (_segments.Length - pathSegments.Length);
         if (capturedCount == 0)
             return ReadOnlyDictionary<string, string>.Empty;
 
         var values = new Dictionary<string, string>(capturedCount, StringComparer.OrdinalIgnoreCase);
-        for (var i = 0; i < pathSegments.Length; i++)
+        for (var i = 0; i < positionalCount; i++)
         {
             Segment segment = _segments[i];
             if (segment.IsParameter)
                 values.Add(segment.Text, pathSegments[i]);
         }
+
+        if (rest is not null)
+            values.Add(_segments[^1].Text, rest);
 
         return values;
     }
@@ -235,25 +288,27 @@ public sealed class RouteTemplate
     /// The value of each of the template's parameters, keyed by parameter name without regard to case, as everywhere
     /// else in a template. Each name is looked up as written in the template first; only if that finds nothing is the
     /// dictionary searched for a key that equals the name ignoring case. Entries for names the template does not use
-    /// are ignored. An optional parameter is left out when it has no entry, neither under its name as written nor
-    /// under a key that equals it ignoring case.
+    /// are ignored. An optional or catch-all parameter is left out when it has no entry, neither under its name as
+    /// written nor under a key that equals it ignoring case.
     /// </param>
     /// <returns>
-    /// The path: <c>/</c> followed by the segments separated by <c>/</c>, with no trailing slash; <c>/</c> for the
-    /// root template, and when the template has only optional parameters and none is given. Each literal is written as
-    /// its decoded text and each parameter as its value, both percent-encoded with
-    /// <see cref="Uri.EscapeDataString(string)"/>, so a <c>/</c> in a value is written as <c>%2F</c>. An optional
-    /// parameter that is left out is not written, and neither is anything after it, so <c>/products/{id?}</c> formats
-    /// as <c>/products</c> without an <c>id</c>.
+    /// The path: <c>/</c> followed by the segments separated by <c>/</c>, with no trailing slash; <c>/</c> for the root
+    /// template, and when the template has only optional parameters, or only a catch-all parameter, and none is given.
+    /// Each literal is written as its decoded text and each parameter as its value, both percent-encoded with
+    /// <see cref="Uri.EscapeDataString(string)"/>, so a <c>/</c> in a value is written as <c>%2F</c>. A catch-all
+    /// parameter's value is split at each <c>/</c> instead, and each part is encoded and written as its own segment, so
+    /// <c>a/b c</c> is written as <c>a/b%20c</c>. An optional or catch-all parameter that is left out is not written,
+    /// and neither is anything after it, so <c>/products/{id?}</c> formats as <c>/products</c> without an <c>id</c>,
+    /// and <c>/{*path}</c> formats as <c>/</c> without a <c>path</c>.
     /// </returns>
     /// <remarks>
     /// <para>
     /// <see cref="Match(string)"/> reads back what this method writes: for every template and every dictionary this
-    /// method accepts, matching the formatted path returns exactly one entry for each required parameter and each
-    /// optional parameter that was given, with the values that were formatted. In the other direction, formatting the
-    /// values that a match returned produces a path that matches again with the same values, unless the matched path
-    /// itself contained a lone surrogate in a parameter's position: <see cref="Match(string)"/> does not check paths,
-    /// and this method rejects such a value.
+    /// method accepts, matching the formatted path returns exactly one entry for each required parameter, each optional
+    /// parameter that was given and the catch-all parameter if it was given, with the values that were formatted. In
+    /// the other direction, formatting the values that a match returned produces a path that matches again with the
+    /// same values, unless the matched path itself contained a lone surrogate in a parameter's position:
+    /// <see cref="Match(string)"/> does not check paths, and this method rejects such a value.
     /// </para>
     /// <para>
     /// That path need not have the same text as the path that was matched. The output is canonical: the same values
@@ -262,22 +317,27 @@ public sealed class RouteTemplate
     /// <c>/my%20files</c>, and repeated slashes are not reproduced.
     /// </para>
     /// <para>
-    /// A value for a parameter with a constraint must satisfy it, so that the path matches. Values are not otherwise
-    /// checked: white space, control characters, <c>%</c>, <c>/</c> and any other text are encoded and read back
-    /// unchanged. <c>.</c> and <c>..</c> are written as they are, as values or literals, and a URI parser or browser
-    /// may remove them and the segment before them when the path is resolved.
+    /// A value for a parameter with a constraint must satisfy it, so that the path matches. A value for a catch-all
+    /// parameter cannot have an empty part: it cannot start or end with <c>/</c> or contain <c>//</c>, because the
+    /// empty segment would be dropped when the path is matched. Values are not otherwise checked: white space, control
+    /// characters, <c>%</c>, <c>/</c> and any other text are encoded and read back unchanged, except that in a
+    /// catch-all value each <c>/</c> separates two segments. <c>.</c> and <c>..</c> are written as they are, as values,
+    /// as parts of a catch-all value or as literals, and a URI parser or browser may remove them and the segment before
+    /// them when the path is resolved.
     /// </para>
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="pathValues"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">
-    /// A parameter that is not optional has no entry in <paramref name="pathValues"/>; a parameter has no entry under
-    /// its name as written and more than one whose key equals it ignoring case; a parameter's value is
+    /// A parameter that is not optional or catch-all has no entry in <paramref name="pathValues"/>; a parameter has no
+    /// entry under its name as written and more than one whose key equals it ignoring case; a parameter's value is
     /// <see langword="null"/>, empty, not valid UTF-16 (it contains a lone surrogate, which cannot be percent-encoded
-    /// and read back unchanged), or does not satisfy the parameter's constraint; or an optional parameter has a value
-    /// although an earlier optional parameter was left out, so its segment cannot be written. These rules apply to
-    /// optional parameters that have an entry exactly as to other parameters: a <see langword="null"/> or empty value
-    /// does not leave a parameter out. The first parameter in template order that cannot be formatted is the one
-    /// reported, and a value that is not valid is reported before it is found to follow a parameter that was left out.
+    /// and read back unchanged), or does not satisfy the parameter's constraint; a catch-all parameter's value starts
+    /// or ends with <c>/</c> or contains <c>//</c>; or an optional parameter has a value although an earlier optional
+    /// parameter was left out, so its segment cannot be written. These rules apply to optional and catch-all parameters
+    /// that have an entry exactly as to other parameters: a <see langword="null"/> or empty value does not leave a
+    /// parameter out. The first parameter in template order that cannot be formatted is the one reported. A lone
+    /// surrogate in a catch-all value is reported before an empty part, and a value that is not valid is reported
+    /// before it is found to follow a parameter that was left out.
     /// </exception>
     public string Format(IReadOnlyDictionary<string, string> pathValues)
     {
@@ -313,30 +373,47 @@ public sealed class RouteTemplate
                     nameof(pathValues));
             }
 
-            builder.Append('/').Append(Uri.EscapeDataString(value));
+            if (segment.IsCatchAll)
+                AppendCatchAll(builder, value);
+            else
+                builder.Append('/').Append(Uri.EscapeDataString(value));
         }
 
         return builder.Length == 0 ? "/" : builder.ToString();
     }
 
-    // Returns null only for an optional parameter that has no entry.
+    // Writes each part of a catch-all value between slashes as its own segment, so that Match reads the slashes back
+    // as separators. GetPathValue has already rejected a value with an empty part.
+    private static void AppendCatchAll(StringBuilder builder, string value)
+    {
+        ReadOnlySpan<char> rest = value;
+        while (true)
+        {
+            int separator = rest.IndexOf('/');
+            ReadOnlySpan<char> part = separator < 0 ? rest : rest[..separator];
+            builder.Append('/').Append(Uri.EscapeDataString(part));
+            if (separator < 0)
+                return;
+
+            rest = rest[(separator + 1)..];
+        }
+    }
+
+    // Returns null only for an optional or catch-all parameter that has no entry.
     private static string? GetPathValue(IReadOnlyDictionary<string, string> pathValues, Segment parameter)
     {
         string name = parameter.Text;
         if (!pathValues.TryGetValue(name, out string? value) && !TryGetValueIgnoringCase(pathValues, name, out value))
         {
-            return parameter.IsOptional
+            return parameter.CanBeLeftOut
                 ? null
                 : throw new ArgumentException($"Path parameter '{name}' has no value.", nameof(pathValues));
         }
 
-        // A null or empty value does not leave an optional parameter out, because Match never returns one; saying how
-        // to leave it out keeps that from looking like a bug.
-        const string HowToLeaveOut = "; to leave out an optional parameter, leave it out of the dictionary";
         if (value is null)
         {
             throw new ArgumentException(
-                $"Path parameter '{name}' has a null value{(parameter.IsOptional ? HowToLeaveOut : "")}.",
+                $"Path parameter '{name}' has a null value{HowToLeaveOut(parameter)}.",
                 nameof(pathValues));
         }
 
@@ -344,7 +421,9 @@ public sealed class RouteTemplate
         {
             throw new ArgumentException(
                 $"Path parameter '{name}' has an empty value" +
-                (parameter.IsOptional ? HowToLeaveOut : "; a parameter always matches exactly one path segment") + ".",
+                (parameter.CanBeLeftOut
+                    ? HowToLeaveOut(parameter)
+                    : "; a parameter always matches exactly one path segment") + ".",
                 nameof(pathValues));
         }
 
@@ -356,6 +435,15 @@ public sealed class RouteTemplate
                 nameof(pathValues));
         }
 
+        if (parameter.IsCatchAll &&
+            (value[0] == '/' || value[^1] == '/' || value.Contains("//", StringComparison.Ordinal)))
+        {
+            throw new ArgumentException(
+                $"Path parameter '{name}' has a value with an empty part; a catch-all value cannot start or end " +
+                "with '/' or contain '//', because a match drops empty segments and would not return it.",
+                nameof(pathValues));
+        }
+
         if (parameter.Constraint is { } constraint && !constraint.IsSatisfiedBy(value))
         {
             throw new ArgumentException(
@@ -364,6 +452,18 @@ public sealed class RouteTemplate
         }
 
         return value;
+    }
+
+    // A null or empty value does not leave a parameter out, because Match never returns one; saying how to leave it out
+    // keeps that from looking like a bug.
+    private static string HowToLeaveOut(Segment parameter)
+    {
+        if (!parameter.CanBeLeftOut)
+            return "";
+
+        return parameter.IsCatchAll
+            ? "; to leave out a catch-all parameter, leave it out of the dictionary"
+            : "; to leave out an optional parameter, leave it out of the dictionary";
     }
 
     // Only reached when the name as written is not a key, which is also how an optional parameter is left out. Reads
@@ -421,9 +521,9 @@ public sealed class RouteTemplate
         return false;
     }
 
-    // Returns the parameter's name and constraint text, split at the first ':' after a final '?' is removed, the
-    // built-in constraint that text names, if any, and whether there was a final '?', when the segment is a
-    // whole-segment parameter, valid or not; null when the segment is a literal.
+    // Returns the parameter's name and constraint text, split at the first ':' after a first '*' and a final '?' are
+    // removed, the built-in constraint that text names, if any, and whether there was a first '*' and a final '?',
+    // when the segment is a whole-segment parameter, valid or not; null when the segment is a literal.
     private static ParameterText? FindParameter(string segment)
     {
         if (segment.Length < 2 || segment[0] != '{' || segment[^1] != '}')
@@ -438,16 +538,22 @@ public sealed class RouteTemplate
         if (isOptional)
             text = text[..^1];
 
+        // Likewise only the first '*' is removed.
+        bool isCatchAll = text.Length > 0 && text[0] == '*';
+        if (isCatchAll)
+            text = text[1..];
+
         int separator = text.IndexOf(':');
         if (separator < 0)
-            return new ParameterText(text.ToString(), null, null, isOptional);
+            return new ParameterText(text.ToString(), null, null, isOptional, isCatchAll);
 
         string constraintText = text[(separator + 1)..].ToString();
         return new ParameterText(
             text[..separator].ToString(),
             constraintText,
             RouteConstraint.Find(constraintText),
-            isOptional);
+            isOptional,
+            isCatchAll);
     }
 
     private static string? FindSegmentProblem(string segment, ParameterText? parameter)
@@ -483,7 +589,10 @@ public sealed class RouteTemplate
     {
         // Both checked across the name and the constraint, so that '{id?:int}' and '{id:in?t}' are reported alike.
         if (parameter.Name.Contains('*', StringComparison.Ordinal) || parameter.ConstraintText.AsSpan().Contains('*'))
-            return "contains '*', which is not allowed in a parameter";
+        {
+            return "contains '*' other than at the start; '*' is only allowed at the start of a parameter, written " +
+                "'{*name}'";
+        }
 
         if (parameter.Name.Contains('?', StringComparison.Ordinal) || parameter.ConstraintText.AsSpan().Contains('?'))
         {
@@ -493,6 +602,17 @@ public sealed class RouteTemplate
 
         if (!IsParameterName(parameter.Name))
             return InvalidParameterName;
+
+        // Both checked before the constraint text, which a catch-all cannot have at all, so that '{*rest:slug}' is
+        // reported as having a constraint rather than an unknown one, which would suggest the wrong fix.
+        if (parameter is { IsCatchAll: true, IsOptional: true })
+        {
+            return "is an optional catch-all parameter; a catch-all parameter cannot be optional, because it " +
+                "already matches when nothing is left of the path";
+        }
+
+        if (parameter is { IsCatchAll: true, ConstraintText: not null })
+            return "is a catch-all parameter with a constraint; a catch-all parameter cannot have a constraint";
 
         if (parameter.ConstraintText is not { } constraintText)
             return null;
@@ -562,28 +682,81 @@ public sealed class RouteTemplate
         return builder.ToString();
     }
 
+    // Decodes the segments from start on in place and joins them with '/', or returns null when there is nothing to
+    // join. A single segment is returned as decoded, and string.Join allocates the joined value once, at its final
+    // length; only a decoded '/' needs the slower path.
+    private static string? CaptureRemaining(string[] pathSegments, int start)
+    {
+        var containsSlash = false;
+        for (int i = start; i < pathSegments.Length; i++)
+        {
+            string decoded = Uri.UnescapeDataString(pathSegments[i]);
+            containsSlash |= decoded.Contains('/', StringComparison.Ordinal);
+            pathSegments[i] = decoded;
+        }
+
+        int count = pathSegments.Length - start;
+        if (!containsSlash)
+            return count == 0 ? null : count == 1 ? pathSegments[start] : string.Join('/', pathSegments, start, count);
+
+        // A decoded '/' separates parts like any other, so the empty parts it leaves are dropped as empty path segments
+        // are, and Format can write back every value this returns.
+        // The joined value is never longer than the decoded segments and the slashes between them.
+        int capacity = count - 1;
+        for (int i = start; i < pathSegments.Length; i++)
+            capacity += pathSegments[i].Length;
+
+        var builder = new StringBuilder(capacity);
+        for (int i = start; i < pathSegments.Length; i++)
+        {
+            ReadOnlySpan<char> segment = pathSegments[i];
+            foreach (Range range in segment.Split('/'))
+            {
+                ReadOnlySpan<char> part = segment[range];
+                if (part.IsEmpty)
+                    continue;
+
+                if (builder.Length > 0)
+                    builder.Append('/');
+
+                builder.Append(part);
+            }
+        }
+
+        return builder.Length == 0 ? null : builder.ToString();
+    }
+
     private static string[] SplitSegments(string path)
     {
         return path.Split('/', StringSplitOptions.RemoveEmptyEntries);
     }
 
-    // A parameter segment's text, without a final '?', split at the first ':' into the name and, when there is a ':',
-    // the constraint text, with the built-in constraint that the text names, or null when it names none.
+    // A parameter segment's text, without a first '*' or a final '?', split at the first ':' into the name and, when
+    // there is a ':', the constraint text, with the built-in constraint that the text names, or null when it names
+    // none.
     private readonly record struct ParameterText(
         string Name,
         string? ConstraintText,
         RouteConstraint? Constraint,
-        bool IsOptional);
+        bool IsOptional,
+        bool IsCatchAll);
 
     private readonly struct Segment
     {
-        private Segment(string text, string encodedText, bool isParameter, RouteConstraint? constraint, bool isOptional)
+        private Segment(
+            string text,
+            string encodedText,
+            bool isParameter,
+            RouteConstraint? constraint,
+            bool isOptional,
+            bool isCatchAll)
         {
             Text = text;
             EncodedText = encodedText;
             IsParameter = isParameter;
             Constraint = constraint;
             IsOptional = isOptional;
+            IsCatchAll = isCatchAll;
         }
 
         // A literal's decoded text, which path segments are compared with, or a parameter's name.
@@ -600,14 +773,20 @@ public sealed class RouteTemplate
         // Whether this is a parameter written with a final '?', which a path may leave out.
         public bool IsOptional { get; }
 
+        // Whether this is a parameter written with a first '*', which takes the rest of the path.
+        public bool IsCatchAll { get; }
+
+        // Whether Format leaves this parameter out when it has no entry.
+        public bool CanBeLeftOut => IsOptional || IsCatchAll;
+
         public static Segment Literal(string text)
         {
-            return new Segment(text, Uri.EscapeDataString(text), false, null, false);
+            return new Segment(text, Uri.EscapeDataString(text), false, null, false, false);
         }
 
-        public static Segment Parameter(string name, RouteConstraint? constraint, bool isOptional)
+        public static Segment Parameter(string name, RouteConstraint? constraint, bool isOptional, bool isCatchAll)
         {
-            return new Segment(name, string.Empty, true, constraint, isOptional);
+            return new Segment(name, string.Empty, true, constraint, isOptional, isCatchAll);
         }
 
         // Whether a decoded path segment can stand in this segment's position.

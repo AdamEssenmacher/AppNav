@@ -9,7 +9,7 @@ public sealed class RouteTemplateTests
     // A short phrase that identifies each kind of rejection, so that tests pin which check reported a segment.
     private const string ControlCharacter = "control character";
     private const string InvalidParameterName = "invalid parameter name";
-    private const string ReservedInAParameter = "not allowed in a parameter";
+    private const string MisplacedAsterisk = "only allowed at the start";
     private const string BraceOutsideAParameter = "outside a parameter";
     private const string EdgeWhiteSpace = "white space";
     private const string QuestionMarkOrHash = "'?' or '#'";
@@ -490,15 +490,15 @@ public sealed class RouteTemplateTests
     [InlineData("/{ }", "{ }", EdgeWhiteSpace)]
     [InlineData("/{ id }", "{ id }", EdgeWhiteSpace)]
     [InlineData("/{a b}", "{a b}", BraceOutsideAParameter)]
-    [InlineData("/{1a}", "{1a}", ReservedInAParameter)]
-    [InlineData("/{a-b}", "{a-b}", ReservedInAParameter)]
-    [InlineData("/{a.b}", "{a.b}", ReservedInAParameter)]
-    [InlineData("/{é}", "{é}", ReservedInAParameter)]
-    [InlineData("/{café}", "{café}", ReservedInAParameter)]
-    [InlineData("/{%41}", "{%41}", ReservedInAParameter)]
-    [InlineData("/{:}", "{:}", ReservedInAParameter)]
-    [InlineData("/{:int}", "{:int}", ReservedInAParameter)]
-    [InlineData("/{1:a}", "{1:a}", ReservedInAParameter)]
+    [InlineData("/{1a}", "{1a}", MisplacedAsterisk)]
+    [InlineData("/{a-b}", "{a-b}", MisplacedAsterisk)]
+    [InlineData("/{a.b}", "{a.b}", MisplacedAsterisk)]
+    [InlineData("/{é}", "{é}", MisplacedAsterisk)]
+    [InlineData("/{café}", "{café}", MisplacedAsterisk)]
+    [InlineData("/{%41}", "{%41}", MisplacedAsterisk)]
+    [InlineData("/{:}", "{:}", MisplacedAsterisk)]
+    [InlineData("/{:int}", "{:int}", MisplacedAsterisk)]
+    [InlineData("/{1:a}", "{1:a}", MisplacedAsterisk)]
     [InlineData("/{1:int}", "{1:int}", UnknownConstraint)]
     [InlineData("/{ id :int}", "{ id :int}", EdgeWhiteSpace)]
     [InlineData("/{a-b:slug}", "{a-b:slug}", UnknownConstraint)]
@@ -508,19 +508,15 @@ public sealed class RouteTemplateTests
     }
 
     [Theory]
-    [InlineData("/files/{*rest}", "{*rest}")]
-    [InlineData("/{*}", "{*}")]
     [InlineData("/files/{rest:*}", "{rest:*}")]
-    [InlineData("/files/{*rest:alpha}", "{*rest:alpha}")]
-    [InlineData("/files/{*rest?}", "{*rest?}")]
     [InlineData("/files/{rest?*}", "{rest?*}")]
     [InlineData("/files/{1*:slug}", "{1*:slug}")]
-    public void ParseRejectsAnAsteriskInAParameter(string value, string segment)
+    public void ParseRejectsAnAsteriskThatIsNotFirstInAParameter(string value, string segment)
     {
         ArgumentException exception =
-            AssertRejectsSegment(value, segment, ReservedInAParameter, notCategory: InvalidParameterName);
+            AssertRejectsSegment(value, segment, MisplacedAsterisk, notCategory: InvalidParameterName);
 
-        Assert.Contains("'*'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("'{*name}'", exception.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("'?'", exception.Message, StringComparison.Ordinal);
         Assert.DoesNotContain(UnknownConstraint, exception.Message, StringComparison.Ordinal);
     }
@@ -629,7 +625,7 @@ public sealed class RouteTemplateTests
     [InlineData("/a%20?", "a%20?")]
     public void ParseRejectsASegmentContainingAQuestionMarkOrHash(string value, string segment)
     {
-        AssertRejectsSegment(value, segment, QuestionMarkOrHash, notCategory: ReservedInAParameter);
+        AssertRejectsSegment(value, segment, QuestionMarkOrHash, notCategory: MisplacedAsterisk);
     }
 
     [Theory]
