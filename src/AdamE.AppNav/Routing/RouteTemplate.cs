@@ -80,17 +80,15 @@ public sealed class RouteTemplate
     /// <paramref name="value"/> is empty or consists only of white space or does not start with <c>/</c>; a segment
     /// contains a control character or a lone surrogate; a parameter contains <c>?</c> or <c>*</c>, has an invalid
     /// name, repeats the name of an earlier parameter, ignoring case, contains more than one <c>:</c>, or has an empty
-    /// or unknown constraint;
-    /// or a literal segment starts or ends with white space, or contains <c>{</c>, <c>}</c>, <c>?</c> or <c>#</c>.
-    /// These checks apply to the text as written, before percent-decoding.
+    /// or unknown constraint; or a literal segment starts or ends with white space, or contains <c>{</c>, <c>}</c>,
+    /// <c>?</c> or <c>#</c>. These checks apply to the text as written, before percent-decoding.
     /// </para>
     /// <para>
     /// The first invalid segment, reading left to right, is reported. Within a segment, a control character is
     /// reported first, then a lone surrogate, then any other problem; within a parameter, <c>?</c> or <c>*</c> is
     /// reported first, then an invalid name, then more than one <c>:</c>, then an empty constraint, then an unknown
-    /// one. A control character is reported even
-    /// when it is also white space, such as a tab at the start of a segment. The message shows each control character
-    /// and lone surrogate as a <c>\uXXXX</c> escape.
+    /// one. A control character is reported even when it is also white space, such as a tab at the start of a segment.
+    /// The message shows each control character and lone surrogate as a <c>\uXXXX</c> escape.
     /// </para>
     /// </exception>
     public static RouteTemplate Parse(string value)
