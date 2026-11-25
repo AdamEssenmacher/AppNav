@@ -1,6 +1,44 @@
 #nullable enable
+AdamE.AppNav.AppRoute
+AdamE.AppNav.AppRoute.AppRoute() -> void
+AdamE.AppNav.AppRoute.AppRoute(AdamE.AppNav.AppRoute! original) -> void
+AdamE.AppNav.Routing.RouteDefinition
+AdamE.AppNav.Routing.RouteDefinition.RouteType.get -> System.Type!
+AdamE.AppNav.Routing.RouteDefinition.Template.get -> AdamE.AppNav.Routing.RouteTemplate!
+AdamE.AppNav.Routing.RouteDiagnostic
+AdamE.AppNav.Routing.RouteDiagnostic.Code.get -> string!
+AdamE.AppNav.Routing.RouteDiagnostic.Data.get -> System.Collections.Generic.IReadOnlyDictionary<string!, object?>!
+AdamE.AppNav.Routing.RouteDiagnostic.Message.get -> string!
+AdamE.AppNav.Routing.RouteDiagnosticCodes
+AdamE.AppNav.Routing.RouteMatchContext
+AdamE.AppNav.Routing.RouteMatchContext.Path(string! name) -> string!
+AdamE.AppNav.Routing.RouteMatchContext.PathValues.get -> System.Collections.Generic.IReadOnlyDictionary<string!, string!>!
+AdamE.AppNav.Routing.RouteMatchContext.SourceUri.get -> System.Uri!
+AdamE.AppNav.Routing.RouteMatchContext.TryGetPath(string! name, out string? value) -> bool
+AdamE.AppNav.Routing.RouteMatchResult
+AdamE.AppNav.Routing.RouteMatchResult.Definition.get -> AdamE.AppNav.Routing.RouteDefinition?
+AdamE.AppNav.Routing.RouteMatchResult.Diagnostics.get -> System.Collections.Generic.IReadOnlyList<AdamE.AppNav.Routing.RouteDiagnostic!>!
+AdamE.AppNav.Routing.RouteMatchResult.IsSuccess.get -> bool
+AdamE.AppNav.Routing.RouteMatchResult.Route.get -> AdamE.AppNav.AppRoute?
+AdamE.AppNav.Routing.RouteTable
+AdamE.AppNav.Routing.RouteTable.Definitions.get -> System.Collections.Generic.IReadOnlyList<AdamE.AppNav.Routing.RouteDefinition!>!
+AdamE.AppNav.Routing.RouteTable.Match(System.Uri! uri) -> AdamE.AppNav.Routing.RouteMatchResult!
+AdamE.AppNav.Routing.RouteTableBuilder
+AdamE.AppNav.Routing.RouteTableBuilder.Build() -> AdamE.AppNav.Routing.RouteTable!
+AdamE.AppNav.Routing.RouteTableBuilder.Map<TRoute>(string! template, System.Func<AdamE.AppNav.Routing.RouteMatchContext!, TRoute!>! createRoute) -> AdamE.AppNav.Routing.RouteTableBuilder!
+AdamE.AppNav.Routing.RouteTableBuilder.RouteTableBuilder() -> void
 AdamE.AppNav.Routing.RouteTemplate
 AdamE.AppNav.Routing.RouteTemplate.Format(System.Collections.Generic.IReadOnlyDictionary<string!, string!>! pathValues) -> string!
 AdamE.AppNav.Routing.RouteTemplate.Match(string! path) -> System.Collections.Generic.IReadOnlyDictionary<string!, string!>?
 AdamE.AppNav.Routing.RouteTemplate.Value.get -> string!
+abstract AdamE.AppNav.AppRoute.<Clone>$() -> AdamE.AppNav.AppRoute!
+const AdamE.AppNav.Routing.RouteDiagnosticCodes.NotMatched = "route.not_matched" -> string!
+override AdamE.AppNav.AppRoute.Equals(object? obj) -> bool
+override AdamE.AppNav.AppRoute.GetHashCode() -> int
+override AdamE.AppNav.AppRoute.ToString() -> string!
+static AdamE.AppNav.AppRoute.operator !=(AdamE.AppNav.AppRoute? left, AdamE.AppNav.AppRoute? right) -> bool
+static AdamE.AppNav.AppRoute.operator ==(AdamE.AppNav.AppRoute? left, AdamE.AppNav.AppRoute? right) -> bool
 static AdamE.AppNav.Routing.RouteTemplate.Parse(string! value) -> AdamE.AppNav.Routing.RouteTemplate!
+virtual AdamE.AppNav.AppRoute.EqualityContract.get -> System.Type!
+virtual AdamE.AppNav.AppRoute.Equals(AdamE.AppNav.AppRoute? other) -> bool
+virtual AdamE.AppNav.AppRoute.PrintMembers(System.Text.StringBuilder! builder) -> bool

@@ -1,5 +1,7 @@
 # Routing
 
+A [route](architecture.md#the-central-idea) is a typed value that names a destination in application terms. A [route template](#route-templates) is the path pattern a route answers to, and the [route table](#the-route-table) maps templates to route types, so that matching a URI gives you a typed route.
+
 ## Route templates
 
 A route template is the path pattern that a route answers to, such as `/settings/profile`. `RouteTemplate.Parse` turns the template text into a `RouteTemplate`, and `Match` tells you whether a path fits it and, when the template has [parameters](#path-parameters), what they captured. [`Format`](#formatting-a-path) builds a path from parameter values.
@@ -202,3 +204,72 @@ The rules for names and constraints apply to a parameter with a first `*` and a 
 `Parse` reports the first invalid segment, reading left to right. A rule that involves two segments, such as a repeated name or a segment after a catch-all parameter, is broken by the later one. When a segment has more than one problem, which one is reported is not specified. The exception message shows a control character or a lone surrogate as a `\uXXXX` escape, such as `\u0009`, rather than printing it.
 
 Apart from the dot segment rule, these checks apply to the text as written, before decoding. To match one of these characters literally, percent-encode it: `%09` for a tab, `%0A` for a line feed, `%00` for a null character (and the UTF-8 bytes of any other control character, such as `%C2%85` for U+0085), `%7B` for `{`, `%7D` for `}`, `%3F` for `?`, `%23` for `#` and `%20` for a space at the start or end of a segment. For example, `/what%3F` matches the path `/what%3F`, `/a%09b` matches a path whose segment is `a`, a tab and `b`, and `/%7Bid%7D` is a literal that matches the path `/{id}`. A lone surrogate has no encoded form: a surrogate has no UTF-8 bytes of its own, and the three bytes it would encode to, such as `%ED%A0%80`, are not valid UTF-8, so that text decodes to itself and the literal is that percent text. Encoding does not help with a dot segment either: `%2E%2E` is `..` once decoded, and the rule applies to the decoded text.
+
+## The route table
+
+A route is a sealed record that derives from `AppRoute`. A `RouteTableBuilder` maps a template to each route type, with a function that creates the route from the values the template captured, and `Build` turns the mappings into a `RouteTable`. `Match` reads the path of a URI and returns a `RouteMatchResult`.
+
+```csharp
+using AdamE.AppNav;
+using AdamE.AppNav.Routing;
+
+RouteTable table = new RouteTableBuilder()
+    .Map("/settings", _ => new SettingsRoute())
+    .Map("/products/{id:int}/{tab?}", c => new ProductRoute(
+        c.Path("id"),
+        c.TryGetPath("tab", out string? tab) ? tab : null))
+    .Build();
+
+RouteMatchResult result = table.Match(new Uri("myapp:///products/42/reviews"));
+if (result.IsSuccess)
+    Console.WriteLine(result.Route); // ProductRoute { Id = 42, Tab = reviews }
+
+Console.WriteLine(table.Match(new Uri("/orders", UriKind.Relative)).IsSuccess); // False
+
+public sealed record SettingsRoute : AppRoute;
+
+public sealed record ProductRoute(string Id, string? Tab) : AppRoute;
+```
+
+> **Note: write custom-scheme links with three slashes.** In `myapp://products/42`, `System.Uri` reads `products` as the host, which the table ignores, so the path is `/42`. That path does not reach the products route, but a `/{slug}` or `/{*rest}` route matches it. Likewise `myapp://open?tab=1` is read as the path `/`, which matches a root route. Write such links as `myapp:///products/42`, which has no host and the path `/products/42`.
+
+A route carries application identity only: the values that name its destination, not pages, view models, services, callbacks or anything about how a request arrived. Two routes of the same type with equal members are the same destination, so give a route only members with value equality, such as strings, numbers, enums and other records; arrays and lists compare by reference. A record's `ToString` prints every member.
+
+### What is read from a URI
+
+- Only the path is read. The scheme, user information, host, port, query and fragment are ignored.
+- The table checks neither the scheme nor the host, so `https://other.example/account` and `file:///account` match exactly as the app's own links do. Deciding which sources to accept belongs to the code that receives the link, before or after matching.
+- For an absolute URI, the path is `Uri.AbsolutePath`, so `https://example.com/settings`, `myapp:///settings` and `myapp:/settings` all have the path `/settings`. A URI whose path is empty, such as `mailto:a@b.c`, is read as the root path, which the template `/` matches.
+- The path of an absolute URI is the one `System.Uri` produces. It decodes percent-encoded unreserved characters (`%41` becomes `A`), percent-encodes spaces and non-ASCII characters, and keeps repeated slashes. In a URI with an authority, even an empty one as in `myapp:///a/../b`, it also removes [dot segments](#dot-segments), so that path is `/b`. In a URI with no authority at all, such as `app:/a/../b`, it keeps them, so that path does not match. `app:x/y` has the path `x/y`, which matches `/x/y`.
+- For a relative URI, such as `new Uri("/settings?tab=1", UriKind.Relative)`, `System.Uri` parses nothing, so the path is its `OriginalString` up to the first `?` or `#`, whichever comes first. Nothing else is done to it: it is not trimmed, and the leading `/` is optional, as for `RouteTemplate.Match`. An empty relative URI, or one that is only a query or fragment, has an empty path, which matches the root template `/`.
+- Build app-relative links with `UriKind.Relative` or `UriKind.RelativeOrAbsolute`. `new Uri("/settings?tab=1")`, with no `UriKind`, is a `file:` URI on Unix-like platforms and throws on Windows; the table reads such a URI as relative, from the text the caller wrote, so it matches `/settings`.
+
+`System.Uri` drops the encoded spaces at the very end of a URI that contains non-ASCII text anywhere, raw or percent-encoded: the path of `https://example.com/%C3%A9%20` is `/%C3%A9`. A `?` or `#` after them, even with nothing following, keeps them. The route table does not work around this.
+
+### Which route wins
+
+For now, templates are tried in the order they were mapped, and the first one that matches the path wins; later ones are not tried. In this version, the same route type, or the same template, can be mapped more than once, and `Build` rejects nothing. `Definitions` lists the table's mappings in the order they were made.
+
+### Creating the route
+
+When a template matches, its create function is called once with a `RouteMatchContext`, which is valid only during that call, so do not store it:
+
+- `Path(name)` returns a captured value, decoded, and throws `KeyNotFoundException` when the template has no such parameter or it is an [optional](#optional-parameters) or [catch-all](#catch-all-parameters) parameter that the path left out. Use it for a required parameter.
+- `TryGetPath(name, out value)` returns `true` with the value when the path has one, and `false` with `null` in the cases where `Path` throws. Use it for an optional or catch-all parameter, as in `c.TryGetPath("tab", out string? tab) ? tab : null`.
+- Names are compared without regard to case.
+- `PathValues` is the dictionary `RouteTemplate.Match` returned. Treat it as read-only.
+- `SourceUri` is the URI that was matched.
+
+An exception the create function throws propagates out of `Match` unchanged, and no later template is tried. A create function that returns `null` makes `Match` throw `InvalidOperationException`.
+
+### When nothing matches
+
+A URI that no template matches is not an error. The table itself does not throw for the content of a URI; an exception thrown by a create function propagates to the caller.
+
+When `IsSuccess` is true, `Route` and `Definition` are not `null`. When it is false, `Route` is `null` and `Diagnostics` has at least one entry. A URI that no template matches gives one diagnostic whose `Code` is `RouteDiagnosticCodes.NotMatched` (`route.not_matched`). Its `Message` never contains text from the URI, because a deep-link path can carry a secret, such as a sign-in or reset token, and messages tend to be logged. The path is in `Data` under the key `path`, exactly as it was read, and logging it is the caller's decision. `Data` cannot be changed, even through a cast.
+
+Diagnostic codes are lower-case words joined by `_`, grouped by `.` from the general to the specific. A code, once published, does not change meaning, so compare codes rather than messages.
+
+### Threads
+
+A built table is immutable and safe to use from several threads at once. Mapping more routes on the builder does not change a table it has already built; call `Build` again for a table that includes them. A builder itself is not thread-safe, and a create function that runs on several threads must be safe to call that way.

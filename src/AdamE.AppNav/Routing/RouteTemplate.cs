@@ -151,12 +151,19 @@ public sealed class RouteTemplate
     /// </exception>
     public static RouteTemplate Parse(string value)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(value);
+        return Parse(value, nameof(value));
+    }
+
+    // Parses a template that a public method received under another name, so that its exceptions name that argument
+    // with the same messages, rather than value.
+    internal static RouteTemplate Parse(string value, string paramName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(value, paramName);
 
         if (!value.StartsWith('/'))
-            throw new ArgumentException("Route templates must start with '/'.", nameof(value));
+            throw new ArgumentException("Route templates must start with '/'.", paramName);
 
-        return new RouteTemplate(value, RouteTemplateParser.Parse(value));
+        return new RouteTemplate(value, RouteTemplateParser.Parse(value, paramName));
     }
 
     /// <summary>
