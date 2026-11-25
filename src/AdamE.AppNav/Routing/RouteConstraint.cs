@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Numerics;
 using System.Text;
@@ -11,7 +13,8 @@ namespace AdamE.AppNav.Routing;
 // uses to read a value as that type, so a value converts exactly when it satisfies the constraint of the same name.
 // TryParseInteger reads the integer types other than int and long, and TryParseFloatingPoint reads float and double.
 // For those types they are rules of the typed reads only; no constraint is named after them. They live here so that
-// each shares the shape check of int or decimal.
+// each shares the shape check of int or decimal. Beside each parse method is the method that writes a value of its
+// type as the one canonical text that it reads back to an equal value, and TryFormat chooses among them by type.
 internal sealed class RouteConstraint
 {
     private const NumberStyles DecimalStyles = NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint;
@@ -119,6 +122,14 @@ internal sealed class RouteConstraint
                long.TryParse(value, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out result);
     }
 
+    // The canonical text of every integer type: invariant digits, '-' for a negative value, and no '+' or leading
+    // zeros, which the rule of int would also accept.
+    public static string FormatInteger<T>(T value)
+        where T : struct, IBinaryInteger<T>
+    {
+        return value.ToString(null, CultureInfo.InvariantCulture);
+    }
+
     // The rule of int, within the range of T: an optional sign followed by ASCII digits, so '-0' and '+5' are also
     // values of an unsigned type. Each value-type instantiation is compiled separately, so the static calls through T
     // are direct calls and nothing is boxed.
@@ -138,6 +149,22 @@ internal sealed class RouteConstraint
                decimal.TryParse(value, DecimalStyles, CultureInfo.InvariantCulture, out result);
     }
 
+    // Equal decimals can differ in scale, as 1.5 and 1.50 do, so the text is normalised to have no trailing zeros
+    // after the point and no point without a fraction, and every zero, whatever its sign or scale, is 0. A decimal is
+    // never written with an exponent.
+    public static string FormatDecimal(decimal value)
+    {
+        if (value == 0)
+            return "0";
+
+        string text = value.ToString(CultureInfo.InvariantCulture);
+        if (!text.Contains('.', StringComparison.Ordinal))
+            return text;
+
+        text = text.TrimEnd('0');
+        return text[^1] == '.' ? text[..^1] : text;
+    }
+
     // The shape of decimal, rounded to the nearest value of T, which is float or double. With no exponent, every text
     // of that shape is a finite number, so there is no NaN or infinity to accept, but the parser gives infinity
     // rather than failing for a magnitude too large for T, which is rejected as decimal rejects one too large for it.
@@ -151,10 +178,67 @@ internal sealed class RouteConstraint
                T.IsFinite(result);
     }
 
+    // The shortest digits that read back as the same value, which the default formatting of T gives, written out in
+    // full where it would use an exponent, which the shape of decimal does not allow: 1E+21 is written with 21 zeros
+    // and 1E-07 as 0.0000001. A negative zero equals zero, so it is written 0. NaN and the infinities have no text,
+    // because TryParseFloatingPoint reads no text as them. Formatting T itself, not a double for a float, keeps the
+    // digits the shortest for T.
+    public static bool TryFormatFloatingPoint<T>(T value, [NotNullWhen(true)] out string? text)
+        where T : struct, IBinaryFloatingPointIeee754<T>
+    {
+        if (!T.IsFinite(value))
+        {
+            text = null;
+            return false;
+        }
+
+        text = T.IsZero(value) ? "0" : WithoutExponent(value.ToString(null, CultureInfo.InvariantCulture));
+        return true;
+    }
+
+    // Moves the point of shortest round-trip text such as -1.25E-07 by its exponent. That text has one nonzero digit
+    // before its point, if it has a point, and no trailing zeros after it, so the digits are only moved, never
+    // changed, and zeros are added only between the point and the digits or after the digits.
+    private static string WithoutExponent(string text)
+    {
+        int e = text.IndexOf('E', StringComparison.Ordinal);
+        if (e < 0)
+            return text;
+
+        int exponent = int.Parse(text.AsSpan(e + 1), NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture);
+        ReadOnlySpan<char> mantissa = text.AsSpan(0, e);
+        bool negative = mantissa[0] == '-';
+        if (negative)
+            mantissa = mantissa[1..];
+
+        int point = mantissa.IndexOf('.');
+        string digits = point < 0 ? mantissa.ToString() : string.Concat(mantissa[..point], mantissa[(point + 1)..]);
+        int integerDigits = (point < 0 ? mantissa.Length : point) + exponent;
+
+        var builder = new StringBuilder(digits.Length + Math.Abs(exponent) + 3);
+        if (negative)
+            builder.Append('-');
+
+        if (integerDigits <= 0)
+            builder.Append("0.").Append('0', -integerDigits).Append(digits);
+        else if (integerDigits >= digits.Length)
+            builder.Append(digits).Append('0', integerDigits - digits.Length);
+        else
+            builder.Append(digits.AsSpan(0, integerDigits)).Append('.').Append(digits.AsSpan(integerDigits));
+
+        return builder.ToString();
+    }
+
     public static bool TryParseBool(string value, out bool result)
     {
         result = Ascii.EqualsIgnoreCase(value, "true");
         return result || Ascii.EqualsIgnoreCase(value, "false");
+    }
+
+    // Lower case, which the read accepts as well as upper case.
+    public static string FormatBool(bool value)
+    {
+        return value ? "true" : "false";
     }
 
     // 32 hex digits with a hyphen after the 8th, 12th, 16th and 20th, 36 characters in all. Only this form, so that a
@@ -176,6 +260,59 @@ internal sealed class RouteConstraint
 
         return Guid.TryParseExact(value, "D", out result);
     }
+
+    // The hyphenated form in lower case, the only form whose shape TryParseGuid accepts, in the case Guid writes.
+    public static string FormatGuid(Guid value)
+    {
+        return value.ToString("D");
+    }
+
+    // Writes a value of a built-in type as its canonical text, by the method beside the parse method of its type, so
+    // that the typed read of the same type reads the text back to an equal value. A nullable type shares the branch of
+    // its underlying type and is never null here, since a null value is left out before any text is asked for. The
+    // tests of typeof(T) and the casts through object are those of RouteMatchContext.TryConvert. On CoreCLR the JIT
+    // removes the casts, as measured: 0 bytes per call for a value type and for its nullable form. Another runtime
+    // still writes the right text and could differ only in that allocation. Returns false only for a float or double
+    // that is not finite.
+    public static bool TryFormat<T>(T value, [NotNullWhen(true)] out string? text)
+    {
+        if (typeof(T) == typeof(string))
+            text = (string)(object)value!;
+        else if (typeof(T) == typeof(int) || typeof(T) == typeof(int?))
+            text = FormatInteger((int)(object)value!);
+        else if (typeof(T) == typeof(long) || typeof(T) == typeof(long?))
+            text = FormatInteger((long)(object)value!);
+        else if (typeof(T) == typeof(sbyte) || typeof(T) == typeof(sbyte?))
+            text = FormatInteger((sbyte)(object)value!);
+        else if (typeof(T) == typeof(byte) || typeof(T) == typeof(byte?))
+            text = FormatInteger((byte)(object)value!);
+        else if (typeof(T) == typeof(short) || typeof(T) == typeof(short?))
+            text = FormatInteger((short)(object)value!);
+        else if (typeof(T) == typeof(ushort) || typeof(T) == typeof(ushort?))
+            text = FormatInteger((ushort)(object)value!);
+        else if (typeof(T) == typeof(uint) || typeof(T) == typeof(uint?))
+            text = FormatInteger((uint)(object)value!);
+        else if (typeof(T) == typeof(ulong) || typeof(T) == typeof(ulong?))
+            text = FormatInteger((ulong)(object)value!);
+        else if (typeof(T) == typeof(decimal) || typeof(T) == typeof(decimal?))
+            text = FormatDecimal((decimal)(object)value!);
+        else if (typeof(T) == typeof(float) || typeof(T) == typeof(float?))
+            return TryFormatFloatingPoint((float)(object)value!, out text);
+        else if (typeof(T) == typeof(double) || typeof(T) == typeof(double?))
+            return TryFormatFloatingPoint((double)(object)value!, out text);
+        else if (typeof(T) == typeof(bool) || typeof(T) == typeof(bool?))
+            text = FormatBool((bool)(object)value!);
+        else if (typeof(T) == typeof(Guid) || typeof(T) == typeof(Guid?))
+            text = FormatGuid((Guid)(object)value!);
+        else
+            throw new UnreachableException("TryFormat was called for a type that SupportedTypeName rejects.");
+
+        return true;
+    }
+
+    // Ends the message for a built-in value that TryFormat cannot write, which is a float or double that is not
+    // finite. Which of NaN and the infinities it is goes unsaid, as the value itself does.
+    public const string NoTextReason = "no text reads back as a float or double that is NaN or infinite";
 
     // A guid written without hyphens, as Guid.ToString("N") writes it, is the likeliest mistake, so it is named.
     private static string HintForGuid(string value)

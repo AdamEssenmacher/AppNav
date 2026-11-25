@@ -103,7 +103,7 @@ The built-in constraints are:
 - `alpha` is letters only. Digits, spaces, punctuation and combining marks are not letters, so decomposed text such as `e` followed by a combining acute accent (`e%CC%81`) does not satisfy it, though the single character `é` does. Some text keeps combining marks even in NFC, such as most Devanagari words, and never satisfies it.
 - The captured value is the decoded text, unchanged: `+007` is captured as `+007`, not `7`.
 - Some text satisfies more than one constraint, such as `0`, which is an `int`, a `long` and a `decimal`, or `true`, which is a `bool` and `alpha`. A route table cannot have two templates that differ only in such constraints, as described in [Templates that cannot be told apart](#templates-that-cannot-be-told-apart).
-- Several texts can denote one value, such as `7`, `007` and `+7`, `true` and `TRUE`, or a guid in upper and lower case. Each satisfies the constraint and is captured as written, and `Format` writes whatever text it is given, so producing one canonical link for each value is the job of the code that turns typed values into text.
+- Several texts can denote one value, such as `7`, `007` and `+7`, `true` and `TRUE`, or a guid in upper and lower case. Each satisfies the constraint and is captured as written, and `RouteTemplate.Format` writes whatever text it is given. `RouteTable.Format` writes one canonical text for each typed value, as described in [Formatting a route](#formatting-a-route).
 - To accept a guid with or without hyphens, use a parameter without a constraint and parse the value in the create function, reading it as a string: `Path<Guid>` follows the rule of `guid` and accepts only the hyphenated form. Three things follow. A value that is not a guid still matches the template, so the create function must [reject it](#rejecting-a-value), which fails the match for that URI rather than letting another template try it. A position holds only one parameter without a constraint among templates of one shape, unless another required position keeps the templates apart. And beside `{id:int}` or `{x:alpha}`, a value without hyphens that is also a valid number, such as 32 zeros, or is made only of letters still goes to the constrained route, which ranks higher.
 
 ## Optional parameters
@@ -209,7 +209,7 @@ Apart from the dot segment rule, these checks apply to the text as written, befo
 
 ## The route table
 
-A route is a sealed record that derives from `AppRoute`. A `RouteTableBuilder` maps a template to each route type, with a function that creates the route from the values the template captured and the query of the URI, and `Build` turns the mappings into a `RouteTable`. `Match` matches the path of a URI and returns a `RouteMatchResult`.
+A route is a sealed record that derives from `AppRoute`. A `RouteTableBuilder` maps a template to each route type, with a function that creates the route from the values the template captured and the query of the URI, and `Build` turns the mappings into a `RouteTable`. `Match` matches the path of a URI and returns a `RouteMatchResult`, and [`Format`](#formatting-a-route) writes a route back as a path.
 
 ```csharp
 using AdamE.AppNav;
@@ -296,7 +296,7 @@ Which constraint a parameter has, which text a literal has, and parameter names 
 
 The leftmost rule decides even when a later segment is more specific. For `/a/5/edit`, `/a/{id:int}/{*rest}` is tried before `/a/{name}/edit`, because their ranks first differ at the second segment, where a constrained parameter outranks an unconstrained one. If that is not what you want, give the edit route the same constraint, as in `/a/{id:int}/edit`, so that the two templates first differ at the literal, which wins; or do not let a catch-all share a prefix with more specific routes.
 
-`Build` rejects two templates that rank equally at every position and can match the same path, whether they are [the same template](#the-same-template-twice) or [cannot otherwise be told apart](#templates-that-cannot-be-told-apart), so the order routes are mapped in never affects which route wins. In this version, the same route type can be mapped to more than one template. `Definitions` lists the table's mappings in the order they were made, not the order they are tried in.
+`Build` rejects two templates that rank equally at every position and can match the same path, whether they are [the same template](#the-same-template-twice) or [cannot otherwise be told apart](#templates-that-cannot-be-told-apart), so the order routes are mapped in never affects which route wins. In this version, the same route type can be mapped to more than one template, though only one of those mappings can say how to [write the route](#formatting-a-route). `Definitions` lists the table's mappings in the order they were made, not the order they are tried in.
 
 #### The same template twice
 
@@ -532,6 +532,125 @@ When `IsSuccess` is true, `Route` and `Definition` are not `null`. When it is fa
 
 The diagnostic codes in this version are `route.not_matched`, for a URI that no template matches, and `route.value.invalid`, for a [rejected value](#rejecting-a-value). Codes are lower-case words joined by `_`, grouped by `.` from the general to the specific. A code, once published, does not change meaning, so compare codes rather than messages.
 
+### Formatting a route
+
+A mapping can also say how to write its route back as a path. Give `Map` a format function as its third argument: it declares, for each parameter of the template, a function that reads the parameter's value from the route. `Format` then writes a route as the path of its mapping's template.
+
+```csharp
+using AdamE.AppNav;
+using AdamE.AppNav.Routing;
+
+RouteTable table = new RouteTableBuilder()
+    .Map("/orders/{id:int}",
+        c => new OrderRoute(c.Path<int>("id")),
+        format => format.Path("id", r => r.Id))
+    .Build();
+
+string path = table.Format(new OrderRoute(42));                        // /orders/42
+Console.WriteLine(table.Match(new Uri(path, UriKind.Relative)).Route); // OrderRoute { Id = 42 }
+
+public sealed record OrderRoute(int Id) : AppRoute;
+```
+
+`Format` returns the route as the text of a relative URI: its path and, in a later version, its query. This version writes the path only, and a format function cannot declare a query value. So a route whose create function reads values from the query is written without them, and a round trip would lose them: do not give such a mapping a format function yet.
+
+#### Declaring the values
+
+- The format function runs once, while `Map` maps the route, not each time a route is written.
+- It must declare every parameter of the template, required, optional and catch-all alike, with `Path(name, value)`. `Map` throws `ArgumentException` for one that is missing, naming the template and the first parameter in template order that is not declared, and for a name that is not a parameter of the template or is declared twice. Names are compared without regard to case, as the typed reads compare them.
+- A template with no parameters is made writable with a format function that declares nothing, as in `.Map("/settings", _ => new SettingsRoute(), _ => { })`. A mapping made without a format function cannot write its route.
+- The type of a value is one the [typed reads](#typed-values) support: `string`, `bool`, `Guid`, `decimal`, `double`, `float`, the eight integer types, a registered enum, or the nullable form of any of them but `string`. `Path` throws `InvalidOperationException` for any other type, such as `DateTime`; convert such a value to a string and declare that instead. An enum must be registered with `AddEnumValueCodec`, before or after the `Map` call, so `Build`, not `Path`, throws `InvalidOperationException` for one that is not.
+- The type argument of `Map` must be a type that can be instantiated. A route is written by the mapping of its exact type, so `Map` throws `ArgumentException` for an abstract route type given a format function, which happens when the type is inferred from a create function whose result is a base type. Give the type argument explicitly, as in `Map<OrderRoute>(...)`, or map each concrete type.
+- When `Map` throws, it adds no mapping.
+
+Of the mappings of one route type, at most one can have a format function, so that writing a route never has to choose a template. `Build` throws `InvalidOperationException` naming the route type and both templates when two do. Mappings without one are not limited, so `/` and `/home` can both create a `HomeRoute` while only `/home` says how to write it:
+
+```csharp
+RouteTable table = new RouteTableBuilder()
+    .Map("/", _ => new HomeRoute())
+    .Map("/home", _ => new HomeRoute(), _ => { })
+    .Build();
+
+Console.WriteLine(table.Format(new HomeRoute())); // /home
+
+public sealed record HomeRoute : AppRoute;
+```
+
+`Format` finds the mapping by the exact type of the route, as `GetType()` gives it. A mapping of a base type does not write a route of a type derived from it, and a base type and a derived type can each have their own format function. For a route type that no mapping with a format function has, `Format` throws `InvalidOperationException`, whose message says whether the type is not mapped at all or is mapped without a format function.
+
+#### How values are written
+
+Each value is written as one canonical text, which the typed read of the same type reads back to an equal value. Equal values always give the same path, and nothing depends on the culture.
+
+| Type | Text |
+| --- | --- |
+| `string` | The value itself, percent-encoded as `RouteTemplate.Format` encodes it, so `a b` is `a%20b` and `a/b` is `a%2Fb`. In a catch-all value, `/` separates segments, so `a/b c` is `a/b%20c`. |
+| `bool` | `true` or `false`, in lower case. |
+| Integer types | Invariant digits, with `-` for a negative value and no `+` or leading zeros: `7` and `-7`, never `+7` or `007`. |
+| `decimal` | Normalized, so that equal values give equal text: no trailing zeros after the point, no point without a fraction, and `0` for every zero, whatever its sign or scale. `1.50` is `1.5`, `2.0` is `2` and `-0.0` is `0`. Never an exponent. |
+| `double`, `float` | The shortest digits that read back as the same value of the type, written without an exponent, which the read does not accept: `1E+21` is `1000000000000000000000` and `1E-07` is `0.0000001`. A `float` is written by its own digits, so `0.1f` is `0.1`. A negative zero is `0`. Because no exponent is used, an extreme value is written in full: the largest and the smallest positive `double` take more than 300 characters each. NaN and the infinities cannot be written, because no text reads as them. |
+| `Guid` | The hyphenated form in lower case, as `Guid.ToString()` writes it: `6f9619ff-8b86-d011-b42d-00cf4fc964ff`. |
+| Registered enum | The name of the member with that value, as declared, such as `Shipped`. When several members have the value, the name that sorts first ordinally is written, so for `enum Level { Primary = 1, Alpha = 1 }` it is `Alpha`. Ordinally, every upper-case ASCII letter sorts before every lower-case one, so of `Zulu` and `alpha` it is `Zulu`. A value that no member has, such as an undefined number or a combination of flags with no name of its own, cannot be written. |
+| Nullable form | The text of the underlying type. `null` leaves the parameter out. |
+
+A `null` value, a null reference or a nullable value type without a value, leaves an optional or catch-all parameter out, with its segment, and is an error for a required one:
+
+```csharp
+RouteTable table = new RouteTableBuilder()
+    .Map("/list/{page:int?}",
+        c => new ListRoute(c.TryGetPath("page", out int? page) ? page : null),
+        format => format.Path("page", r => r.Page))
+    .Build();
+
+Console.WriteLine(table.Format(new ListRoute(null))); // /list
+Console.WriteLine(table.Format(new ListRoute(3)));    // /list/3
+
+public sealed record ListRoute(int? Page) : AppRoute;
+```
+
+There is no way to write an empty value. An empty string is not left out: a path segment cannot be empty, so it is rejected, as `RouteTemplate.Format` rejects it.
+
+#### When a route cannot be written
+
+`Format` throws `ArgumentNullException` for a `null` route. It throws `ArgumentException`, whose `ParamName` is `route`, when a value cannot be written. The checks are those of [`RouteTemplate.Format`](#formatting-a-path), applied to the text of each value, and one more for a value that has no text:
+
+- a required parameter's value is `null`;
+- a value is empty, contains a lone surrogate, or is `.` or `..`;
+- a value does not satisfy the parameter's [constraint](#constraints), which happens when the value's type is wider than the constraint, as for `{id:int}` written from a `long` above 2147483647, or when a string does not fit it, as for `{n:alpha}` written from `ab1`;
+- a catch-all value starts or ends with `/`, contains `//`, or has `.` or `..` as a part;
+- an optional parameter has a value although an earlier optional parameter is left out, as for `/a/{b?}/{c?}` with a value for `c` and none for `b`; or
+- a value has no text: a `double` or `float` that is NaN or infinite, or an enum value that no member has.
+
+The message names the route type, the template and the parameter, and says what is wrong in fixed words, as in `The route type 'ProductRoute' cannot be written as a path by the template '/products/{name}': path parameter 'name' is required, but its value is null.` It never quotes the value, because a route can carry a secret, such as a sign-in token, and messages tend to be logged, and the exception has no inner exception that could. When more than one value cannot be written, which one is reported is not specified. An exception thrown by a value function propagates unchanged.
+
+Each value function is called at most once each time a route is formatted, in template order. After a value that cannot be written as text, or an exception from a value function, the later functions are not called.
+
+`Format` never changes the table.
+
+#### What a round trip promises
+
+The template reads back what `Format` writes. Matching the path against the template of the mapping that wrote it gives every value that was written, and the typed read of the type a value function returns reads each text back to a value equal to the one written. So when the create function reads each parameter with that typed read and builds the route from the values as the format function reads them, which the table does not check, matching the path with that mapping gives a route equal to the one written. In the other direction, text that a typed read accepts is written back as its canonical text, and writing the route again changes nothing: `/orders/+007` matches as `OrderRoute { Id = 7 }`, which is written as `/orders/7`. The mapping that writes a route is the one of its exact type, so a mapping whose create function returns routes of several types derived from its route type creates routes that it does not write.
+
+What is not promised is that `Match` picks the same mapping. [Precedence](#which-route-wins) decides which template wins, and `Build` rejects only templates that rank equally, so a template that ranks higher can match the written path first:
+
+```csharp
+RouteTable table = new RouteTableBuilder()
+    .Map("/products/new", _ => new NewProductRoute())
+    .Map("/products/{name}",
+        c => new ProductRoute(c.Path("name")),
+        format => format.Path("name", r => r.Name))
+    .Build();
+
+string path = table.Format(new ProductRoute("new"));                    // /products/new
+Console.WriteLine(table.Match(new Uri(path, UriKind.Relative)).Route); // NewProductRoute { }
+
+public sealed record NewProductRoute : AppRoute;
+
+public sealed record ProductRoute(string Name) : AppRoute;
+```
+
+When the two must not meet, give the parameter a constraint that the literal does not satisfy, such as `{id:int}` beside `/products/new`, or keep such values out of the routes the app writes.
+
 ### Threads
 
-A built table is immutable and safe to use from several threads at once. Mapping more routes or registering more enums on the builder does not change a table it has already built; call `Build` again for a table that includes them. A builder itself is not thread-safe, and a create function that runs on several threads must be safe to call that way.
+A built table is immutable and safe to use from several threads at once, for `Match` and `Format` alike. Mapping more routes or registering more enums on the builder does not change a table it has already built; call `Build` again for a table that includes them. A builder itself is not thread-safe, and a create function or a value function of a format function that runs on several threads must be safe to call that way.

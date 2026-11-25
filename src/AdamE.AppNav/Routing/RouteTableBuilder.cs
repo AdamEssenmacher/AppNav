@@ -51,7 +51,101 @@ public sealed class RouteTableBuilder
         ArgumentNullException.ThrowIfNull(createRoute);
 
         // Func is covariant in its result, so the function is stored as it is, without a wrapper.
-        _definitions.Add(new RouteDefinition(typeof(TRoute), parsed, createRoute));
+        _definitions.Add(new RouteDefinition(typeof(TRoute), parsed, createRoute, null));
+        return this;
+    }
+
+    /// <summary>
+    /// Maps a route template to a route type, and declares how a route of that type is written back as a path of the
+    /// template, which <see cref="RouteTable.Format(AppRoute)"/> does.
+    /// </summary>
+    /// <typeparam name="TRoute">The type of route that a path matching the template produces.</typeparam>
+    /// <param name="template">
+    /// The route template, parsed as by <see cref="RouteTemplate.Parse(string)"/>.
+    /// </param>
+    /// <param name="createRoute">
+    /// Creates the route from what the match captured, exactly as for
+    /// <see cref="Map{TRoute}(string, Func{RouteMatchContext, TRoute})"/>.
+    /// </param>
+    /// <param name="format">
+    /// Declares, on the <see cref="RouteFormatBuilder{TRoute}"/> it receives, a function that reads the value of each
+    /// parameter of the template from a route, as in <c>format =&gt; format.Path("id", r =&gt; r.Id)</c>. It is
+    /// called once, here, and must declare every parameter of the template: required, optional and catch-all. For a
+    /// template with no parameters, pass an action that declares nothing, such as <c>_ =&gt; { }</c>. An exception it
+    /// throws propagates unchanged. In this version only path values are written, so a route whose create function
+    /// reads values from the query would be written without them, and a round trip would lose them: do not give such
+    /// a mapping a format function yet.
+    /// </param>
+    /// <returns>This builder, so that calls can be chained.</returns>
+    /// <remarks>
+    /// <para>
+    /// The mapping matches exactly as one made by <see cref="Map{TRoute}(string, Func{RouteMatchContext, TRoute})"/>;
+    /// only this overload can also write the route. Of the mappings of one route type, at most one can have a format
+    /// function, which <see cref="Build"/> checks, so that writing a route never has to choose between templates.
+    /// Other mappings of the same type without one are allowed, so <c>/</c> and <c>/home</c> can both create the same
+    /// route while only one of them says how to write it.
+    /// </para>
+    /// <para>
+    /// A value declared as an enum must be registered with <see cref="AddEnumValueCodec{TEnum}"/> before
+    /// <see cref="Build"/>, before or after this call; <see cref="Build"/> reports one that is not.
+    /// </para>
+    /// <para>
+    /// A route is written by the mapping of its exact type, so <typeparamref name="TRoute"/> must be a type that can be
+    /// instantiated, not an abstract base type of the routes the mapping creates.
+    /// </para>
+    /// <para>
+    /// When this method throws, it adds no mapping.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="template"/>, <paramref name="createRoute"/> or <paramref name="format"/> is
+    /// <see langword="null"/>.
+    /// </exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="template"/> is not a valid route template, for any of the reasons that
+    /// <see cref="RouteTemplate.Parse(string)"/> gives; the exception's <see cref="ArgumentException.ParamName"/> is
+    /// <c>template</c>.
+    /// <para>-or-</para>
+    /// <paramref name="format"/> did not declare every parameter of the template. The message names the template and
+    /// the first parameter, in template order, that is not declared, and the exception's
+    /// <see cref="ArgumentException.ParamName"/> is <c>format</c>.
+    /// <para>-or-</para>
+    /// <paramref name="format"/> declared a name that is not a parameter of the template, or declared a parameter
+    /// twice, as <see cref="RouteFormatBuilder{TRoute}.Path{TValue}(string, Func{TRoute, TValue})"/> describes; the
+    /// exception's <see cref="ArgumentException.ParamName"/> is <c>name</c>.
+    /// <para>-or-</para>
+    /// <typeparamref name="TRoute"/> is abstract, which happens when it is inferred from a create function whose
+    /// result is a base type. The exception's <see cref="ArgumentException.ParamName"/> is <c>TRoute</c>.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// <paramref name="format"/> declared a value of a type that cannot be written, as
+    /// <see cref="RouteFormatBuilder{TRoute}.Path{TValue}(string, Func{TRoute, TValue})"/> describes.
+    /// </exception>
+    public RouteTableBuilder Map<TRoute>(
+        string template,
+        Func<RouteMatchContext, TRoute> createRoute,
+        Action<RouteFormatBuilder<TRoute>> format)
+        where TRoute : AppRoute
+    {
+        RouteTemplate parsed = RouteTemplate.Parse(template, nameof(template));
+        ArgumentNullException.ThrowIfNull(createRoute);
+        ArgumentNullException.ThrowIfNull(format);
+
+        // Format looks a route up by its exact type, which is never abstract, so a format function for an abstract
+        // type could never be used. Checked before the format action runs, so that it runs only for a usable mapping.
+        if (typeof(TRoute).IsAbstract)
+        {
+            throw new ArgumentException(
+                $"The route type '{RouteValueTypes.DisplayName(typeof(TRoute))}' is abstract, so it cannot be given " +
+                "a format function: a route is written by the mapping of its exact type, which must be one that can " +
+                "be instantiated. Give the type argument of Map explicitly, or map each concrete route type.",
+                nameof(TRoute));
+        }
+
+        // The definition is added only once the format action has declared everything, so that a mapping that fails
+        // leaves the builder as it was.
+        RouteFormatter formatter = RouteFormatBuilder<TRoute>.Build(parsed, format);
+        _definitions.Add(new RouteDefinition(typeof(TRoute), parsed, createRoute, formatter));
         return this;
     }
 
@@ -77,10 +171,16 @@ public sealed class RouteTableBuilder
     /// spelling, such as <c>in-progress</c>, read the value as a string and map it yourself.
     /// </para>
     /// <para>
-    /// Registering applies to the whole table, so the order of this call and of
-    /// <see cref="Map{TRoute}(string, Func{RouteMatchContext, TRoute})"/> does not matter, and registering the same
-    /// enum again does nothing. A table already built does not change; <see cref="Build"/> builds one that includes
-    /// the registration. No template constraint is named after an enum.
+    /// A format function given to
+    /// <see cref="Map{TRoute}(string, Func{RouteMatchContext, TRoute}, Action{RouteFormatBuilder{TRoute}})"/> writes
+    /// a value of <typeparamref name="TEnum"/>, or of its nullable form, as the name of its member, as declared. Of
+    /// several members with the value, the name that sorts first ordinally is written. A value that no member has,
+    /// such as an undefined number or a combination of flags with no name of its own, cannot be written.
+    /// </para>
+    /// <para>
+    /// Registering applies to the whole table, so the order of this call and of the <c>Map</c> calls does not matter,
+    /// and registering the same enum again does nothing. A table already built does not change; <see cref="Build"/>
+    /// builds one that includes the registration. No template constraint is named after an enum.
     /// </para>
     /// </remarks>
     /// <exception cref="ArgumentException">
@@ -125,7 +225,20 @@ public sealed class RouteTableBuilder
     /// conflicts with an earlier one is reported, with the earliest it conflicts with. The same template twice is
     /// looked for first, across the whole table, so it is reported even when two other mappings that conflict in this
     /// way come earlier. Templates that rank differently can match the same path, because precedence decides between
-    /// them. In either case, the builder is not changed.
+    /// them.
+    /// <para>-or-</para>
+    /// Two mappings of the same route type both have a format function, given by
+    /// <see cref="Map{TRoute}(string, Func{RouteMatchContext, TRoute}, Action{RouteFormatBuilder{TRoute}})"/>, so
+    /// which template writes a route of that type would be ambiguous. The message names the route type and both
+    /// templates, the earlier mapping first. Only the exact type counts, so a base type and a type derived from it
+    /// can each have one.
+    /// <para>-or-</para>
+    /// A format function writes a value as an enum, or the nullable form of one, that is not registered with
+    /// <see cref="AddEnumValueCodec{TEnum}"/>. The message names the enum, the route type, the template and
+    /// <see cref="AddEnumValueCodec{TEnum}"/>.
+    /// <para/>
+    /// The templates are checked first, then the format functions, each in the order the routes were mapped. In every
+    /// case, the builder is not changed.
     /// </exception>
     public RouteTable Build()
     {
