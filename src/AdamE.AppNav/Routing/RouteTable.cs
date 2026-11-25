@@ -17,6 +17,8 @@ public sealed class RouteTable
 
     internal RouteTable(RouteDefinition[] definitions)
     {
+        ThrowIfSameTemplateTwice(definitions);
+
         // Array.Sort is not stable, so it sorts registration indices and breaks ties on them: templates that rank
         // equally at every position keep the order they were mapped in.
         var order = new int[definitions.Length];
@@ -103,8 +105,9 @@ public sealed class RouteTable
     /// precedence, not in the order they were mapped: two templates are compared segment by segment from the left,
     /// and at the first position where their ranks differ, the more specific one is tried first, as the "Which route
     /// wins" section of the routing guide sets out. Templates that rank equally at every position are tried in the
-    /// order they were mapped. The first whose template matches wins; no later one is tried. Its create function is
-    /// called once, and any exception it throws propagates unchanged.
+    /// order they were mapped; they are never the same template, which <see cref="RouteTableBuilder.Build"/> rejects.
+    /// The first whose template matches wins; no later one is tried. Its create function is called once, and any
+    /// exception it throws propagates unchanged.
     /// </para>
     /// <para>
     /// A URI that no template matches is not an error. The table itself does not throw for the content of a URI; an
@@ -155,6 +158,27 @@ public sealed class RouteTable
             RouteDiagnosticCodes.NotMatched,
             "No route matches the path of the URI.",
             new Dictionary<string, object?>(1, StringComparer.Ordinal) { ["path"] = path }));
+    }
+
+    // Two definitions with the same template match the same paths and rank equally, so the later one could never win.
+    // A hash of the templates finds the pair in one pass. The first definition, in the order the routes were mapped,
+    // whose template repeats an earlier one is reported, with the definition it repeats, so the error does not change
+    // from one build to the next.
+    private static void ThrowIfSameTemplateTwice(RouteDefinition[] definitions)
+    {
+        var first = new Dictionary<RouteTemplate, RouteDefinition>(definitions.Length, SameTemplateComparer.Instance);
+        foreach (RouteDefinition definition in definitions)
+        {
+            if (first.TryAdd(definition.Template, definition))
+                continue;
+
+            RouteDefinition earlier = first[definition.Template];
+            throw new InvalidOperationException(
+                $"The templates '{earlier.Template.Value}', mapped to route type '{earlier.RouteType}', and " +
+                $"'{definition.Template.Value}', mapped to route type '{definition.RouteType}', are the same " +
+                "template, so the second could never be matched. Templates are the same when they have the same " +
+                "segments, ignoring parameter names. Remove one mapping or change one of the templates.");
+        }
     }
 
     // Where the path ends and where the query starts are decided here together, so that the two always agree. The

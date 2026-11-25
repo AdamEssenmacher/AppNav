@@ -105,15 +105,17 @@ public sealed class RouteTableTests
     }
 
     [Fact]
-    public void TheSameRouteTypeAndTemplateCanBeMappedMoreThanOnce()
+    public void TheSameRouteTypeCanCurrentlyBeMappedToMoreThanOneTemplate()
     {
         RouteTable table = new RouteTableBuilder()
             .Map("/settings", _ => new SettingsRoute())
-            .Map("/settings", _ => new SettingsRoute())
             .Map("/preferences", _ => new SettingsRoute())
+            .Map("/options/{tab?}", _ => new SettingsRoute())
             .Build();
 
         Assert.Equal(3, table.Definitions.Count);
+        Assert.Same(table.Definitions[1], table.Match(new Uri("/preferences", UriKind.Relative)).Definition);
+        Assert.Same(table.Definitions[2], table.Match(new Uri("/options/a", UriKind.Relative)).Definition);
     }
 
     [Fact]
@@ -181,16 +183,16 @@ public sealed class RouteTableTests
     }
 
     [Fact]
-    public void TheFirstMatchingDefinitionInRegistrationOrderWins()
+    public void OfEqualRankTemplatesThatMatchTheFirstMappedCurrentlyWins()
     {
         var uri = new Uri("/products/42", UriKind.Relative);
         RouteTable idFirst = new RouteTableBuilder()
-            .Map("/products/{id}", c => new ProductRoute(c.Path("id")))
-            .Map("/products/{name}", c => new ProductByNameRoute(c.Path("name")))
+            .Map("/products/{id:int}", c => new ProductRoute(c.Path("id")))
+            .Map("/products/{n:long}", c => new ProductByNameRoute(c.Path("n")))
             .Build();
         RouteTable nameFirst = new RouteTableBuilder()
-            .Map("/products/{name}", c => new ProductByNameRoute(c.Path("name")))
-            .Map("/products/{id}", c => new ProductRoute(c.Path("id")))
+            .Map("/products/{n:long}", c => new ProductByNameRoute(c.Path("n")))
+            .Map("/products/{id:int}", c => new ProductRoute(c.Path("id")))
             .Build();
 
         Assert.Equal(new ProductRoute("42"), idFirst.Match(uri).Route);
@@ -217,7 +219,7 @@ public sealed class RouteTableTests
         int before = 0, winner = 0, after = 0;
         RouteTable table = new RouteTableBuilder()
             .Map("/settings", _ => { before++; return new SettingsRoute(); })
-            .Map("/products/{id}", c => { winner++; return new ProductRoute(c.Path("id")); })
+            .Map("/products/{id:int}", c => { winner++; return new ProductRoute(c.Path("id")); })
             .Map("/products/{name}", c => { after++; return new ProductByNameRoute(c.Path("name")); })
             .Build();
 
@@ -247,7 +249,7 @@ public sealed class RouteTableTests
         var thrown = new FormatException("not a product");
         var laterCalls = 0;
         RouteTable table = new RouteTableBuilder()
-            .Map<ProductRoute>("/products/{id}", _ => throw thrown)
+            .Map<ProductRoute>("/products/{id:int}", _ => throw thrown)
             .Map("/products/{name}", c => { laterCalls++; return new ProductByNameRoute(c.Path("name")); })
             .Build();
 
@@ -263,7 +265,7 @@ public sealed class RouteTableTests
     {
         var laterCalls = 0;
         RouteTable table = new RouteTableBuilder()
-            .Map<ProductRoute>("/products/{id}", _ => null!)
+            .Map<ProductRoute>("/products/{id:int}", _ => null!)
             .Map("/products/{name}", c => { laterCalls++; return new ProductByNameRoute(c.Path("name")); })
             .Build();
 
@@ -271,7 +273,7 @@ public sealed class RouteTableTests
             () => table.Match(new Uri("/products/42", UriKind.Relative)));
 
         Assert.Contains(ReturnedNull, exception.Message, StringComparison.Ordinal);
-        Assert.Contains("'/products/{id}'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("'/products/{id:int}'", exception.Message, StringComparison.Ordinal);
         Assert.Contains(nameof(ProductRoute), exception.Message, StringComparison.Ordinal);
         Assert.Equal(0, laterCalls);
     }

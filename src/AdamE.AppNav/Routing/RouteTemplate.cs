@@ -134,6 +134,9 @@ public sealed class RouteTemplate
     /// </summary>
     public string Value { get; }
 
+    // The parsed segments, for comparing templates with each other; a span, so that callers cannot change them.
+    internal ReadOnlySpan<RouteSegment> Segments => _segments;
+
     /// <summary>
     /// Parses a route template.
     /// </summary>
