@@ -1,5 +1,6 @@
 #nullable enable
 AdamE.AppNav.Routing.RouteTemplate
+AdamE.AppNav.Routing.RouteTemplate.Format(System.Collections.Generic.IReadOnlyDictionary<string!, string!>! pathValues) -> string!
 AdamE.AppNav.Routing.RouteTemplate.Match(string! path) -> System.Collections.Generic.IReadOnlyDictionary<string!, string!>?
 AdamE.AppNav.Routing.RouteTemplate.Value.get -> string!
 static AdamE.AppNav.Routing.RouteTemplate.Parse(string! value) -> AdamE.AppNav.Routing.RouteTemplate!
