@@ -64,20 +64,32 @@ public sealed class RouteMatchContextTypedPathTests
         { "0." + new string('0', 100) + "1", 0m },
     };
 
-    // A decimal keeps the scale and the sign of zero that the text gives, as the docs say.
+    // A decimal keeps the scale and the sign of zero that the text gives, as the docs say, and so does its nullable
+    // form. Decimal equality ignores both, so they are checked directly.
     [Theory]
     [InlineData("5", 0, false)]
+    [InlineData("5.0", 1, false)]
     [InlineData("5.00", 2, false)]
     [InlineData("0.0", 1, false)]
     [InlineData("-0", 0, true)]
+    [InlineData("-0.0", 1, true)]
     [InlineData("-0.00", 2, true)]
     public void ADecimalKeepsTheScaleAndTheSignOfZero(string text, int scale, bool isNegative)
     {
-        decimal value = ReadValue(text, c => c.Path<decimal>("v"));
+        decimal?[] values =
+        [
+            ReadValue(text, c => c.Path<decimal>("v")),
+            ReadValue(text, c => c.Path<decimal?>("v")),
+            ReadValue(text, c => c.TryGetPath("v", out decimal? value) ? value : null),
+        ];
 
-        Assert.Equal(scale, value.Scale);
-        Assert.Equal(isNegative, decimal.IsNegative(value));
-        Assert.Equal(text.TrimStart('-'), value.ToString(Invariant));
+        foreach (decimal? read in values)
+        {
+            decimal value = Assert.NotNull(read);
+            Assert.Equal(scale, value.Scale);
+            Assert.Equal(isNegative, decimal.IsNegative(value));
+            Assert.Equal(text.TrimStart('-'), value.ToString(Invariant));
+        }
     }
 
     [Theory]
@@ -196,6 +208,94 @@ public sealed class RouteMatchContextTypedPathTests
         });
     }
 
+    // A nullable type reads a value that is not there as null, in each way a value can be absent.
+    [Theory]
+    [InlineData("/products/{id}", "/products/42", "missing")]
+    [InlineData("/orders/{id}/{page?}", "/orders/1", "page")]
+    [InlineData("/files/{*rest}", "/files", "rest")]
+    public void ANullableReadOfAnAbsentValueIsFalseAndNull(string template, string uri, string name)
+    {
+        Within(template, uri, context =>
+        {
+            AssertNullableAbsent<int>(context, name);
+            AssertNullableAbsent<long>(context, name);
+            AssertNullableAbsent<decimal>(context, name);
+            AssertNullableAbsent<bool>(context, name);
+            AssertNullableAbsent<Guid>(context, name);
+        });
+    }
+
+    [Fact]
+    public void ANullableReadOfAPresentValueIsTheValue()
+    {
+        AssertNullablePresent("-42", -42);
+        AssertNullablePresent("3000000000", 3000000000L);
+        AssertNullablePresent("19.95", 19.95m);
+        AssertNullablePresent("fAlSe", false);
+        AssertNullablePresent(GuidText, new System.Guid(GuidText));
+    }
+
+    [Fact]
+    public void ANullableReadOfAValueThatDoesNotConvertRejectsItAsTheUnderlyingTypeDoes()
+    {
+        Within("/products/{id}", "/products/abc", context =>
+        {
+            AssertInvalid(() => context.Path<int?>("id"), "id", "int");
+            AssertInvalid(() => context.TryGetPath("id", out int? _), "id", "int");
+            AssertInvalid(() => context.Path<long?>("id"), "id", "long");
+            AssertInvalid(() => context.TryGetPath("id", out long? _), "id", "long");
+            AssertInvalid(() => context.Path<decimal?>("id"), "id", "decimal");
+            AssertInvalid(() => context.TryGetPath("id", out decimal? _), "id", "decimal");
+            AssertInvalid(() => context.Path<bool?>("id"), "id", "bool");
+            AssertInvalid(() => context.TryGetPath("id", out bool? _), "id", "bool");
+            AssertInvalid(() => context.Path<Guid?>("id"), "id", "Guid");
+            AssertInvalid(() => context.TryGetPath("id", out Guid? _), "id", "Guid");
+        });
+    }
+
+    // Over the whole corpus, the nullable form converts exactly the texts its underlying type converts, to the same
+    // value, and rejects the others with the same exception.
+    [Fact]
+    public void ANullableTypeReadsByExactlyTheRuleOfItsUnderlyingType()
+    {
+        AssertNullableEquivalent<int>();
+        AssertNullableEquivalent<long>();
+        AssertNullableEquivalent<decimal>();
+        AssertNullableEquivalent<bool>();
+        AssertNullableEquivalent<Guid>();
+    }
+
+    // The natural way to read an optional parameter: the compiler infers int? from the out variable.
+    [Fact]
+    public void AnOptionalParameterReadsIntoANullableVariable()
+    {
+        int? inferred = null;
+        Expression<Func<RouteMatchContext, bool>> read = c => c.TryGetPath("page", out inferred);
+        Assert.Equal([typeof(int?)], ((MethodCallExpression)read.Body).Method.GetGenericArguments());
+
+        var pages = new List<int?>();
+        RouteTable table = new RouteTableBuilder()
+            .Map("/list/{page?}", c =>
+            {
+                bool found = c.TryGetPath("page", out int? page);
+                Assert.Equal(found, page.HasValue);
+                pages.Add(page);
+                return new SettingsRoute();
+            })
+            .Build();
+
+        Assert.True(table.Match(new Uri("/list", UriKind.Relative)).IsSuccess);
+        Assert.True(table.Match(new Uri("/list/3", UriKind.Relative)).IsSuccess);
+        RouteMatchResult invalid = table.Match(new Uri("/list/x", UriKind.Relative));
+
+        Assert.Equal([null, 3], pages);
+        Assert.False(invalid.IsSuccess);
+        RouteDiagnostic diagnostic = Assert.Single(invalid.Diagnostics);
+        Assert.Equal(RouteDiagnosticCodes.ValueInvalid, diagnostic.Code);
+        Assert.Equal("page", diagnostic.Data["name"]);
+        Assert.EndsWith(" int.", (string?)diagnostic.Data["reason"], StringComparison.Ordinal);
+    }
+
     [Fact]
     public void ACatchAllParameterIsTheJoinedTextConvertedByTheSameRules()
     {
@@ -250,6 +350,30 @@ public sealed class RouteMatchContextTypedPathTests
         });
     }
 
+    [Theory]
+    [InlineData("v")]
+    [InlineData("V")]
+    public void ANullableReadLooksUpTheNameWithoutRegardToCase(string name)
+    {
+        Within("/{v}/{w?}", "/42", context =>
+        {
+            Assert.Equal(42, context.Path<int?>(name));
+            Assert.True(context.TryGetPath(name, out long? value));
+            Assert.Equal(42L, value);
+
+            string absent = name == "v" ? "w" : "W";
+            Assert.False(context.TryGetPath(absent, out Guid? guid));
+            Assert.Null(guid);
+            AssertAbsent(() => context.Path<bool?>(absent));
+        });
+
+        Within("/{v}", "/x", context =>
+        {
+            AssertInvalid(() => context.Path<decimal?>(name), name, "decimal");
+            AssertInvalid(() => context.TryGetPath(name, out int? _), name, "int");
+        });
+    }
+
     [Fact]
     public void ANullNameIsRejected()
     {
@@ -270,19 +394,52 @@ public sealed class RouteMatchContextTypedPathTests
         {
             foreach (string name in new[] { "id", "missing" })
             {
-                AssertUnsupported(() => context.Path<int?>(name), "'Int32?'");
                 AssertUnsupported(() => context.Path<double>(name), "'Double'");
+                AssertUnsupported(() => context.Path<double?>(name), "'Double?'");
                 AssertUnsupported(() => context.Path<DateTime>(name), "'DateTime'");
+                AssertUnsupported(() => context.Path<DateTime?>(name), "'DateTime?'");
                 AssertUnsupported(() => context.Path<DayOfWeek>(name), "'DayOfWeek'");
+                AssertUnsupported(() => context.Path<DayOfWeek?>(name), "'DayOfWeek?'");
+                AssertUnsupported(() => context.Path<List<int>>(name), "'List<Int32>'");
+                AssertUnsupported(() => context.Path<Dictionary<string, int?>>(name), "'Dictionary<String, Int32?>'");
                 AssertUnsupported(() => context.Path<object>(name), "'Object'");
-                AssertUnsupported(() => context.TryGetPath(name, out int? _), "'Int32?'");
+                AssertUnsupported(() => context.TryGetPath(name, out double? _), "'Double?'");
                 AssertUnsupported(() => context.TryGetPath(name, out short _), "'Int16'");
+                AssertUnsupported(() => context.TryGetPath(name, out List<int>? _), "'List<Int32>'");
                 AssertUnsupported(() => context.TryGetPath(name, out object? _), "'Object'");
             }
 
             // The type is checked before anything else, the name included.
             AssertUnsupported(() => context.Path<double>(null!), "'Double'");
+            AssertUnsupported(() => context.Path<double?>(null!), "'Double?'");
         });
+    }
+
+    // An array has the name of its element type, and an array of arrays keeps the order of Type.Name. A nested type
+    // has the types it is declared in, each with its own generic arguments.
+    [Fact]
+    public void AnUnsupportedArrayOrNestedTypeHasAReadableName()
+    {
+        const string OuterName = nameof(RouteMatchContextTypedPathTests) + ".Outer";
+        Within("/products/{id}", "/products/42", context =>
+        {
+            AssertUnsupported(() => context.Path<int?[]>("id"), "'Int32?[]'");
+            AssertUnsupported(() => context.Path<List<int>[]>("id"), "'List<Int32>[]'");
+            AssertUnsupported(() => context.Path<int[,]>("id"), "'Int32[,]'");
+            AssertUnsupported(() => context.Path<int[][]>("id"), "'Int32[][]'");
+            AssertUnsupported(() => context.Path<int[][,]>("id"), $"'{typeof(int[][,]).Name}'");
+            AssertUnsupported(() => context.Path<int[,][]>("missing"), $"'{typeof(int[,][]).Name}'");
+            AssertUnsupported(() => context.Path<Outer<int>.Inner>("id"), $"'{OuterName}<Int32>.Inner'");
+            AssertUnsupported(() => context.Path<Outer<int>.Inner?>("id"), $"'{OuterName}<Int32>.Inner?'");
+            AssertUnsupported(
+                () => context.TryGetPath("missing", out Outer<int>.Inner2<string>? _),
+                $"'{OuterName}<Int32>.Inner2<String>'");
+            AssertUnsupported(
+                () => context.Path<Dictionary<string, Outer<long>.Inner?[]>>("id"),
+                $"'Dictionary<String, {OuterName}<Int64>.Inner?[]>'");
+        });
+
+        Assert.Equal("Int32[,][]", typeof(int[][,]).Name);
     }
 
     [Fact]
@@ -355,6 +512,8 @@ public sealed class RouteMatchContextTypedPathTests
     [InlineData("decimal")]
     [InlineData("bool")]
     [InlineData("guid")]
+    [InlineData("int?")]
+    [InlineData("guid?")]
     public void AFailedConversionNeverQuotesTheValue(string type)
     {
         RouteValueException? thrown = null;
@@ -369,6 +528,8 @@ public sealed class RouteMatchContextTypedPathTests
                         "long" => c.Path<long>("id").ToString(Invariant),
                         "decimal" => c.Path<decimal>("id").ToString(Invariant),
                         "bool" => c.Path<bool>("id").ToString(),
+                        "int?" => c.Path<int?>("id").ToString(),
+                        "guid?" => c.TryGetPath("id", out Guid? n).ToString() + n,
                         _ => c.TryGetPath("id", out Guid g).ToString() + g,
                     };
                 }
@@ -432,37 +593,42 @@ public sealed class RouteMatchContextTypedPathTests
     // A typed read must cost no more than reading the string and parsing it. A boxed value is larger than a pointer
     // for every supported value type, so a box on each read would make the difference at least one pointer per read,
     // and the bound allows less than that in all.
-    [Fact]
-    public void ATypedReadAllocatesNoMoreThanReadingTheStringAndParsingIt()
+    [Theory]
+    [InlineData("int", "42")]
+    [InlineData("int?", "42")]
+    [InlineData("try int?", "42")]
+    [InlineData("long?", "42")]
+    [InlineData("decimal?", "4.2")]
+    [InlineData("bool?", "true")]
+    [InlineData("guid?", GuidText)]
+    public void ATypedReadAllocatesNoMoreThanReadingTheStringAndParsingIt(string type, string text)
     {
         const int Reads = 16;
-        RouteTable typed = new RouteTableBuilder()
-            .Map("/orders/{id}", c =>
-            {
-                var sum = 0;
-                for (var i = 0; i < Reads; i++)
-                    sum += c.Path<int>("id");
+        Func<RouteMatchContext, int> typedRead = type switch
+        {
+            "int" => c => c.Path<int>("id"),
+            "int?" => c => c.Path<int?>("id")!.Value,
+            "try int?" => c => c.TryGetPath("id", out int? value) ? value!.Value : 0,
+            "long?" => c => (int)c.Path<long?>("id")!.Value,
+            "decimal?" => c => (int)c.Path<decimal?>("id")!.Value,
+            "bool?" => c => c.TryGetPath("id", out bool? value) && value!.Value ? 1 : 0,
+            _ => c => c.TryGetPath("id", out Guid? value) ? value!.Value.GetHashCode() : 0,
+        };
+        Func<RouteMatchContext, int> parsedRead = type switch
+        {
+            "int" or "int?" or "try int?" => c => int.Parse(c.Path("id"), Invariant),
+            "long?" => c => (int)long.Parse(c.Path("id"), Invariant),
+            "decimal?" => c => (int)decimal.Parse(c.Path("id"), Invariant),
+            "bool?" => c => bool.Parse(c.Path("id")) ? 1 : 0,
+            _ => c => System.Guid.Parse(c.Path("id")).GetHashCode(),
+        };
 
-                return new ProductRoute(sum > 0 ? "p" : "n");
-            })
-            .Build();
-        RouteTable parsed = new RouteTableBuilder()
-            .Map("/orders/{id}", c =>
-            {
-                var sum = 0;
-                for (var i = 0; i < Reads; i++)
-                    sum += int.Parse(c.Path("id"), Invariant);
-
-                return new ProductRoute(sum > 0 ? "p" : "n");
-            })
-            .Build();
-
-        long typedBytes = AllocatedBytesPerMatch(typed);
-        long parsedBytes = AllocatedBytesPerMatch(parsed);
+        long typedBytes = AllocatedBytesPerMatch(ReadingTable(typedRead, Reads), text);
+        long parsedBytes = AllocatedBytesPerMatch(ReadingTable(parsedRead, Reads), text);
 
         Assert.True(
             typedBytes - parsedBytes < Reads * IntPtr.Size,
-            $"typed {typedBytes} bytes, parsed {parsedBytes} bytes");
+            $"{type}: typed {typedBytes} bytes, parsed {parsedBytes} bytes");
     }
 
     private static CultureInfo Invariant => CultureInfo.InvariantCulture;
@@ -620,6 +786,86 @@ public sealed class RouteMatchContextTypedPathTests
         return builder.ToString();
     }
 
+    private static void AssertNullableAbsent<T>(RouteMatchContext context, string name)
+        where T : struct
+    {
+        Assert.False(context.TryGetPath(name, out T? value));
+        Assert.Null(value);
+        AssertAbsent(() => context.Path<T?>(name));
+    }
+
+    private static void AssertNullablePresent<T>(string text, T expected)
+        where T : struct
+    {
+        Within("/{v}", "/" + text, context =>
+        {
+            Assert.True(context.TryGetPath("v", out T? value));
+            AssertSameValue(expected, value);
+            AssertSameValue(expected, context.Path<T?>("v"));
+        });
+    }
+
+    // For each text of the corpus, reads it as T and as T? by both methods, inside one create function.
+    private static void AssertNullableEquivalent<T>()
+        where T : struct
+    {
+        var converted = 0;
+        RouteTable table = new RouteTableBuilder()
+            .Map("/v/{v}", c =>
+            {
+                RouteValueException? rejected = null;
+                T underlying = default;
+                try
+                {
+                    underlying = c.Path<T>("v");
+                }
+                catch (RouteValueException exception)
+                {
+                    rejected = exception;
+                }
+
+                if (rejected is null)
+                {
+                    converted++;
+                    Assert.True(c.TryGetPath("v", out T? value));
+                    AssertSameValue(underlying, value);
+                    AssertSameValue(underlying, c.Path<T?>("v"));
+                }
+                else
+                {
+                    AssertRejectedAlike(rejected, () => c.Path<T?>("v"));
+                    AssertRejectedAlike(rejected, () => c.TryGetPath("v", out T? _));
+                }
+
+                return new SettingsRoute();
+            })
+            .Build();
+
+        foreach (string text in Corpus())
+            table.Match(new Uri("/v/" + Uri.EscapeDataString(text), UriKind.Relative));
+
+        Assert.True(converted > 40, $"{typeof(T).Name}: {converted}");
+    }
+
+    // Equal, and for a decimal also of the same scale and sign of zero, which decimal equality ignores.
+    private static void AssertSameValue<T>(T expected, T? actual)
+        where T : struct
+    {
+        Assert.Equal(expected, actual);
+        if (expected is decimal number)
+            Assert.Equal(decimal.GetBits(number), decimal.GetBits((decimal)(object)actual!.Value));
+    }
+
+    // The same rejection: the same name and the same message, which names the underlying type.
+    private static void AssertRejectedAlike(RouteValueException expected, Action read)
+    {
+        RouteValueException exception = Assert.Throws<RouteValueException>(read);
+
+        Assert.Equal(expected.ValueName, exception.ValueName);
+        Assert.Equal(expected.Message, exception.Message);
+        Assert.Null(exception.InnerException);
+    }
+
     private static void AssertInvalid(Action read, string name, string? typeName = null)
     {
         RouteValueException exception = Assert.Throws<RouteValueException>(read);
@@ -643,15 +889,31 @@ public sealed class RouteMatchContextTypedPathTests
         InvalidOperationException exception = Assert.Throws<InvalidOperationException>(read);
 
         Assert.Contains(Unsupported, exception.Message, StringComparison.Ordinal);
+        Assert.Contains("nullable", exception.Message, StringComparison.Ordinal);
         Assert.Contains("read the value as a string", exception.Message, StringComparison.Ordinal);
         Assert.Contains(typeName, exception.Message, StringComparison.Ordinal);
     }
 
+    // A table whose create function reads the value of id the given number of times.
+    private static RouteTable ReadingTable(Func<RouteMatchContext, int> read, int reads)
+    {
+        return new RouteTableBuilder()
+            .Map("/orders/{id}", c =>
+            {
+                var sum = 0;
+                for (var i = 0; i < reads; i++)
+                    sum += read(c);
+
+                return new ProductRoute(sum > 0 ? "p" : "n");
+            })
+            .Build();
+    }
+
     // Matches the same URI each time, after enough matches for the code under test to be compiled.
-    private static long AllocatedBytesPerMatch(RouteTable table)
+    private static long AllocatedBytesPerMatch(RouteTable table, string id)
     {
         const int Calls = 50;
-        var uri = new Uri("/orders/42", UriKind.Relative);
+        var uri = new Uri("/orders/" + id, UriKind.Relative);
         for (var i = 0; i < 200; i++)
             Assert.True(table.Match(uri).IsSuccess);
 
@@ -704,5 +966,13 @@ public sealed class RouteMatchContextTypedPathTests
 
         Assert.True(table.Match(new Uri(uri, UriKind.Relative)).IsSuccess);
         Assert.True(called);
+    }
+
+    // Types nested in a generic type, for the names of unsupported types.
+    private static class Outer<TOuter>
+    {
+        public readonly struct Inner;
+
+        public sealed class Inner2<TInner>;
     }
 }

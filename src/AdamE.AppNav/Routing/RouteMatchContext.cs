@@ -63,23 +63,28 @@ public sealed class RouteMatchContext
     /// </summary>
     /// <typeparam name="T">
     /// The type to convert to: <see cref="string"/>, <see cref="int"/>, <see cref="long"/>, <see cref="decimal"/>,
-    /// <see cref="bool"/> or <see cref="Guid"/>. A value converts to a type other than <see cref="string"/> exactly
-    /// when it satisfies the built-in constraint of the same name, such as <c>{id:int}</c>, so a value that the
-    /// constraint of the same name accepted in the template always converts. A different constraint can let through
-    /// a value that does not convert, such as <c>3000000000</c> for <c>{id:long}</c> read as <see cref="int"/>. A
-    /// <see cref="string"/> is the captured value unchanged.
+    /// <see cref="bool"/> or <see cref="Guid"/>, or the nullable form of one of the last five, such as <c>int?</c>. A
+    /// value converts to a type other than <see cref="string"/> exactly when it satisfies the built-in constraint of
+    /// the same name, such as <c>{id:int}</c>, so a value that the constraint of the same name accepted in the
+    /// template always converts. A different constraint can let through a value that does not convert, such as
+    /// <c>3000000000</c> for <c>{id:long}</c> read as <see cref="int"/>. A nullable type converts by the rule of its
+    /// underlying type, to the same value. A <see cref="string"/> is the captured value unchanged.
     /// </typeparam>
     /// <param name="name">The parameter name, compared without regard to case.</param>
-    /// <returns>The captured value, decoded and converted.</returns>
+    /// <returns>
+    /// The captured value, decoded and converted. It is never <see langword="null"/>, even for a nullable
+    /// <typeparamref name="T"/>, which reads a value that must be present, as its underlying type does.
+    /// </returns>
     /// <exception cref="InvalidOperationException">
-    /// <typeparamref name="T"/> is not one of the supported types, such as <c>int?</c>, <see cref="double"/> or an
+    /// <typeparamref name="T"/> is not one of the supported types, such as <see cref="double"/>, <c>double?</c> or an
     /// enum. This is thrown whether or not the path has a value, and propagates out of
     /// <see cref="RouteTable.Match(Uri)"/>.
     /// </exception>
     /// <exception cref="ArgumentNullException"><paramref name="name"/> is <see langword="null"/>.</exception>
     /// <exception cref="KeyNotFoundException">
     /// The template has no parameter named <paramref name="name"/>, or it is an optional or catch-all parameter that
-    /// the path left out. Use <see cref="TryGetPath{T}(string, out T)"/> for a parameter that can be left out.
+    /// the path left out, whether or not <typeparamref name="T"/> is nullable. Use
+    /// <see cref="TryGetPath{T}(string, out T)"/> for a parameter that can be left out.
     /// </exception>
     /// <exception cref="RouteValueException">
     /// The path has a value that does not convert to <typeparamref name="T"/>. Thrown from the create function,
@@ -120,12 +125,14 @@ public sealed class RouteMatchContext
     /// returns <see langword="false"/> for one.
     /// </summary>
     /// <typeparam name="T">
-    /// The type to convert to, one of those listed for <see cref="Path{T}(string)"/>, by the same rules.
+    /// The type to convert to, one of those listed for <see cref="Path{T}(string)"/>, by the same rules. A nullable
+    /// type, such as <c>int?</c>, reads an optional parameter into a nullable variable, as in
+    /// <c>TryGetPath("page", out int? page)</c>.
     /// </typeparam>
     /// <param name="name">The parameter name, compared without regard to case.</param>
     /// <param name="value">
     /// When this method returns <see langword="true"/>, the captured value, decoded and converted; otherwise the
-    /// default value of <typeparamref name="T"/>.
+    /// default value of <typeparamref name="T"/>, which is <see langword="null"/> for a nullable type.
     /// </param>
     /// <returns>
     /// <see langword="true"/> when the matched path has a value for the parameter, which is then converted;
@@ -155,7 +162,8 @@ public sealed class RouteMatchContext
         // only on one that has the value.
         string typeName = SupportedTypeName<T>() ?? throw new InvalidOperationException(
             $"A path value cannot be read as type '{DisplayName(typeof(T))}'. The supported types are string, int, " +
-            "long, decimal, bool and Guid; read the value as a string and convert it instead.");
+            "long, decimal, bool and Guid, and the nullable forms of the last five; read the value as a string and " +
+            "convert it instead.");
 
         if (!TryGetPath(name, out string? text))
         {
@@ -243,36 +251,66 @@ public sealed class RouteMatchContext
             "has no parameter of that name, or the path left it out.");
     }
 
-    // A short name for a message, as Int32? for a nullable type, rather than the full name with its generic arity.
+    // A short name for a message, as Int32? for a nullable type, List<Int32> for another generic one and Int32?[] for
+    // an array, rather than the full name with its generic arity. An array of arrays keeps the order of Type.Name.
     private static string DisplayName(Type type)
     {
         Type? underlying = Nullable.GetUnderlyingType(type);
-        return underlying is null ? type.Name : underlying.Name + "?";
+        if (underlying is not null)
+            return DisplayName(underlying) + "?";
+        if (type.IsArray)
+        {
+            string rank = type.IsSZArray ? "[]"
+                : type.GetArrayRank() == 1 ? "[*]"
+                : $"[{new string(',', type.GetArrayRank() - 1)}]";
+            return DisplayName(type.GetElementType()!) + rank;
+        }
+
+        Type[] arguments = type.IsConstructedGenericType ? type.GenericTypeArguments : [];
+        return NestedName(type, arguments, arguments.Length);
+    }
+
+    // A nested type has the generic arguments of the types it is declared in before its own, outermost first, so
+    // each level shows only those after the ones of the level outside it, as Outer<Int32>.Inner<String>.
+    private static string NestedName(Type type, Type[] arguments, int count)
+    {
+        Type? outer = type.DeclaringType;
+        int start = outer is null ? 0 : Math.Min(outer.GetGenericArguments().Length, count);
+        int arity = type.Name.IndexOf('`', StringComparison.Ordinal);
+        string name = arity < 0 ? type.Name : type.Name[..arity];
+        if (count > start)
+            name += $"<{string.Join(", ", Array.ConvertAll(arguments[start..count], DisplayName))}>";
+
+        return outer is null ? name : NestedName(outer, arguments, start) + "." + name;
     }
 
     // The tests of typeof(T) are constants once the method is compiled for a value type, so each instantiation keeps
-    // only its own branch, and no type is looked up by reflection, which trimming and AOT would not allow.
+    // only its own branch, and no type is looked up by reflection, which trimming and AOT would not allow. A nullable
+    // type has the name of its underlying type, because the text is what is not valid, by that type's rule.
     private static string? SupportedTypeName<T>()
     {
         if (typeof(T) == typeof(string))
             return "string";
-        if (typeof(T) == typeof(int))
+        if (typeof(T) == typeof(int) || typeof(T) == typeof(int?))
             return "int";
-        if (typeof(T) == typeof(long))
+        if (typeof(T) == typeof(long) || typeof(T) == typeof(long?))
             return "long";
-        if (typeof(T) == typeof(decimal))
+        if (typeof(T) == typeof(decimal) || typeof(T) == typeof(decimal?))
             return "decimal";
-        if (typeof(T) == typeof(bool))
+        if (typeof(T) == typeof(bool) || typeof(T) == typeof(bool?))
             return "bool";
-        if (typeof(T) == typeof(Guid))
+        if (typeof(T) == typeof(Guid) || typeof(T) == typeof(Guid?))
             return "Guid";
 
         return null;
     }
 
     // Each type uses the parse method of the constraint of the same name, so that conversion and constraint cannot
-    // disagree. The cast through object is removed by the JIT when T is that value type, so nothing is boxed, and a
-    // branch whose test and local ever disagreed would throw InvalidCastException rather than misread memory.
+    // disagree, and a nullable type shares the branch of its underlying type, so it reads by exactly that rule. On
+    // CoreCLR the JIT removes the cast through object at every tier when T is that value type or its nullable form,
+    // as measured, and a test checks that a typed read allocates nothing more; another runtime still gives the right
+    // value and could differ only in that allocation. A branch whose test and local ever disagreed would throw
+    // InvalidCastException rather than misread memory.
     private static bool TryConvert<T>(string text, [MaybeNullWhen(false)] out T value)
     {
         bool converted;
@@ -282,27 +320,27 @@ public sealed class RouteMatchContext
             return true;
         }
 
-        if (typeof(T) == typeof(int))
+        if (typeof(T) == typeof(int) || typeof(T) == typeof(int?))
         {
             converted = RouteConstraint.TryParseInt(text, out int result);
             value = (T)(object)result;
         }
-        else if (typeof(T) == typeof(long))
+        else if (typeof(T) == typeof(long) || typeof(T) == typeof(long?))
         {
             converted = RouteConstraint.TryParseLong(text, out long result);
             value = (T)(object)result;
         }
-        else if (typeof(T) == typeof(decimal))
+        else if (typeof(T) == typeof(decimal) || typeof(T) == typeof(decimal?))
         {
             converted = RouteConstraint.TryParseDecimal(text, out decimal result);
             value = (T)(object)result;
         }
-        else if (typeof(T) == typeof(bool))
+        else if (typeof(T) == typeof(bool) || typeof(T) == typeof(bool?))
         {
             converted = RouteConstraint.TryParseBool(text, out bool result);
             value = (T)(object)result;
         }
-        else if (typeof(T) == typeof(Guid))
+        else if (typeof(T) == typeof(Guid) || typeof(T) == typeof(Guid?))
         {
             converted = RouteConstraint.TryParseGuid(text, out Guid result);
             value = (T)(object)result;

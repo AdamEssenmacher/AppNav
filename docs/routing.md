@@ -346,12 +346,29 @@ An exception the create function throws propagates out of `Match` unchanged, and
 
 ### Typed values
 
-`Path<T>(name)` and `TryGetPath<T>(name, out value)` read a captured value as one of these types: `string`, `int`, `long`, `decimal`, `bool` and `Guid`. A `string` is the captured text unchanged. A value converts to each of the others exactly when it satisfies the [built-in constraint](#constraints) of the same name, by the same rule, in every culture, so `Path<int>` accepts exactly the text that `{id:int}` accepts, and `Path<Guid>` only the hyphenated form that `{id:guid}` accepts. There is no typed read for `alpha`, which is a constraint on text, not a type. A catch-all value converts from its whole text, slashes included.
+`Path<T>(name)` and `TryGetPath<T>(name, out value)` read a captured value as one of these types: `string`, `int`, `long`, `decimal`, `bool` and `Guid`, and the nullable forms `int?`, `long?`, `decimal?`, `bool?` and `Guid?`. A `string` is the captured text unchanged. A value converts to each of the others exactly when it satisfies the [built-in constraint](#constraints) of the same name, by the same rule, in every culture, so `Path<int>` accepts exactly the text that `{id:int}` accepts, and `Path<Guid>` only the hyphenated form that `{id:guid}` accepts. There is no typed read for `alpha`, which is a constraint on text, not a type. A catch-all value converts from its whole text, slashes included.
 
 A `decimal` keeps what the text says about scale and sign: `5.00` and `5` are equal values that print as `5.00` and `5`, and `-0` is a negative zero, equal to `0` and printed as `0`, for which `decimal.IsNegative` is `true`. Digits beyond the precision of `decimal` round, so `1.00000000000000000000000000001` gives `1.0000000000000000000000000000`. Different texts can therefore give equal values, as they can for the other types: `+007` and `7` are both the `int` 7.
 
+A nullable type reads by exactly the rule of its underlying type: the same text converts, to the same value, and the same text is rejected, with the same message. It lets an optional parameter be read into a nullable variable, which is `null` when the path leaves the parameter out:
+
+```csharp
+RouteTable table = new RouteTableBuilder()
+    .Map("/list/{page?}", c =>
+    {
+        c.TryGetPath("page", out int? page);
+        return new ListRoute(page);
+    })
+    .Build();
+
+// /list gives ListRoute(null), /list/3 gives ListRoute(3), and /list/x fails the match.
+
+public sealed record ListRoute(int? Page) : AppRoute;
+```
+
 - `Path<T>(name)` throws `KeyNotFoundException` when the path has no value for the name, as `Path(name)` does. Use it for a required parameter.
-- `TryGetPath<T>(name, out value)` returns `false` with the default value of `T` when the path has no value for the name. Use it for an optional or catch-all parameter.
+- `TryGetPath<T>(name, out value)` returns `false` with the default value of `T`, which is `null` for a nullable type, when the path has no value for the name. Use it for an optional or catch-all parameter.
+- `Path<int?>(name)` behaves exactly as `Path<int>(name)`: it never returns `null` and throws `KeyNotFoundException` for an absent value, so read a value that may be absent with `TryGetPath`.
 
 > **Note: a value that is present but not valid is not a missing value.** `TryGetPath<T>` does not return `false` for text that does not convert, as most `Try` methods would. Absent returns `false`; present but not valid rejects the match: both methods throw a `RouteValueException`, which fails the match as described in [Rejecting a value](#rejecting-a-value), so a bad link is never treated as a link without the value. For a lenient fallback, read the string and use `int.TryParse`, or the parse method of the type you need:
 >
@@ -362,7 +379,7 @@ A `decimal` keeps what the text says about scale and sign: `5.00` and `5` are eq
 
 With the constraint of the same name in the template, such as `{id:int}` read with `Path<int>`, the conversion cannot fail, because a value that does not satisfy the constraint never reaches the create function. A different constraint does not give that guarantee: `{id:long}` read with `Path<int>` lets `/3000000000` through, and `{id:int}` read with `Path<bool>` lets `/1` through, and each then fails the match. Without a constraint, a value that does not convert fails the match for that URI, and no other template is tried, even one that would also match the path. The exception's `ValueName` is the name the create function passed, and its message names the value and the type, as in `The value of 'id' is not a valid int.`, but never quotes the value, which can carry a secret from the URI.
 
-Other types, including nullable forms such as `int?`, other number types and enums, are not supported in this version. Using one throws `InvalidOperationException` whether or not the path has the value, and it propagates out of `Match`, since it is a mistake in the app rather than in the URI.
+Other types, such as other number types, enums, and their nullable forms, are not supported in this version. Using one throws `InvalidOperationException` whether or not the path has the value, and it propagates out of `Match`, since it is a mistake in the app rather than in the URI.
 
 ### Rejecting a value
 
