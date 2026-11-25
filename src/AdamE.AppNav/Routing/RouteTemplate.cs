@@ -260,8 +260,9 @@ public sealed class RouteTemplate
         return value;
     }
 
-    // Only reached when the name as written is not a key, so a dictionary that already compares keys without regard to
-    // case, such as the one Match returns, never pays for the search.
+    // Only reached when the name as written is not a key, and then it reads every entry. A dictionary that already
+    // compares keys without regard to case, such as the one Match returns, finds any spelling of the name on the first
+    // lookup, so for it the search runs only when the name is missing, just before the error is thrown.
     private static bool TryGetValueIgnoringCase(
         IReadOnlyDictionary<string, string> pathValues,
         string name,
