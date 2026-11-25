@@ -462,8 +462,10 @@ public sealed class RouteTableTests
             (string uri, AppRoute? expected) = (i % 5) switch
             {
                 0 => ($"/products/{id}", new ProductRoute(id)),
-                1 => ($"https://example.com/products/p{id}", new ProductByNameRoute($"p{id}")),
-                2 => ($"myapp:///orders/{id}/items?x={id}", new OrderRoute(id, "items")),
+                // Values that are still percent text after one decoding, so that a count of decoded segments
+                // shared between calls, which would decode them twice or not at all, gives a wrong route.
+                1 => ($"https://example.com/products/p%2520{id}", new ProductByNameRoute($"p%20{id}")),
+                2 => ($"myapp:///orders/%2541{id}/items?x={id}", new OrderRoute($"%41{id}", "items")),
                 3 => ("/settings", new SettingsRoute()),
                 _ => ($"/missing/{id}", (AppRoute?)null),
             };

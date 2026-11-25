@@ -65,9 +65,9 @@ public sealed class RouteTable
     /// file URI on Unix-like platforms and throws for it on Windows. The table reads such a file URI as relative.
     /// </para>
     /// <para>
-    /// The path is matched with <see cref="RouteTemplate.Match(string)"/>. In this version, definitions are tried in
-    /// the order they were mapped, and the first whose template matches wins; no later one is tried. Its create
-    /// function is called once, and any exception it throws propagates unchanged.
+    /// The path is matched as <see cref="RouteTemplate.Match(string)"/> matches it. In this version, definitions are
+    /// tried in the order they were mapped, and the first whose template matches wins; no later one is tried. Its
+    /// create function is called once, and any exception it throws propagates unchanged.
     /// </para>
     /// <para>
     /// A URI that no template matches is not an error. The table itself does not throw for the content of a URI; an
@@ -91,9 +91,14 @@ public sealed class RouteTable
         ArgumentNullException.ThrowIfNull(uri);
 
         string path = ReadPath(uri);
+
+        // The path is split once and each segment decoded at most once for all the definitions, so that allocation and
+        // decoding grow with the path plus the definitions tried rather than with their product.
+        string[] pathSegments = RouteText.SplitSegments(path);
+        var decodedCount = 0;
         foreach (RouteDefinition definition in _matchOrder)
         {
-            IReadOnlyDictionary<string, string>? values = definition.Template.Match(path);
+            IReadOnlyDictionary<string, string>? values = definition.Template.Match(pathSegments, ref decodedCount);
             if (values is null)
                 continue;
 
