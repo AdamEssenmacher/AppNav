@@ -371,8 +371,13 @@ public sealed class RouteTableQueryTests
 
         string sizes = $"bytes per match for 1,000 and 50,000 characters: miss {missShort}, {missLong}; never read " +
             $"{neverReadShort}, {neverReadLong}; read {readShort}, {readLong}.";
-        Assert.True(Math.Abs(missLong - missShort) <= 128, sizes);
-        Assert.True(Math.Abs(neverReadLong - neverReadShort) <= 128, sizes);
+
+        // Copying the longer query would cost about 98,000 more bytes for each match. The bound is far below that and
+        // well above the few hundred bytes for each match that a one-off allocation by the runtime adds when it lands
+        // among the measured matches.
+        const long Slack = 8192;
+        Assert.True(Math.Abs(missLong - missShort) <= Slack, sizes);
+        Assert.True(Math.Abs(neverReadLong - neverReadShort) <= Slack, sizes);
         Assert.True(readLong > 10 * readShort, sizes);
     }
 
