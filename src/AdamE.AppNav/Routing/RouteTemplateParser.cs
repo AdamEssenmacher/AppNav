@@ -8,9 +8,9 @@ internal static class RouteTemplateParser
         "has an invalid parameter name; a parameter name starts with an ASCII letter or '_', " +
         "followed by ASCII letters, digits or '_'";
 
-    // The parameter is named value on purpose: it matches the parameter of RouteTemplate.Parse, so that nameof(value)
-    // gives every exception thrown here the ParamName of the public method's argument.
-    public static RouteSegment[] Parse(string value)
+    // The caller names the public argument the template came from, so that every exception thrown here reports it as
+    // its ParamName: value for RouteTemplate.Parse, template for RouteTableBuilder.Map.
+    public static RouteSegment[] Parse(string value, string paramName)
     {
         string[] segments = RouteText.SplitSegments(value);
         var parsed = new RouteSegment[segments.Length];
@@ -31,7 +31,7 @@ internal static class RouteTemplateParser
             {
                 throw new ArgumentException(
                     $"Route template segment '{RouteText.EscapeForMessage(segment)}' {problem}.",
-                    nameof(value));
+                    paramName);
             }
 
             // These two are checked before the repeated name because they depend only on the segment's position, and
@@ -42,7 +42,7 @@ internal static class RouteTemplateParser
                 throw new ArgumentException(
                     $"Route template segment '{RouteText.EscapeForMessage(segment)}' follows the catch-all parameter " +
                     $"'{segments[catchAll]}'; a catch-all parameter must be the last segment.",
-                    nameof(value));
+                    paramName);
             }
 
             if (firstOptional >= 0 && parameter is not { IsOptional: true })
@@ -53,7 +53,7 @@ internal static class RouteTemplateParser
                     (parameter is { IsCatchAll: true }
                         ? "a catch-all parameter cannot follow an optional parameter."
                         : "only optional parameters can follow an optional parameter."),
-                    nameof(value));
+                    paramName);
             }
 
             if (parameter is not { } found)
@@ -68,7 +68,7 @@ internal static class RouteTemplateParser
                 throw new ArgumentException(
                     $"Route template segment '{RouteText.EscapeForMessage(segment)}' repeats the name of an earlier " +
                     $"parameter, '{segments[seenNames[name]]}'; parameter names are compared without regard to case.",
-                    nameof(value));
+                    paramName);
             }
 
             if (found.IsOptional && firstOptional < 0)
