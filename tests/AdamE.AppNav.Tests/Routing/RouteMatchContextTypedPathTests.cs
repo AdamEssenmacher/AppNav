@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Linq.Expressions;
+using System.Numerics;
 using System.Reflection;
 using AdamE.AppNav.Routing;
 using Xunit;
@@ -124,6 +125,187 @@ public sealed class RouteMatchContextTypedPathTests
     }
 
     [Theory]
+    [InlineData("sbyte")]
+    [InlineData("byte")]
+    [InlineData("short")]
+    [InlineData("ushort")]
+    [InlineData("uint")]
+    [InlineData("ulong")]
+    public void AnIntegerTypeFollowsTheRuleOfIntWithinItsRange(string type)
+    {
+        switch (type)
+        {
+            case "sbyte":
+                AssertIntegerCases<sbyte>(type);
+                break;
+            case "byte":
+                AssertIntegerCases<byte>(type);
+                break;
+            case "short":
+                AssertIntegerCases<short>(type);
+                break;
+            case "ushort":
+                AssertIntegerCases<ushort>(type);
+                break;
+            case "uint":
+                AssertIntegerCases<uint>(type);
+                break;
+            default:
+                AssertIntegerCases<ulong>(type);
+                break;
+        }
+    }
+
+    // Over the corpus, an integer type accepts exactly the texts that long accepts whose value is in its range, to
+    // the same value. The range of ulong goes beyond that of long, and there decimal, which accepts the same digits
+    // and a point as well, gives the value of a text without a point. The expectation comes from the library's own
+    // long and decimal reads, so this is not an independent check of what is valid: it checks that every integer type
+    // agrees with the rule of long over a broad corpus. The independent expectations for each type are the literal
+    // cases of TypedValueCorpus.IntegerCases.
+    [Fact]
+    public void AnIntegerTypeAcceptsExactlyTheTextsLongAcceptsWithinItsRange()
+    {
+        AssertWithinTheRuleOfLong<sbyte>();
+        AssertWithinTheRuleOfLong<byte>();
+        AssertWithinTheRuleOfLong<short>();
+        AssertWithinTheRuleOfLong<ushort>();
+        AssertWithinTheRuleOfLong<uint>();
+        AssertWithinTheRuleOfLong<ulong>();
+    }
+
+    [Theory]
+    [InlineData("float")]
+    [InlineData("double")]
+    public void AFloatingPointTypeAcceptsTheShapeOfDecimalAndNoMagnitudeTooLargeForIt(string type)
+    {
+        if (type == "float")
+            AssertFloatingPointCases<float>(type, static c => c.IsFloat);
+        else
+            AssertFloatingPointCases<double>(type, static c => c.IsDouble);
+    }
+
+    // Over the corpus, restricted to texts below 10^28 in magnitude, which decimal, float and double all hold, float
+    // and double accept exactly the texts that decimal accepts, and over the whole corpus every text it accepts. The
+    // expectation comes from the library's own decimal read, so this checks agreement with the shape of decimal over a
+    // broad corpus, not what is valid; the independent expectations for each type are the literal cases of
+    // TypedValueCorpus.FloatingPointCases, and each value is checked against a framework parse.
+    [Fact]
+    public void FloatAndDoubleAcceptExactlyTheShapeThatDecimalAccepts()
+    {
+        AssertShapeOfDecimal<float>();
+        AssertShapeOfDecimal<double>();
+    }
+
+    // Digits beyond the precision of the type round to the nearest value rather than being rejected, at any length,
+    // and only a magnitude too large for the type is rejected, never read as infinity.
+    [Fact]
+    public void AFloatingPointValueIsRoundedAndOnlyTooLargeAMagnitudeIsRejected()
+    {
+        Assert.Equal(0.1, ReadDouble("0.1000000000000000055511151231257827021181583404541015625000001"));
+        Assert.Equal(0.1f, ReadFloat("0.10000000149011611938476562500000001"));
+        Assert.Equal(16777216f, ReadFloat("16777217"));
+        Assert.Equal(0x3F800001, BitConverter.SingleToInt32Bits(ReadFloat(TypedValueCorpus.FloatAboveTie)));
+        Assert.Equal(0x3F800001, BitConverter.SingleToInt32Bits(ReadFloat(TypedValueCorpus.FloatBelowTie)));
+        Assert.Equal(float.Parse(TypedValueCorpus.FloatAboveTie, Invariant), ReadFloat(TypedValueCorpus.FloatAboveTie));
+        Assert.Equal(1e29, ReadDouble("1" + new string('0', 29)));
+        Assert.Equal(1e29f, ReadFloat("1" + new string('0', 29)));
+        Assert.Equal(float.MaxValue, ReadFloat((new BigInteger(float.MaxValue) + 1).ToString(Invariant)));
+        Assert.Equal(9007199254740992.0, ReadDouble("9007199254740993"));
+        Assert.Equal(1e39, ReadDouble("1" + new string('0', 39)));
+        Assert.Equal(1e308, ReadDouble("1" + new string('0', 308)));
+        Assert.Equal(double.MaxValue, ReadDouble(new BigInteger(double.MaxValue).ToString(Invariant)));
+        Assert.Equal(float.MaxValue, ReadFloat(new BigInteger(float.MaxValue).ToString(Invariant)));
+        Assert.Equal(0.0, ReadDouble("0." + new string('0', 400) + "1"));
+        Assert.True(double.IsNegative(ReadDouble("-0." + new string('0', 400) + "1")));
+        Assert.True(float.IsNegative(ReadFloat("-0." + new string('0', 60) + "1")));
+
+        Within("/{v}", "/1" + new string('0', 39), context =>
+        {
+            AssertInvalid(() => context.Path<float>("v"), "v", "float");
+            AssertInvalid(() => context.TryGetPath("v", out float? _), "v", "float");
+        });
+
+        Within("/{v}", "/1" + new string('0', 399), context =>
+        {
+            AssertInvalid(() => context.Path<double>("v"), "v", "double");
+            AssertInvalid(() => context.Path<double?>("v"), "v", "double");
+            AssertInvalid(() => context.TryGetPath("v", out float _), "v", "float");
+            AssertInvalid(() => context.TryGetPath("v", out decimal _), "v", "decimal");
+        });
+
+        Within("/{v}", "/-2" + new string('0', 308), context =>
+        {
+            AssertInvalid(() => context.Path<double>("v"), "v", "double");
+        });
+
+        Within("/{v}", "/1" + new string('0', 29), context =>
+        {
+            AssertInvalid(() => context.Path<decimal>("v"), "v", "decimal");
+        });
+    }
+
+    // The sign of a zero is kept, as the framework parser gives it. Equality ignores it, so it is checked directly.
+    [Theory]
+    [InlineData("-0", true)]
+    [InlineData("-0.0", true)]
+    [InlineData("-.0", true)]
+    [InlineData("0", false)]
+    [InlineData("+0", false)]
+    [InlineData("0.0", false)]
+    public void AFloatingPointZeroKeepsItsSign(string text, bool isNegative)
+    {
+        double?[] doubles =
+        [
+            ReadDouble(text),
+            ReadValue(text, c => c.Path<double?>("v")),
+            ReadValue(text, c => c.TryGetPath("v", out double? value) ? value : null),
+        ];
+        float?[] floats =
+        [
+            ReadFloat(text),
+            ReadValue(text, c => c.Path<float?>("v")),
+            ReadValue(text, c => c.TryGetPath("v", out float value) ? value : (float?)null),
+        ];
+
+        foreach (double? read in doubles)
+        {
+            Assert.Equal(0.0, read);
+            Assert.Equal(isNegative, double.IsNegative(read!.Value));
+        }
+
+        foreach (float? read in floats)
+        {
+            Assert.Equal(0f, read);
+            Assert.Equal(isNegative, float.IsNegative(read!.Value));
+        }
+    }
+
+    // There is no constraint for the types that only the typed reads support, so a template naming one is invalid.
+    [Theory]
+    [InlineData("sbyte")]
+    [InlineData("byte")]
+    [InlineData("short")]
+    [InlineData("ushort")]
+    [InlineData("uint")]
+    [InlineData("ulong")]
+    [InlineData("float")]
+    [InlineData("double")]
+    public void NoConstraintIsNamedAfterATypeOnlyTheTypedReadsSupport(string type)
+    {
+        string template = $"/products/{{x:{type}}}";
+
+        ArgumentException parse = Assert.Throws<ArgumentException>(() => RouteTemplate.Parse(template));
+        ArgumentException map = Assert.Throws<ArgumentException>(
+            () => new RouteTableBuilder().Map(template, _ => new SettingsRoute()));
+
+        Assert.Equal("value", parse.ParamName);
+        Assert.Contains($"unknown constraint '{type}'", parse.Message, StringComparison.Ordinal);
+        Assert.Equal("template", map.ParamName);
+        Assert.Contains($"unknown constraint '{type}'", map.Message, StringComparison.Ordinal);
+        Assert.Null(RouteConstraint.Find(type));
+    }
+
+    [Theory]
     [InlineData("+007")]
     [InlineData("north wind")]
     [InlineData("caf\u00E9")]
@@ -180,6 +362,14 @@ public sealed class RouteMatchContextTypedPathTests
             AssertInvalid(() => context.Path<decimal>("id"), "id", "decimal");
             AssertInvalid(() => context.Path<bool>("id"), "id", "bool");
             AssertInvalid(() => context.TryGetPath("id", out Guid _), "id", "Guid");
+            AssertInvalid(() => context.Path<sbyte>("id"), "id", "sbyte");
+            AssertInvalid(() => context.TryGetPath("id", out byte _), "id", "byte");
+            AssertInvalid(() => context.Path<short>("id"), "id", "short");
+            AssertInvalid(() => context.TryGetPath("id", out ushort _), "id", "ushort");
+            AssertInvalid(() => context.Path<uint>("id"), "id", "uint");
+            AssertInvalid(() => context.TryGetPath("id", out ulong _), "id", "ulong");
+            AssertInvalid(() => context.Path<float>("id"), "id", "float");
+            AssertInvalid(() => context.TryGetPath("id", out double _), "id", "double");
             Assert.Equal("abc", context.Path<string>("id"));
         });
     }
@@ -222,6 +412,14 @@ public sealed class RouteMatchContextTypedPathTests
             AssertNullableAbsent<decimal>(context, name);
             AssertNullableAbsent<bool>(context, name);
             AssertNullableAbsent<Guid>(context, name);
+            AssertNullableAbsent<sbyte>(context, name);
+            AssertNullableAbsent<byte>(context, name);
+            AssertNullableAbsent<short>(context, name);
+            AssertNullableAbsent<ushort>(context, name);
+            AssertNullableAbsent<uint>(context, name);
+            AssertNullableAbsent<ulong>(context, name);
+            AssertNullableAbsent<float>(context, name);
+            AssertNullableAbsent<double>(context, name);
         });
     }
 
@@ -233,6 +431,14 @@ public sealed class RouteMatchContextTypedPathTests
         AssertNullablePresent("19.95", 19.95m);
         AssertNullablePresent("fAlSe", false);
         AssertNullablePresent(GuidText, new System.Guid(GuidText));
+        AssertNullablePresent("-128", sbyte.MinValue);
+        AssertNullablePresent("255", byte.MaxValue);
+        AssertNullablePresent("-32768", short.MinValue);
+        AssertNullablePresent("65535", ushort.MaxValue);
+        AssertNullablePresent("4294967295", uint.MaxValue);
+        AssertNullablePresent("18446744073709551615", ulong.MaxValue);
+        AssertNullablePresent("-.5", -0.5f);
+        AssertNullablePresent("-0", -0.0);
     }
 
     [Fact]
@@ -250,6 +456,14 @@ public sealed class RouteMatchContextTypedPathTests
             AssertInvalid(() => context.TryGetPath("id", out bool? _), "id", "bool");
             AssertInvalid(() => context.Path<Guid?>("id"), "id", "Guid");
             AssertInvalid(() => context.TryGetPath("id", out Guid? _), "id", "Guid");
+            AssertInvalid(() => context.Path<sbyte?>("id"), "id", "sbyte");
+            AssertInvalid(() => context.TryGetPath("id", out byte? _), "id", "byte");
+            AssertInvalid(() => context.Path<short?>("id"), "id", "short");
+            AssertInvalid(() => context.TryGetPath("id", out ushort? _), "id", "ushort");
+            AssertInvalid(() => context.Path<uint?>("id"), "id", "uint");
+            AssertInvalid(() => context.TryGetPath("id", out ulong? _), "id", "ulong");
+            AssertInvalid(() => context.Path<float?>("id"), "id", "float");
+            AssertInvalid(() => context.TryGetPath("id", out double? _), "id", "double");
         });
     }
 
@@ -263,6 +477,14 @@ public sealed class RouteMatchContextTypedPathTests
         AssertNullableEquivalent<decimal>();
         AssertNullableEquivalent<bool>();
         AssertNullableEquivalent<Guid>();
+        AssertNullableEquivalent<sbyte>();
+        AssertNullableEquivalent<byte>();
+        AssertNullableEquivalent<short>();
+        AssertNullableEquivalent<ushort>();
+        AssertNullableEquivalent<uint>();
+        AssertNullableEquivalent<ulong>();
+        AssertNullableEquivalent<float>();
+        AssertNullableEquivalent<double>();
     }
 
     // The natural way to read an optional parameter: the compiler infers int? from the out variable.
@@ -394,8 +616,12 @@ public sealed class RouteMatchContextTypedPathTests
         {
             foreach (string name in new[] { "id", "missing" })
             {
-                AssertUnsupported(() => context.Path<double>(name), "'Double'");
-                AssertUnsupported(() => context.Path<double?>(name), "'Double?'");
+                AssertUnsupported(() => context.Path<Int128>(name), "'Int128'");
+                AssertUnsupported(() => context.Path<UInt128?>(name), "'UInt128?'");
+                AssertUnsupported(() => context.Path<Half>(name), "'Half'");
+                AssertUnsupported(() => context.Path<Half?>(name), "'Half?'");
+                AssertUnsupported(() => context.Path<char>(name), "'Char'");
+                AssertUnsupported(() => context.Path<nint>(name), "'IntPtr'");
                 AssertUnsupported(() => context.Path<DateTime>(name), "'DateTime'");
                 AssertUnsupported(() => context.Path<DateTime?>(name), "'DateTime?'");
                 AssertUnsupported(() => context.Path<DayOfWeek>(name), "'DayOfWeek'");
@@ -403,15 +629,18 @@ public sealed class RouteMatchContextTypedPathTests
                 AssertUnsupported(() => context.Path<List<int>>(name), "'List<Int32>'");
                 AssertUnsupported(() => context.Path<Dictionary<string, int?>>(name), "'Dictionary<String, Int32?>'");
                 AssertUnsupported(() => context.Path<object>(name), "'Object'");
-                AssertUnsupported(() => context.TryGetPath(name, out double? _), "'Double?'");
-                AssertUnsupported(() => context.TryGetPath(name, out short _), "'Int16'");
+                AssertUnsupported(() => context.TryGetPath(name, out Half? _), "'Half?'");
+                AssertUnsupported(() => context.TryGetPath(name, out Int128 _), "'Int128'");
+                AssertUnsupported(() => context.TryGetPath(name, out char? _), "'Char?'");
+                AssertUnsupported(() => context.TryGetPath(name, out nuint _), "'UIntPtr'");
                 AssertUnsupported(() => context.TryGetPath(name, out List<int>? _), "'List<Int32>'");
                 AssertUnsupported(() => context.TryGetPath(name, out object? _), "'Object'");
             }
 
             // The type is checked before anything else, the name included.
-            AssertUnsupported(() => context.Path<double>(null!), "'Double'");
-            AssertUnsupported(() => context.Path<double?>(null!), "'Double?'");
+            AssertUnsupported(() => context.Path<Half>(null!), "'Half'");
+            AssertUnsupported(() => context.Path<Int128?>(null!), "'Int128?'");
+            AssertUnsupported(() => context.TryGetPath(null!, out nint _), "'IntPtr'");
         });
     }
 
@@ -446,7 +675,7 @@ public sealed class RouteMatchContextTypedPathTests
     public void AnUnsupportedTypeEscapesMatch()
     {
         RouteTable present = new RouteTableBuilder()
-            .Map("/products/{id}", c => new ProductRoute(c.Path<double>("id").ToString(Invariant)))
+            .Map("/products/{id}", c => new ProductRoute(c.Path<Int128>("id").ToString(Invariant)))
             .Build();
         RouteTable absent = new RouteTableBuilder()
             .Map("/products/{id}", c => new ProductRoute(c.TryGetPath("tab", out DayOfWeek day) ? "x" : "y"))
@@ -461,11 +690,18 @@ public sealed class RouteMatchContextTypedPathTests
     [Theory]
     [InlineData("/i/{id:long}", "/i/3000000000", "int")]
     [InlineData("/b/{id:int}", "/b/1", "bool")]
+    [InlineData("/y/{id:long}", "/y/300", "byte")]
+    [InlineData("/u/{id:int}", "/u/-1", "uint")]
     public void ADifferentConstraintCanLetThroughAValueTheReadRejects(string template, string path, string type)
     {
         RouteTable table = new RouteTableBuilder()
-            .Map(template, c => new ProductRoute(
-                type == "int" ? c.Path<int>("id").ToString(Invariant) : c.Path<bool>("id").ToString()))
+            .Map(template, c => new ProductRoute(type switch
+            {
+                "int" => c.Path<int>("id").ToString(Invariant),
+                "byte" => c.Path<byte>("id").ToString(Invariant),
+                "uint" => c.Path<uint>("id").ToString(Invariant),
+                _ => c.Path<bool>("id").ToString(),
+            }))
             .Build();
 
         RouteMatchResult result = table.Match(new Uri(path, UriKind.Relative));
@@ -476,6 +712,54 @@ public sealed class RouteMatchContextTypedPathTests
         Assert.Equal(RouteDiagnosticCodes.ValueInvalid, diagnostic.Code);
         Assert.Equal("id", diagnostic.Data["name"]);
         Assert.EndsWith($" {type}.", (string?)diagnostic.Data["reason"], StringComparison.Ordinal);
+    }
+
+    // A constraint narrower than the type keeps a valid value from the read: the template does not match at all.
+    [Fact]
+    public void AConstraintNarrowerThanTheTypeMakesAValidValueMissTheTemplate()
+    {
+        const string AboveLong = "/n/9223372036854775808";
+        RouteTable narrow = new RouteTableBuilder()
+            .Map("/n/{n:long}", c => new ProductRoute(c.Path<ulong>("n").ToString(Invariant)))
+            .Build();
+        RouteTable wide = new RouteTableBuilder()
+            .Map("/n/{n:decimal}", c => new ProductRoute(c.Path<ulong>("n").ToString(Invariant)))
+            .Build();
+
+        RouteMatchResult missed = narrow.Match(new Uri(AboveLong, UriKind.Relative));
+
+        Assert.False(missed.IsSuccess);
+        Assert.Null(missed.Definition);
+        Assert.Equal(
+            new ProductRoute("9223372036854775808"),
+            wide.Match(new Uri(AboveLong, UriKind.Relative)).Route);
+        Assert.Equal(
+            new ProductRoute(ulong.MaxValue.ToString(Invariant)),
+            wide.Match(new Uri("/n/" + ulong.MaxValue.ToString(Invariant), UriKind.Relative)).Route);
+    }
+
+    // A wider constraint checks less than the type does, so what it lets through beyond the type fails the match.
+    [Theory]
+    [InlineData("/n/1.5")]
+    [InlineData("/n/-1")]
+    public void AConstraintWiderThanTheTypeLetsThroughValuesThatFailTheMatch(string path)
+    {
+        var laterCalled = false;
+        RouteTable table = new RouteTableBuilder()
+            .Map("/n/{n:decimal}", c => new ProductRoute(c.Path<ulong>("n").ToString(Invariant)))
+            .Map("/n/{slug}", _ =>
+            {
+                laterCalled = true;
+                return new SettingsRoute();
+            })
+            .Build();
+
+        RouteMatchResult result = table.Match(new Uri(path, UriKind.Relative));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("/n/{n:decimal}", result.Definition?.Template.Value);
+        Assert.Equal(RouteDiagnosticCodes.ValueInvalid, Assert.Single(result.Diagnostics).Code);
+        Assert.False(laterCalled);
     }
 
     [Fact]
@@ -515,6 +799,8 @@ public sealed class RouteMatchContextTypedPathTests
     [InlineData("guid")]
     [InlineData("int?")]
     [InlineData("guid?")]
+    [InlineData("ulong")]
+    [InlineData("double?")]
     public void AFailedConversionNeverQuotesTheValue(string type)
     {
         RouteValueException? thrown = null;
@@ -531,6 +817,8 @@ public sealed class RouteMatchContextTypedPathTests
                         "bool" => c.Path<bool>("id").ToString(),
                         "int?" => c.Path<int?>("id").ToString(),
                         "guid?" => c.TryGetPath("id", out Guid? n).ToString() + n,
+                        "ulong" => c.Path<ulong>("id").ToString(Invariant),
+                        "double?" => c.TryGetPath("id", out double? d).ToString() + d,
                         _ => c.TryGetPath("id", out Guid g).ToString() + g,
                     };
                 }
@@ -603,6 +891,11 @@ public sealed class RouteMatchContextTypedPathTests
     [InlineData("decimal?", "4.2")]
     [InlineData("bool?", "true")]
     [InlineData("guid?", GuidText)]
+    [InlineData("byte", "42")]
+    [InlineData("try ushort?", "42")]
+    [InlineData("ulong?", "42")]
+    [InlineData("double", "4.2")]
+    [InlineData("try float?", "4.2")]
     public void ATypedReadAllocatesNoMoreThanReadingTheStringAndParsingIt(string type, string text)
     {
         const int Reads = 16;
@@ -614,6 +907,11 @@ public sealed class RouteMatchContextTypedPathTests
             "long?" => c => (int)c.Path<long?>("id")!.Value,
             "decimal?" => c => (int)c.Path<decimal?>("id")!.Value,
             "bool?" => c => c.TryGetPath("id", out bool? value) && value!.Value ? 1 : 0,
+            "byte" => c => c.Path<byte>("id"),
+            "try ushort?" => c => c.TryGetPath("id", out ushort? value) ? value!.Value : 0,
+            "ulong?" => c => (int)c.Path<ulong?>("id")!.Value,
+            "double" => c => (int)c.Path<double>("id"),
+            "try float?" => c => c.TryGetPath("id", out float? value) ? (int)value!.Value : 0,
             _ => c => c.TryGetPath("id", out Guid? value) ? value!.Value.GetHashCode() : 0,
         };
         Func<RouteMatchContext, int> parsedRead = type switch
@@ -622,6 +920,11 @@ public sealed class RouteMatchContextTypedPathTests
             "long?" => c => (int)long.Parse(c.Path("id"), Invariant),
             "decimal?" => c => (int)decimal.Parse(c.Path("id"), Invariant),
             "bool?" => c => bool.Parse(c.Path("id")) ? 1 : 0,
+            "byte" => c => byte.Parse(c.Path("id"), Invariant),
+            "try ushort?" => c => ushort.Parse(c.Path("id"), Invariant),
+            "ulong?" => c => (int)ulong.Parse(c.Path("id"), Invariant),
+            "double" => c => (int)double.Parse(c.Path("id"), Invariant),
+            "try float?" => c => (int)float.Parse(c.Path("id"), Invariant),
             _ => c => System.Guid.Parse(c.Path("id")).GetHashCode(),
         };
 
@@ -692,6 +995,154 @@ public sealed class RouteMatchContextTypedPathTests
         return success;
     }
 
+    // Each case read by both methods as T and as T?, which give its value or reject it naming the type.
+    private static void AssertIntegerCases<T>(string typeName)
+        where T : struct, IBinaryInteger<T>, IMinMaxValue<T>
+    {
+        foreach ((string text, T? expected) in TypedValueCorpus.IntegerCases<T>())
+            AssertCase(text, expected, typeName);
+    }
+
+    private static void AssertFloatingPointCases<T>(
+        string typeName,
+        Func<(string Text, bool IsFloat, bool IsDouble), bool> isValid)
+        where T : struct, IBinaryFloatingPointIeee754<T>
+    {
+        foreach ((string Text, bool IsFloat, bool IsDouble) item in TypedValueCorpus.FloatingPointCases())
+        {
+            T? expected = isValid(item) ? T.Parse(item.Text, Invariant) : null;
+            Assert.True(expected is null || T.IsFinite(expected.Value), item.Text);
+            AssertCase(item.Text, expected, typeName);
+        }
+    }
+
+    private static void AssertCase<T>(string text, T? expected, string typeName)
+        where T : struct
+    {
+        Within("/{v}", "/" + Uri.EscapeDataString(text), context =>
+        {
+            if (expected is { } value)
+            {
+                AssertSameValue(value, context.Path<T>("v"));
+                AssertSameValue(value, context.Path<T?>("v"));
+                Assert.True(context.TryGetPath("v", out T read), text);
+                AssertSameValue(value, read);
+                Assert.True(context.TryGetPath("v", out T? nullable), text);
+                AssertSameValue(value, nullable);
+            }
+            else
+            {
+                AssertInvalid(() => context.Path<T>("v"), "v", typeName);
+                AssertInvalid(() => context.Path<T?>("v"), "v", typeName);
+                AssertInvalid(() => context.TryGetPath("v", out T _), "v", typeName);
+                AssertInvalid(() => context.TryGetPath("v", out T? _), "v", typeName);
+            }
+        });
+    }
+
+    private static void AssertWithinTheRuleOfLong<T>()
+        where T : struct, IBinaryInteger<T>, IMinMaxValue<T>
+    {
+        decimal min = decimal.CreateChecked(T.MinValue);
+        decimal max = decimal.CreateChecked(T.MaxValue);
+        var converted = 0;
+        RouteTable table = new RouteTableBuilder()
+            .Map("/v/{v}", c =>
+            {
+                string text = c.Path("v");
+                decimal? number = TryConvert(c, out long asLong) ? asLong
+                    : !text.Contains('.', StringComparison.Ordinal) && TryConvert(c, out decimal asDecimal) ? asDecimal
+                    : null;
+                bool expected = number >= min && number <= max;
+
+                Assert.True(expected == TryConvert(c, out T value), $"{typeof(T).Name}: '{text}'");
+                if (expected)
+                {
+                    converted++;
+                    Assert.Equal(number, decimal.CreateChecked(value));
+                }
+
+                return new SettingsRoute();
+            })
+            .Build();
+
+        foreach (string text in TypedValueCorpus.Texts())
+            Assert.True(table.Match(new Uri("/v/" + Uri.EscapeDataString(text), UriKind.Relative)).IsSuccess, text);
+
+        Assert.True(converted > 40, $"{typeof(T).Name}: {converted}");
+    }
+
+    private static void AssertShapeOfDecimal<T>()
+        where T : struct, IBinaryFloatingPointIeee754<T>
+    {
+        var converted = 0;
+        RouteTable table = new RouteTableBuilder()
+            .Map("/v/{v}", c =>
+            {
+                string text = c.Path("v");
+                bool expected = TryConvert(c, out decimal _);
+                bool actual = TryConvert(c, out T value);
+
+                // Beyond 10^28 only the converse holds: whatever decimal accepts, float and double accept too.
+                Assert.True(
+                    IsBelowTenToThe28(text) ? expected == actual : !expected || actual,
+                    $"{typeof(T).Name}: '{text}'");
+                if (expected)
+                {
+                    converted++;
+                    AssertSameValue(T.Parse(text, Invariant), value);
+                }
+
+                return new SettingsRoute();
+            })
+            .Build();
+
+        foreach (string text in TypedValueCorpus.Texts())
+            Assert.True(table.Match(new Uri("/v/" + Uri.EscapeDataString(text), UriKind.Relative)).IsSuccess, text);
+
+        Assert.True(converted > 40, $"{typeof(T).Name}: {converted}");
+    }
+
+    // Whether a text, if it is a number, has fewer than 29 digits before any point once its sign and leading zeros
+    // are left out. Text that is not a number passes, since its shape is what is compared.
+    private static bool IsBelowTenToThe28(string text)
+    {
+        int i = text.Length > 0 && text[0] is '+' or '-' ? 1 : 0;
+        while (i < text.Length && text[i] == '0')
+            i++;
+
+        var digits = 0;
+        for (; i < text.Length && char.IsAsciiDigit(text[i]); i++)
+            digits++;
+
+        return digits <= 28;
+    }
+
+    // Whether Path<T> converts the value of v; a rejection is a RouteValueException.
+    private static bool TryConvert<T>(RouteMatchContext context, out T value)
+    {
+        try
+        {
+            value = context.Path<T>("v");
+            return true;
+        }
+        catch (RouteValueException)
+        {
+            value = default!;
+            return false;
+        }
+    }
+
+    private static double ReadDouble(string text)
+    {
+        return ReadValue(text, c => c.Path<double>("v"));
+    }
+
+    private static float ReadFloat(string text)
+    {
+        return ReadValue(text, c => c.Path<float>("v"));
+    }
+
     private static void AssertNullableAbsent<T>(RouteMatchContext context, string name)
         where T : struct
     {
@@ -753,13 +1204,25 @@ public sealed class RouteMatchContextTypedPathTests
         Assert.True(converted > 40, $"{typeof(T).Name}: {converted}");
     }
 
-    // Equal, and for a decimal also of the same scale and sign of zero, which decimal equality ignores.
+    // Equal, and for a decimal also of the same scale and sign of zero, which decimal equality ignores, and for a
+    // float or double of the same bits, since equality ignores the sign of zero.
     private static void AssertSameValue<T>(T expected, T? actual)
         where T : struct
     {
         Assert.Equal(expected, actual);
         if (expected is decimal number)
             Assert.Equal(decimal.GetBits(number), decimal.GetBits((decimal)(object)actual!.Value));
+        if (expected is double d)
+        {
+            var read = (double)(object)actual!.Value;
+            Assert.Equal(BitConverter.DoubleToInt64Bits(d), BitConverter.DoubleToInt64Bits(read));
+        }
+
+        if (expected is float f)
+        {
+            var read = (float)(object)actual!.Value;
+            Assert.Equal(BitConverter.SingleToInt32Bits(f), BitConverter.SingleToInt32Bits(read));
+        }
     }
 
     // The same rejection: the same name and the same message, which names the underlying type.

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Numerics;
 using System.Text;
 
 namespace AdamE.AppNav.Routing;
@@ -8,8 +9,13 @@ namespace AdamE.AppNav.Routing;
 // before its range, because the BCL parsers used for the range also accept text that a constraint does not, such as
 // trailing null characters. Each constraint that names a type is its TryParse method, which RouteMatchContext also
 // uses to read a value as that type, so a value converts exactly when it satisfies the constraint of the same name.
+// TryParseInteger reads the integer types other than int and long, and TryParseFloatingPoint reads float and double.
+// For those types they are rules of the typed reads only; no constraint is named after them. They live here so that
+// each shares the shape check of int or decimal.
 internal sealed class RouteConstraint
 {
+    private const NumberStyles DecimalStyles = NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint;
+
     private static readonly RouteConstraint[] BuiltIn =
     [
         new("int", static value => TryParseInt(value, out _)),
@@ -97,6 +103,8 @@ internal sealed class RouteConstraint
         return builder.ToString();
     }
 
+    // int and long call their parsers directly rather than through TryParseInteger, because they are on the path that
+    // matches a constraint, where the generic call costs time until the JIT optimizes it.
     public static bool TryParseInt(string value, out int result)
     {
         result = 0;
@@ -111,28 +119,36 @@ internal sealed class RouteConstraint
                long.TryParse(value, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out result);
     }
 
-    // An optional sign followed by ASCII digits with at most one '.', and at least one digit, so '.5', '5.' and '-.5'
-    // are numbers. Digits beyond the precision of decimal are rounded by the range check, not rejected.
+    // The rule of int, within the range of T: an optional sign followed by ASCII digits, so '-0' and '+5' are also
+    // values of an unsigned type. Each value-type instantiation is compiled separately, so the static calls through T
+    // are direct calls and nothing is boxed.
+    public static bool TryParseInteger<T>(string value, out T result)
+        where T : struct, IBinaryInteger<T>
+    {
+        result = T.Zero;
+        return IsSignedDigits(value) &&
+               T.TryParse(value, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out result);
+    }
+
+    // Digits beyond the precision of decimal are rounded by the range check, not rejected.
     public static bool TryParseDecimal(string value, out decimal result)
     {
         result = 0;
-        int start = HasSign(value) ? 1 : 0;
-        var digits = 0;
-        var points = 0;
-        for (int i = start; i < value.Length; i++)
-        {
-            if (char.IsAsciiDigit(value[i]))
-                digits++;
-            else if (value[i] != '.' || ++points > 1)
-                return false;
-        }
+        return IsDecimalText(value) &&
+               decimal.TryParse(value, DecimalStyles, CultureInfo.InvariantCulture, out result);
+    }
 
-        return digits > 0 &&
-               decimal.TryParse(
-                   value,
-                   NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint,
-                   CultureInfo.InvariantCulture,
-                   out result);
+    // The shape of decimal, rounded to the nearest value of T, which is float or double. With no exponent, every text
+    // of that shape is a finite number, so there is no NaN or infinity to accept, but the parser gives infinity
+    // rather than failing for a magnitude too large for T, which is rejected as decimal rejects one too large for it.
+    // A negative zero stays negative, as the parser gives it.
+    public static bool TryParseFloatingPoint<T>(string value, out T result)
+        where T : struct, IBinaryFloatingPointIeee754<T>
+    {
+        result = T.Zero;
+        return IsDecimalText(value) &&
+               T.TryParse(value, DecimalStyles, CultureInfo.InvariantCulture, out result) &&
+               T.IsFinite(result);
     }
 
     public static bool TryParseBool(string value, out bool result)
@@ -204,6 +220,24 @@ internal sealed class RouteConstraint
         }
 
         return value.Length > start;
+    }
+
+    // An optional sign followed by ASCII digits with at most one '.', and at least one digit, so '.5', '5.' and '-.5'
+    // are numbers.
+    private static bool IsDecimalText(string value)
+    {
+        int start = HasSign(value) ? 1 : 0;
+        var digits = 0;
+        var points = 0;
+        for (int i = start; i < value.Length; i++)
+        {
+            if (char.IsAsciiDigit(value[i]))
+                digits++;
+            else if (value[i] != '.' || ++points > 1)
+                return false;
+        }
+
+        return digits > 0;
     }
 
     private static bool HasSign(string value)

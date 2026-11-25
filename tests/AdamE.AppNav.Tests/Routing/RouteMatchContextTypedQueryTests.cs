@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Numerics;
 using AdamE.AppNav.Routing;
 using Xunit;
 
@@ -47,6 +48,99 @@ public sealed class RouteMatchContextTypedQueryTests
     public void AGuidFollowsEveryRule()
     {
         AssertRules(GuidText, new Guid(GuidText), OtherGuidText, new Guid(OtherGuidText), "Guid");
+    }
+
+    [Fact]
+    public void AnSbyteFollowsEveryRule()
+    {
+        AssertRules("-128", sbyte.MinValue, "127", sbyte.MaxValue, "sbyte");
+    }
+
+    [Fact]
+    public void AByteFollowsEveryRule()
+    {
+        AssertRules("255", byte.MaxValue, "0", (byte)0, "byte");
+    }
+
+    [Fact]
+    public void AShortFollowsEveryRule()
+    {
+        AssertRules("-32768", short.MinValue, "32767", short.MaxValue, "short");
+    }
+
+    [Fact]
+    public void AUshortFollowsEveryRule()
+    {
+        AssertRules("65535", ushort.MaxValue, "007", (ushort)7, "ushort");
+    }
+
+    [Fact]
+    public void AUintFollowsEveryRule()
+    {
+        AssertRules("4294967295", uint.MaxValue, "-0", 0u, "uint");
+    }
+
+    [Fact]
+    public void AUlongFollowsEveryRule()
+    {
+        AssertRules("18446744073709551615", ulong.MaxValue, "1", 1UL, "ulong");
+    }
+
+    [Fact]
+    public void AFloatFollowsEveryRule()
+    {
+        AssertRules("1.5", 1.5f, "-.5", -0.5f, "float");
+    }
+
+    [Fact]
+    public void ADoubleFollowsEveryRule()
+    {
+        AssertRules("19.95", 19.95, "-0", -0.0, "double");
+    }
+
+    // The cases the path tests read, as the first value and as every value of a name, and the empty value, which
+    // only a query can carry.
+    [Theory]
+    [InlineData("sbyte")]
+    [InlineData("byte")]
+    [InlineData("short")]
+    [InlineData("ushort")]
+    [InlineData("uint")]
+    [InlineData("ulong")]
+    public void AnIntegerTypeFollowsTheRuleOfIntWithinItsRange(string type)
+    {
+        switch (type)
+        {
+            case "sbyte":
+                AssertIntegerCases<sbyte>(type);
+                break;
+            case "byte":
+                AssertIntegerCases<byte>(type);
+                break;
+            case "short":
+                AssertIntegerCases<short>(type);
+                break;
+            case "ushort":
+                AssertIntegerCases<ushort>(type);
+                break;
+            case "uint":
+                AssertIntegerCases<uint>(type);
+                break;
+            default:
+                AssertIntegerCases<ulong>(type);
+                break;
+        }
+    }
+
+    [Theory]
+    [InlineData("float")]
+    [InlineData("double")]
+    public void AFloatingPointTypeAcceptsTheShapeOfDecimalAndNoMagnitudeTooLargeForIt(string type)
+    {
+        if (type == "float")
+            AssertFloatingPointCases<float>(type, static c => c.IsFloat);
+        else
+            AssertFloatingPointCases<double>(type, static c => c.IsDouble);
     }
 
     // An out string? argument binds to the non-generic member, so the generic one is called with its type argument
@@ -168,6 +262,14 @@ public sealed class RouteMatchContextTypedQueryTests
         AssertEquivalentToPath<decimal>();
         AssertEquivalentToPath<bool>();
         AssertEquivalentToPath<Guid>();
+        AssertEquivalentToPath<sbyte>();
+        AssertEquivalentToPath<byte>();
+        AssertEquivalentToPath<short>();
+        AssertEquivalentToPath<ushort>();
+        AssertEquivalentToPath<uint>();
+        AssertEquivalentToPath<ulong>();
+        AssertEquivalentToPath<float>();
+        AssertEquivalentToPath<double>();
     }
 
     [Fact]
@@ -238,6 +340,10 @@ public sealed class RouteMatchContextTypedQueryTests
     [InlineData("guid?")]
     [InlineData("list int")]
     [InlineData("list guid")]
+    [InlineData("float")]
+    [InlineData("short?")]
+    [InlineData("list byte")]
+    [InlineData("list double")]
     public void AFailedConversionNeverQuotesTheValue(string type)
     {
         RouteValueException? thrown = null;
@@ -271,6 +377,18 @@ public sealed class RouteMatchContextTypedQueryTests
                             break;
                         case "list int":
                             _ = c.GetQueryValues<int>("token");
+                            break;
+                        case "float":
+                            c.TryGetQuery("token", out float _);
+                            break;
+                        case "short?":
+                            c.TryGetQuery("token", out short? _);
+                            break;
+                        case "list byte":
+                            _ = c.GetQueryValues<byte>("token");
+                            break;
+                        case "list double":
+                            _ = c.GetQueryValues<double>("token");
                             break;
                         default:
                             _ = c.GetQueryValues<Guid>("token");
@@ -331,15 +449,23 @@ public sealed class RouteMatchContextTypedQueryTests
             {
                 foreach (string? name in new[] { "v", "missing", null })
                 {
-                    AssertUnsupported(() => context.TryGetQuery(name!, out double _), "'Double'");
-                    AssertUnsupported(() => context.TryGetQuery(name!, out double? _), "'Double?'");
+                    AssertUnsupported(() => context.TryGetQuery(name!, out Half _), "'Half'");
+                    AssertUnsupported(() => context.TryGetQuery(name!, out Half? _), "'Half?'");
+                    AssertUnsupported(() => context.TryGetQuery(name!, out Int128 _), "'Int128'");
+                    AssertUnsupported(() => context.TryGetQuery(name!, out UInt128? _), "'UInt128?'");
+                    AssertUnsupported(() => context.TryGetQuery(name!, out char _), "'Char'");
+                    AssertUnsupported(() => context.TryGetQuery(name!, out nint? _), "'IntPtr?'");
+                    AssertUnsupported(() => context.TryGetQuery(name!, out nuint _), "'UIntPtr'");
                     AssertUnsupported(() => context.TryGetQuery(name!, out DateTime _), "'DateTime'");
                     AssertUnsupported(() => context.TryGetQuery(name!, out DayOfWeek? _), "'DayOfWeek?'");
-                    AssertUnsupported(() => context.TryGetQuery(name!, out short _), "'Int16'");
                     AssertUnsupported(() => context.TryGetQuery(name!, out List<int>? _), "'List<Int32>'");
                     AssertUnsupported(() => context.TryGetQuery(name!, out object? _), "'Object'");
-                    AssertListUnsupported(() => context.GetQueryValues<double>(name!), "'Double'");
-                    AssertListUnsupported(() => context.GetQueryValues<double?>(name!), "'Double?'");
+                    AssertListUnsupported(() => context.GetQueryValues<Half>(name!), "'Half'");
+                    AssertListUnsupported(() => context.GetQueryValues<Half?>(name!), "'Half?'");
+                    AssertListUnsupported(() => context.GetQueryValues<Int128>(name!), "'Int128'");
+                    AssertListUnsupported(() => context.GetQueryValues<char>(name!), "'Char'");
+                    AssertListUnsupported(() => context.GetQueryValues<nint>(name!), "'IntPtr'");
+                    AssertListUnsupported(() => context.GetQueryValues<DateTime>(name!), "'DateTime'");
                     AssertListUnsupported(() => context.GetQueryValues<DayOfWeek>(name!), "'DayOfWeek'");
                     AssertListUnsupported(() => context.GetQueryValues<int[]>(name!), "'Int32[]'");
                     AssertListUnsupported(() => context.GetQueryValues<object>(name!), "'Object'");
@@ -349,16 +475,53 @@ public sealed class RouteMatchContextTypedQueryTests
                     AssertNullableList(() => context.GetQueryValues<decimal?>(name!), "'Decimal?'", "'Decimal'");
                     AssertNullableList(() => context.GetQueryValues<bool?>(name!), "'Boolean?'", "'Boolean'");
                     AssertNullableList(() => context.GetQueryValues<Guid?>(name!), "'Guid?'", "'Guid'");
+                    AssertNullableList(() => context.GetQueryValues<sbyte?>(name!), "'SByte?'", "'SByte'");
+                    AssertNullableList(() => context.GetQueryValues<byte?>(name!), "'Byte?'", "'Byte'");
+                    AssertNullableList(() => context.GetQueryValues<short?>(name!), "'Int16?'", "'Int16'");
+                    AssertNullableList(() => context.GetQueryValues<ushort?>(name!), "'UInt16?'", "'UInt16'");
+                    AssertNullableList(() => context.GetQueryValues<uint?>(name!), "'UInt32?'", "'UInt32'");
+                    AssertNullableList(() => context.GetQueryValues<ulong?>(name!), "'UInt64?'", "'UInt64'");
+                    AssertNullableList(() => context.GetQueryValues<float?>(name!), "'Single?'", "'Single'");
+                    AssertNullableList(() => context.GetQueryValues<double?>(name!), "'Double?'", "'Double'");
                 }
             });
         }
+    }
+
+    // The messages for a single value, path or query, and for a list name every supported type by its keyword, in the
+    // part of the message that lists them.
+    [Fact]
+    public void AnUnsupportedTypeMessageListsEverySupportedType()
+    {
+        string[] keywords =
+        [
+            "string", "bool", "Guid", "decimal", "double", "float", "sbyte", "byte", "short", "ushort", "int", "uint",
+            "long", "ulong",
+        ];
+
+        Within("/p/{id}", "/p/1?v=1", context =>
+        {
+            string[] lists =
+            [
+                SupportedList(() => context.Path<Half>("id"), ", and the nullable forms"),
+                SupportedList(() => context.TryGetPath("id", out Int128 _), ", and the nullable forms"),
+                SupportedList(() => context.TryGetQuery("v", out char _), ", and the nullable forms"),
+                SupportedList(() => context.GetQueryValues<Half>("v"), "; read the values"),
+            ];
+
+            foreach (string list in lists)
+            {
+                foreach (string keyword in keywords)
+                    Assert.Matches($@"(^|[ ,]){keyword}($|[ ,])", list);
+            }
+        });
     }
 
     [Fact]
     public void AnUnsupportedTypeEscapesMatch()
     {
         RouteTable single = new RouteTableBuilder()
-            .Map("/q", c => new ProductRoute(c.TryGetQuery("v", out double _) ? "x" : "y"))
+            .Map("/q", c => new ProductRoute(c.TryGetQuery("v", out Half _) ? "x" : "y"))
             .Build();
         RouteTable list = new RouteTableBuilder()
             .Map("/q", c => new ProductRoute(c.GetQueryValues<int?>("v").Count > 0 ? "x" : "y"))
@@ -389,11 +552,29 @@ public sealed class RouteMatchContextTypedQueryTests
     [InlineData("list decimal", "4.2")]
     [InlineData("list bool", "true")]
     [InlineData("list guid", GuidText)]
+    [InlineData("sbyte", "42")]
+    [InlineData("ushort?", "42")]
+    [InlineData("ulong", "42")]
+    [InlineData("float?", "4.2")]
+    [InlineData("double", "4.2")]
+    [InlineData("list byte", "42")]
+    [InlineData("list uint", "42")]
+    [InlineData("list float", "4.2")]
+    [InlineData("list double", "4.2")]
     public void ATypedReadAllocatesNoMoreThanTheStringReadOfTheSameName(string type, string text)
     {
         const int Reads = 16;
         Func<RouteMatchContext, int> typedRead = type switch
         {
+            "sbyte" => c => c.TryGetQuery("id", out sbyte value) ? value : 0,
+            "ushort?" => c => c.TryGetQuery("id", out ushort? value) ? value!.Value : 0,
+            "ulong" => c => c.TryGetQuery("id", out ulong value) ? (int)value : 0,
+            "float?" => c => c.TryGetQuery("id", out float? value) ? (int)value!.Value : 0,
+            "double" => c => c.TryGetQuery("id", out double value) ? (int)value : 0,
+            "list byte" => c => c.GetQueryValues<byte>("id")[1],
+            "list uint" => c => (int)c.GetQueryValues<uint>("id")[1],
+            "list float" => c => (int)c.GetQueryValues<float>("id")[1],
+            "list double" => c => (int)c.GetQueryValues<double>("id")[1],
             "int" or "absolute int" => c => c.TryGetQuery("id", out int value) ? value : 0,
             "long" => c => c.TryGetQuery("id", out long value) ? (int)value : 0,
             "decimal" => c => c.TryGetQuery("id", out decimal value) ? (int)value : 0,
@@ -412,6 +593,15 @@ public sealed class RouteMatchContextTypedQueryTests
         };
         Func<RouteMatchContext, int> parsedRead = type switch
         {
+            "sbyte" => c => c.TryGetQuery("id", out string? value) ? sbyte.Parse(value, Invariant) : 0,
+            "ushort?" => c => c.TryGetQuery("id", out string? value) ? ushort.Parse(value, Invariant) : 0,
+            "ulong" => c => c.TryGetQuery("id", out string? value) ? (int)ulong.Parse(value, Invariant) : 0,
+            "float?" => c => c.TryGetQuery("id", out string? value) ? (int)float.Parse(value, Invariant) : 0,
+            "double" => c => c.TryGetQuery("id", out string? value) ? (int)double.Parse(value, Invariant) : 0,
+            "list byte" => c => ParsedList(c, s => byte.Parse(s, Invariant))[1],
+            "list uint" => c => (int)ParsedList(c, s => uint.Parse(s, Invariant))[1],
+            "list float" => c => (int)ParsedList(c, s => float.Parse(s, Invariant))[1],
+            "list double" => c => (int)ParsedList(c, s => double.Parse(s, Invariant))[1],
             "int" or "absolute int" or "int?" =>
                 c => c.TryGetQuery("id", out string? value) ? int.Parse(value, Invariant) : 0,
             "long" or "long?" => c => c.TryGetQuery("id", out string? value) ? (int)long.Parse(value, Invariant) : 0,
@@ -613,13 +803,70 @@ public sealed class RouteMatchContextTypedQueryTests
         return values;
     }
 
-    // Equal, and for a decimal also of the same scale and sign of zero, which decimal equality ignores.
+    // Each case as the first value of a name, read as T and as T?, and as every value of the name, given twice. The
+    // empty value and '.', which a path segment cannot carry, are not valid for any of these types.
+    private static void AssertIntegerCases<T>(string typeName)
+        where T : struct, IBinaryInteger<T>, IMinMaxValue<T>
+    {
+        AssertCase<T>("", null, typeName);
+        AssertCase<T>(".", null, typeName);
+        foreach ((string text, T? expected) in TypedValueCorpus.IntegerCases<T>())
+            AssertCase(text, expected, typeName);
+    }
+
+    private static void AssertFloatingPointCases<T>(
+        string typeName,
+        Func<(string Text, bool IsFloat, bool IsDouble), bool> isValid)
+        where T : struct, IBinaryFloatingPointIeee754<T>
+    {
+        AssertCase<T>("", null, typeName);
+        AssertCase<T>(".", null, typeName);
+        foreach ((string Text, bool IsFloat, bool IsDouble) item in TypedValueCorpus.FloatingPointCases())
+            AssertCase<T>(item.Text, isValid(item) ? T.Parse(item.Text, Invariant) : null, typeName);
+    }
+
+    private static void AssertCase<T>(string text, T? expected, string typeName)
+        where T : struct
+    {
+        string escaped = Uri.EscapeDataString(text);
+        Within($"/q?v={escaped}&v={escaped}", context =>
+        {
+            if (expected is { } value)
+            {
+                Assert.True(context.TryGetQuery("v", out T read), text);
+                AssertSameValue(value, read);
+                Assert.True(context.TryGetQuery("v", out T? nullable), text);
+                AssertSameValue(value, nullable);
+                AssertSameValues([value, value], context.GetQueryValues<T>("v"));
+            }
+            else
+            {
+                AssertInvalid(() => context.TryGetQuery("v", out T _), "v", typeName);
+                AssertInvalid(() => context.TryGetQuery("v", out T? _), "v", typeName);
+                AssertInvalid(() => context.GetQueryValues<T>("v"), "v", typeName);
+            }
+        });
+    }
+
+    // Equal, and for a decimal also of the same scale and sign of zero, which decimal equality ignores, and for a
+    // float or double of the same bits, since equality ignores the sign of zero.
     private static void AssertSameValue<T>(T expected, T? actual)
         where T : struct
     {
         Assert.Equal(expected, actual);
         if (expected is decimal number)
             Assert.Equal(decimal.GetBits(number), decimal.GetBits((decimal)(object)actual!.Value));
+        if (expected is double d)
+        {
+            var read = (double)(object)actual!.Value;
+            Assert.Equal(BitConverter.DoubleToInt64Bits(d), BitConverter.DoubleToInt64Bits(read));
+        }
+
+        if (expected is float f)
+        {
+            var read = (float)(object)actual!.Value;
+            Assert.Equal(BitConverter.SingleToInt32Bits(f), BitConverter.SingleToInt32Bits(read));
+        }
     }
 
     private static void AssertSameValues<T>(T[] expected, IReadOnlyList<T> actual)
@@ -668,6 +915,19 @@ public sealed class RouteMatchContextTypedQueryTests
         Assert.Contains(NotValid, exception.Message, StringComparison.Ordinal);
         if (typeName is not null)
             Assert.EndsWith($" {typeName}.", exception.Message, StringComparison.Ordinal);
+    }
+
+    // The part of the message between the words that introduce the list of supported types and the given end.
+    private static string SupportedList(Action read, string end)
+    {
+        const string Start = "The supported types are ";
+        string message = Assert.Throws<InvalidOperationException>(read).Message;
+        int start = message.IndexOf(Start, StringComparison.Ordinal);
+        Assert.True(start >= 0, message);
+        start += Start.Length;
+        int stop = message.IndexOf(end, start, StringComparison.Ordinal);
+        Assert.True(stop > start, message);
+        return message[start..stop];
     }
 
     private static void AssertNullName(Action read)
