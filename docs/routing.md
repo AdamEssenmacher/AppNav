@@ -288,7 +288,7 @@ Which constraint a parameter has, which text a literal has, and parameter names 
 - A constrained parameter beats an unconstrained one, even when it is optional and the other required: for `/products/42`, `/products/{id:int?}` wins over `/products/{name}`.
 - Otherwise a required parameter beats an optional one: for `/products/42`, `/products/{id}` wins over `/products/{id?}`.
 - Anything beats a catch-all: for `/files/a`, `/files/{name}` wins over `/files/{*path}`.
-- An exact template beats one that continues with an optional or catch-all parameter: for `/a`, `/a` wins over `/a/{b?}` and `/a/{*rest}`. Where *ended* sits above the optional kinds makes no difference, because a template that has ended and one that needs another segment never match the same path.
+- An exact template beats one that continues with an optional or catch-all parameter: for `/a`, `/a` wins over `/a/{b?}` and `/a/{*rest}`. Exactly where *ended* sits among the ranks above the optional kinds makes no difference, because a template that has ended and one that needs another segment never match the same path.
 - The leftmost difference in rank decides when templates cross: for `/a/b`, `/a/{y}` wins over `/{x}/b`.
 
 The leftmost rule decides even when a later segment is more specific. For `/a/5/edit`, `/a/{id:int}/{*rest}` is tried before `/a/{name}/edit`, because their ranks first differ at the second segment, where a constrained parameter outranks an unconstrained one. If that is not what you want, give the edit route the same constraint, as in `/a/{id:int}/edit`, so that the two templates first differ at the literal, which wins; or do not let a catch-all share a prefix with more specific routes.
