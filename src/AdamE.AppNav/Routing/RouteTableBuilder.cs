@@ -1,3 +1,5 @@
+using System.Collections.Frozen;
+
 namespace AdamE.AppNav.Routing;
 
 /// <summary>
@@ -9,6 +11,9 @@ namespace AdamE.AppNav.Routing;
 public sealed class RouteTableBuilder
 {
     private readonly List<RouteDefinition> _definitions = [];
+
+    // The codecs registered so far, each under the type it reads, an enum and its nullable form side by side.
+    private readonly Dictionary<Type, object> _codecs = [];
 
     /// <summary>
     /// Maps a route template to a route type.
@@ -51,13 +56,59 @@ public sealed class RouteTableBuilder
     }
 
     /// <summary>
+    /// Lets the typed reads of every table this builder builds from then on read values as the enum
+    /// <typeparamref name="TEnum"/>.
+    /// </summary>
+    /// <typeparam name="TEnum">The enum type to read values as.</typeparam>
+    /// <returns>This builder, so that calls can be chained.</returns>
+    /// <remarks>
+    /// <para>
+    /// Once registered, <typeparamref name="TEnum"/> and its nullable form can be read by
+    /// <see cref="RouteMatchContext.Path{T}(string)"/>, <see cref="RouteMatchContext.TryGetPath{T}(string, out T)"/>
+    /// and <see cref="RouteMatchContext.TryGetQuery{T}(string, out T)"/>, and <typeparamref name="TEnum"/> itself by
+    /// <see cref="RouteMatchContext.GetQueryValues{T}(string)"/>. A value converts exactly when its text is the name
+    /// of a member, compared ordinally without regard to case, and gives the value of that member. Nothing else
+    /// converts: not a number, such as <c>2</c>, which would tie links to the order the members are declared in; not
+    /// a list of names separated by commas; not a name with white space around it, which is not trimmed; and not the
+    /// empty text. Two names for the same value both convert, to that value. An enum with
+    /// <see cref="FlagsAttribute"/> can be registered, but only the name of a single member converts, never a
+    /// combination. An enum with no members can be registered, and then no text converts. Renaming a member changes
+    /// which links work, so treat the names of a registered enum as part of the links of the app. For another
+    /// spelling, such as <c>in-progress</c>, read the value as a string and map it yourself.
+    /// </para>
+    /// <para>
+    /// Registering applies to the whole table, so the order of this call and of
+    /// <see cref="Map{TRoute}(string, Func{RouteMatchContext, TRoute})"/> does not matter, and registering the same
+    /// enum again does nothing. A table already built does not change; <see cref="Build"/> builds one that includes
+    /// the registration. No template constraint is named after an enum.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentException">
+    /// Two members of <typeparamref name="TEnum"/> have names that differ only by case, such as <c>A</c> and
+    /// <c>a</c>, so a text that names one would name both. The message names the enum and both members. The builder
+    /// is not changed.
+    /// </exception>
+    public RouteTableBuilder AddEnumValueCodec<TEnum>()
+        where TEnum : struct, Enum
+    {
+        if (_codecs.ContainsKey(typeof(TEnum)))
+            return this;
+
+        // Made before either is added, so that an enum that cannot be registered leaves the builder as it was.
+        var codec = new EnumValueCodec<TEnum>();
+        _codecs.Add(typeof(TEnum), codec);
+        _codecs.Add(typeof(TEnum?), new NullableValueCodec<TEnum>(codec));
+        return this;
+    }
+
+    /// <summary>
     /// Builds a route table from the mappings made so far.
     /// </summary>
     /// <returns>
-    /// A new, immutable table. Mappings made on this builder afterwards do not change it, and this method can be
-    /// called again to build another table that includes them. A table with no mappings is valid and matches nothing.
-    /// Its <see cref="RouteTable.Definitions"/> are in the order they were mapped, and the order in which
-    /// <see cref="RouteTable.Match(Uri)"/> tries them, by precedence, is decided here, once.
+    /// A new, immutable table. Mappings and registrations made on this builder afterwards do not change it, and this
+    /// method can be called again to build another table that includes them. A table with no mappings is valid and
+    /// matches nothing. Its <see cref="RouteTable.Definitions"/> are in the order they were mapped, and the order in
+    /// which <see cref="RouteTable.Match(Uri)"/> tries them, by precedence, is decided here, once.
     /// </returns>
     /// <exception cref="InvalidOperationException">
     /// Two mappings have the same template: the same number of segments and, at every position, the same kind of
@@ -78,6 +129,7 @@ public sealed class RouteTableBuilder
     /// </exception>
     public RouteTable Build()
     {
-        return new RouteTable(_definitions.ToArray());
+        // The codecs themselves never change, so tables can share them; only the dictionary is copied.
+        return new RouteTable(_definitions.ToArray(), _codecs.ToFrozenDictionary());
     }
 }

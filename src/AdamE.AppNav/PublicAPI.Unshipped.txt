@@ -30,6 +30,7 @@ AdamE.AppNav.Routing.RouteTable
 AdamE.AppNav.Routing.RouteTable.Definitions.get -> System.Collections.Generic.IReadOnlyList<AdamE.AppNav.Routing.RouteDefinition!>!
 AdamE.AppNav.Routing.RouteTable.Match(System.Uri! uri) -> AdamE.AppNav.Routing.RouteMatchResult!
 AdamE.AppNav.Routing.RouteTableBuilder
+AdamE.AppNav.Routing.RouteTableBuilder.AddEnumValueCodec<TEnum>() -> AdamE.AppNav.Routing.RouteTableBuilder!
 AdamE.AppNav.Routing.RouteTableBuilder.Build() -> AdamE.AppNav.Routing.RouteTable!
 AdamE.AppNav.Routing.RouteTableBuilder.Map<TRoute>(string! template, System.Func<AdamE.AppNav.Routing.RouteMatchContext!, TRoute!>! createRoute) -> AdamE.AppNav.Routing.RouteTableBuilder!
 AdamE.AppNav.Routing.RouteTableBuilder.RouteTableBuilder() -> void

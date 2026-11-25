@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 
@@ -16,7 +17,10 @@ public sealed class RouteTable
     // The definitions in the order they are tried, by precedence, sorted once here so that Match only walks it.
     private readonly RouteDefinition[] _matchOrder;
 
-    internal RouteTable(RouteDefinition[] definitions)
+    // The codecs registered on the builder, each under the type it reads, handed to every context.
+    private readonly FrozenDictionary<Type, object> _codecs;
+
+    internal RouteTable(RouteDefinition[] definitions, FrozenDictionary<Type, object> codecs)
     {
         ThrowIfSameTemplateTwice(definitions);
         ThrowIfAmbiguous(definitions);
@@ -40,6 +44,7 @@ public sealed class RouteTable
 
         // A read-only wrapper, so that a caller cannot cast Definitions back to the array and change the table.
         Definitions = Array.AsReadOnly(definitions);
+        _codecs = codecs;
     }
 
     // Read by tests only, which check the order in which templates are tried.
@@ -166,7 +171,7 @@ public sealed class RouteTable
             AppRoute? route;
             try
             {
-                route = definition.CreateRoute(new RouteMatchContext(uri, values, queryStart));
+                route = definition.CreateRoute(new RouteMatchContext(uri, values, queryStart, _codecs));
             }
             catch (RouteValueException exception)
             {
