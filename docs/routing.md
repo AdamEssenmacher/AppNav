@@ -209,7 +209,7 @@ Apart from the dot segment rule, these checks apply to the text as written, befo
 
 ## The route table
 
-A route is a sealed record that derives from `AppRoute`. A `RouteTableBuilder` maps a template to each route type, with a function that creates the route from the values the template captured and the query of the URI, and `Build` turns the mappings into a `RouteTable`. `Match` matches the path of a URI and returns a `RouteMatchResult`, and [`Format`](#formatting-a-route) writes a route back as a path.
+A route is a sealed record that derives from `AppRoute`. A `RouteTableBuilder` maps a template to each route type, with a function that creates the route from the values the template captured and the query of the URI, and `Build` turns the mappings into a `RouteTable`. `Match` matches the path of a URI and returns a `RouteMatchResult`, and [`Format`](#formatting-a-route) writes a route back as a path and query.
 
 ```csharp
 using AdamE.AppNav;
@@ -534,7 +534,7 @@ The diagnostic codes in this version are `route.not_matched`, for a URI that no 
 
 ### Formatting a route
 
-A mapping can also say how to write its route back as a path. Give `Map` a format function as its third argument: it declares, for each parameter of the template, a function that reads the parameter's value from the route. `Format` then writes a route as the path of its mapping's template.
+A mapping can also say how to write its route back as a link. Give `Map` a format function as its third argument: it declares, for each parameter of the template, a function that reads the parameter's value from the route, and for each query value the route is written with, a function that reads that value. `Format` then writes a route as the path of its mapping's template, followed by its query.
 
 ```csharp
 using AdamE.AppNav;
@@ -552,12 +552,13 @@ Console.WriteLine(table.Match(new Uri(path, UriKind.Relative)).Route); // OrderR
 public sealed record OrderRoute(int Id) : AppRoute;
 ```
 
-`Format` returns the route as the text of a relative URI: its path and, in a later version, its query. This version writes the path only, and a format function cannot declare a query value. So a route whose create function reads values from the query is written without them, and a round trip would lose them: do not give such a mapping a format function yet.
+`Format` returns the route as the text of a relative URI: its path and, when at least one query value is written, its query, as described in [Writing query values](#writing-query-values). It never writes a fragment. Repeated values, several values for one name, and full URIs, with a scheme and a host, are not written yet.
 
 #### Declaring the values
 
 - The format function runs once, while `Map` maps the route, not each time a route is written.
 - It must declare every parameter of the template, required, optional and catch-all alike, with `Path(name, value)`. `Map` throws `ArgumentException` for one that is missing, naming the template and the first parameter in template order that is not declared, and for a name that is not a parameter of the template or is declared twice. Names are compared without regard to case, as the typed reads compare them.
+- It declares each query value with `Query(name, value)`, before or after the path values, as [Writing query values](#writing-query-values) describes. A mapping may declare none.
 - A template with no parameters is made writable with a format function that declares nothing, as in `.Map("/settings", _ => new SettingsRoute(), _ => { })`. A mapping made without a format function cannot write its route.
 - The type of a value is one the [typed reads](#typed-values) support: `string`, `bool`, `Guid`, `decimal`, `double`, `float`, the eight integer types, a registered enum, or the nullable form of any of them but `string`. `Path` throws `InvalidOperationException` for any other type, such as `DateTime`; convert such a value to a string and declare that instead. An enum must be registered with `AddEnumValueCodec`, before or after the `Map` call, so `Build`, not `Path`, throws `InvalidOperationException` for one that is not.
 - The type argument of `Map` must be a type that can be instantiated. A route is written by the mapping of its exact type, so `Map` throws `ArgumentException` for an abstract route type given a format function, which happens when the type is inferred from a create function whose result is a base type. Give the type argument explicitly, as in `Map<OrderRoute>(...)`, or map each concrete type.
@@ -608,30 +609,62 @@ Console.WriteLine(table.Format(new ListRoute(3)));    // /list/3
 public sealed record ListRoute(int? Page) : AppRoute;
 ```
 
-There is no way to write an empty value. An empty string is not left out: a path segment cannot be empty, so it is rejected, as `RouteTemplate.Format` rejects it.
+There is no way to write an empty path value. An empty string is not left out: a path segment cannot be empty, so it is rejected, as `RouteTemplate.Format` rejects it.
+
+#### Writing query values
+
+`Query(name, value)` declares a query value: a function that reads one value from the route, which `Format` writes after the path as `name=value`.
+
+```csharp
+RouteTable table = new RouteTableBuilder()
+    .Map("/products",
+        c => new ProductsRoute(
+            c.TryGetQuery("page", out int page) ? page : null,
+            c.TryGetQuery("sort", out string? sort) ? sort : null),
+        format => format
+            .Query("page", r => r.Page)
+            .Query("sort", r => r.Sort))
+    .Build();
+
+Console.WriteLine(table.Format(new ProductsRoute(2, "name")));    // /products?page=2&sort=name
+Console.WriteLine(table.Format(new ProductsRoute(null, "name"))); // /products?sort=name
+Console.WriteLine(table.Format(new ProductsRoute(null, null)));   // /products
+Console.WriteLine(table.Format(new ProductsRoute(null, "")));     // /products?sort=
+
+public sealed record ProductsRoute(int? Page, string? Sort) : AppRoute;
+```
+
+- The values are written in the order they were declared, as `name=value` pairs joined by `&`, after a `?`. There is no `?` when no value is written.
+- The type of a value is one that `Path` accepts, and the value is written as the same canonical text, as [How values are written](#how-values-are-written) describes. `Query` throws `InvalidOperationException` for any other type, collections such as `string[]` and `List<int>` included, since it writes one value for the name. As for `Path`, `Build` reports an enum that is not registered.
+- `null`, a null reference or a nullable value type without a value, leaves the value out. An empty string is a value: it is written as `name=`, which reads back as the empty string. There is no way to write a name without `=`.
+- A name is any text, the empty string included, as on the read side. `Query` throws `ArgumentException` for a name declared twice, compared as the reads compare names, ordinally without regard to case, because the reads take the first value of a name, so the second would never be read. It throws one too for a name that contains a lone surrogate. A query value may have the name of a path parameter: in `/items/{id}?id=x`, the two are read separately.
+- Names and values are percent-encoded with `Uri.EscapeDataString`, which leaves only ASCII letters, digits, `-`, `.`, `_` and `~` as they are. A space is written as `%20`, never `+`, because the query reader takes `+` for a space, as form encoding does, so a literal `+` is written as `%2B`. `&`, `=`, `#`, `?` and `%` are encoded too, so that they are read back as data rather than splitting or ending the query: `a b+c&d` is written as `a%20b%2Bc%26d`, and the reader gives back exactly the text written.
 
 #### When a route cannot be written
 
-`Format` throws `ArgumentNullException` for a `null` route. It throws `ArgumentException`, whose `ParamName` is `route`, when a value cannot be written. The checks are those of [`RouteTemplate.Format`](#formatting-a-path), applied to the text of each value, and one more for a value that has no text:
+`Format` throws `ArgumentNullException` for a `null` route. It throws `ArgumentException`, whose `ParamName` is `route`, when a value cannot be written. The checks are those of [`RouteTemplate.Format`](#formatting-a-path), applied to the text of each path value, one more for a path or query value that has no text, and one for a query value that cannot be encoded:
 
 - a required parameter's value is `null`;
 - a value is empty, contains a lone surrogate, or is `.` or `..`;
 - a value does not satisfy the parameter's [constraint](#constraints), which happens when the value's type is wider than the constraint, as for `{id:int}` written from a `long` above 2147483647, or when a string does not fit it, as for `{n:alpha}` written from `ab1`;
 - a catch-all value starts or ends with `/`, contains `//`, or has `.` or `..` as a part;
-- an optional parameter has a value although an earlier optional parameter is left out, as for `/a/{b?}/{c?}` with a value for `c` and none for `b`; or
-- a value has no text: a `double` or `float` that is NaN or infinite, or an enum value that no member has.
+- an optional parameter has a value although an earlier optional parameter is left out, as for `/a/{b?}/{c?}` with a value for `c` and none for `b`;
+- a value has no text: a `double` or `float` that is NaN or infinite, or an enum value that no member has; or
+- a query value contains a lone surrogate, which `Uri.EscapeDataString` would write as the encoding of U+FFFD, so that it would read back changed.
 
-It also throws `ArgumentException`, after all of these checks, when every value can be written but a template that ranks higher matches the path first, as [What a round trip promises](#what-a-round-trip-promises) describes.
+`Format` also throws `ArgumentException`, after all of these checks and once every value function has been called, when every value can be written but a template that ranks higher matches the path first, as [What a round trip promises](#what-a-round-trip-promises) describes.
 
-The message names the route type, the template and the parameter, and says what is wrong in fixed words, as in `The route type 'ProductRoute' cannot be written as a path by the template '/products/{name}': path parameter 'name' is required, but its value is null.` It never quotes the value, because a route can carry a secret, such as a sign-in token, and messages tend to be logged, and the exception has no inner exception that could. When more than one value cannot be written, which one is reported is not specified. An exception thrown by a value function propagates unchanged.
+The message names the route type, the template and the parameter, and says what is wrong in fixed words, as in `The route type 'ProductRoute' cannot be written by the template '/products/{name}': path parameter 'name' is required, but its value is null.` For a query value, it names the query value where a path failure names the path parameter, as in `The route type 'ProductsRoute' cannot be written by the template '/products': query value 'sort' has a value that is not valid UTF-16: it contains a lone surrogate, which cannot be percent-encoded and read back unchanged.` It never quotes the value, because a route can carry a secret, such as a sign-in token, and messages tend to be logged, and the exception has no inner exception that could. When more than one value cannot be written, which one is reported is not specified, beyond the check of the path against other templates coming last. An exception thrown by a value function propagates unchanged.
 
-Each value function is called at most once each time a route is formatted, in template order. After a value that cannot be written as text, or an exception from a value function, the later functions are not called.
+Each value function is called at most once each time a route is formatted: the path functions in template order, then the query functions in the order they were declared. After a value that cannot be written, or an exception from a value function, the later functions are not called, so no query function is called for a route whose path cannot be written.
 
 `Format` never changes the table.
 
 #### What a round trip promises
 
-When `Format` returns a path, `Match` of that path selects the mapping that wrote it, and the typed read of the type a value function returns reads each text back to a value equal to the one written. So the route that matches is equal to the one written, provided the create function reads each parameter with that typed read and builds the route from the values as the format function reads them, which the table cannot check. In the other direction, text that a typed read accepts is written back as its canonical text, and writing the route again changes nothing: `/orders/+007` matches as `OrderRoute { Id = 7 }`, which is written as `/orders/7`. The mapping that writes a route is the one of its exact type, so a mapping whose create function returns routes of several types derived from its route type creates routes that it does not write.
+When `Format` returns, `Match` of the text it returns selects the mapping that wrote it, and the typed read of the type a value function returns reads each text back to a value equal to the one written. So the route that matches is equal to the one written, provided the create function reads each parameter with that typed read and builds the route from the values as the format function reads them, which the table cannot check. In the other direction, text that a typed read accepts is written back as its canonical text, and writing the route again changes nothing: `/orders/+007` matches as `OrderRoute { Id = 7 }`, which is written as `/orders/7`. The mapping that writes a route is the one of its exact type, so a mapping whose create function returns routes of several types derived from its route type creates routes that it does not write.
+
+The same holds for a query value read with the typed read of its type, `TryGetQuery<T>`, which reads the first value of a name. `Format` writes one value for each name, so that first value is the one written; a link with the name repeated reads its first value, and is written back with that value alone. A query value never affects which template matches: `Match` chooses by the path alone, and so does the check below.
 
 [Precedence](#which-route-wins) decides which template wins, and `Build` rejects only templates that rank equally, so a template that ranks higher can match a path that another template writes. `Format` does not return such a path. After writing it, `Format` finds the template that `Match` would select for it, by the templates and their constraints alone, without calling a create function, and throws `ArgumentException`, whose `ParamName` is `route`, when that is not the template of the mapping that wrote it:
 
@@ -652,11 +685,11 @@ public sealed record NewProductRoute : AppRoute;
 public sealed record ProductRoute(string Name) : AppRoute;
 ```
 
-The template `/products/new` matches the path `/products/new` first, so a link written from it would not lead to the product: it would open `NewProductRoute`, or fail, were that mapping's create function to reject the value. The message names the route type and both templates: `The route type 'ProductRoute' cannot be written as a path by the template '/products/{name}': the path it writes is matched first by the template '/products/new', which ranks higher, so a link to it would be matched by that template instead. Change the templates so that they cannot match the same path, for example by constraining a parameter or by giving one of them a literal of its own.` Like every other `Format` failure, it never quotes the route's values or the path, and it has no inner exception. Literals are compared case-sensitively, so `NEW` is written. The same happens for a constraint the value satisfies, as for the name `42` beside `/products/{id:int}`, for an optional parameter left out, as for `/list/{page:int?}` with no page beside `/list`, and for a catch-all value that a longer template matches, as for `doc/edit` in `/files/{*path}` beside `/files/{name}/edit`. The template that matches first counts whether or not its mapping has a format function, and even when its mapping creates the same route type, because the table cannot know that the two create functions agree: with `/items/{id:int}`, mapped without a format function, beside `/items/{slug}`, which writes the same route type, the slug `42` cannot be written. This check comes after every other, and calls no value function.
+The template `/products/new` matches the path `/products/new` first, so a link written from it would not lead to the product: it would open `NewProductRoute`, or fail, were that mapping's create function to reject the value. The message names the route type and both templates: `The route type 'ProductRoute' cannot be written by the template '/products/{name}': the path it writes is matched first by the template '/products/new', which ranks higher, so a link to it would be matched by that template instead. Change the templates so that they cannot match the same path, for example by constraining a parameter or by giving one of them a literal of its own.` Like every other `Format` failure, it never quotes the route's values or the path, and it has no inner exception. Literals are compared case-sensitively, so `NEW` is written. The same happens for a constraint the value satisfies, as for the name `42` beside `/products/{id:int}`, for an optional parameter left out, as for `/list/{page:int?}` with no page beside `/list`, and for a catch-all value that a longer template matches, as for `doc/edit` in `/files/{*path}` beside `/files/{name}/edit`. The template that matches first counts whether or not its mapping has a format function, and even when its mapping creates the same route type, because the table cannot know that the two create functions agree: with `/items/{id:int}`, mapped without a format function, beside `/items/{slug}`, which writes the same route type, the slug `42` cannot be written. This check reads the written path alone, comes after every other, once every value function has been called, and calls none.
 
 To fix the table, change the templates so that they cannot match the same path, for example by constraining a parameter or by giving one of them a literal of its own. With `/products/{id:int}` in place of `/products/{name}`, no value it writes is `new`. With `/products/by-name/{name}` in place of it, the two templates never match the same path, and `new` is written as `/products/by-name/new`.
 
-The promise is about `Match` of the returned text as a relative URI, `new Uri(path, UriKind.Relative)`, and of an absolute URI with that path except where `System.Uri` itself changes the path of an absolute URI. It does so in one case: it drops trailing `%20` sequences, as [What is read from a URI](#what-is-read-from-a-uri) describes. So a value that ends with a space, written last in the path, may be read back without it from an absolute link, and may then match another template:
+The promise is about `Match` of the returned text as a relative URI, `new Uri(text, UriKind.Relative)`, and of an absolute URI with that path and query. `System.Uri` changes the text of an absolute URI in one way: it drops `%20` sequences at the very end of an absolute URI that contains a non-ASCII character anywhere, including in the host the application puts in front of the text, as [What is read from a URI](#what-is-read-from-a-uri) describes. `Format` writes a non-ASCII character in a literal, a path value, a query name or a query value as percent-encoded bytes from `%80` to `%FF`, which count too. So the last value written, the last query value or the last path value when no query is written, loses its trailing spaces in such a link, and a path value that is only spaces then no longer matches. An absolute URI that is all ASCII, and any relative URI, keep them. Only the very end counts: a path value followed by a query keeps its spaces, and so does a query value followed by another. A path value that loses its space may also match another template:
 
 ```csharp
 RouteTable table = new RouteTableBuilder()
@@ -671,7 +704,23 @@ Console.WriteLine(table.Match(new Uri(path, UriKind.Relative)).Route); // Produc
 Console.WriteLine(table.Match(new Uri("https://app" + path)).Route);   // NewProductRoute { }
 ```
 
-Without `/é/new` in the table, the absolute link matches `/é/{name}`, but reads the name back as `new`, without the space.
+Without `/é/new` in the table, the absolute link matches `/é/{name}`, but reads the name back as `new`, without the space. With a query value written after it, the name keeps its space, and the query value written last loses its own:
+
+```csharp
+RouteTable table = new RouteTableBuilder()
+    .Map("/é/{name}",
+        c => new SearchRoute(c.Path("name"), c.TryGetQuery("q", out string? q) ? q : null),
+        format => format.Path("name", r => r.Name).Query("q", r => r.Q))
+    .Build();
+
+string text = table.Format(new SearchRoute("new ", "a "));             // /%C3%A9/new%20?q=a%20
+Console.WriteLine(table.Match(new Uri(text, UriKind.Relative)).Route); // SearchRoute { Name = new , Q = a  }
+Console.WriteLine(table.Match(new Uri("https://app" + text)).Route);   // SearchRoute { Name = new , Q = a }
+
+public sealed record SearchRoute(string Name, string? Q) : AppRoute;
+```
+
+The host counts as well: `https://app/a/new%20?q=a%20` keeps every `%20`, while `https://é.example/a/new%20?q=a%20` reads `q` as `a`, although nothing `Format` wrote is non-ASCII.
 
 ### Threads
 

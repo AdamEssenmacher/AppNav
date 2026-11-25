@@ -33,7 +33,8 @@ public sealed class RouteDefinition
 
     internal Func<RouteMatchContext, AppRoute> CreateRoute { get; }
 
-    // How a route of this type is written as a path of the template, from the format function the mapping was given,
-    // or null for a mapping without one. A table binds it to its own codecs; this one is never used to write.
+    // How a route of this type is written as a path of the template and a query, from the format function the mapping
+    // was given, or null for a mapping without one. A table binds it to its own codecs; this one is never used to
+    // write.
     internal RouteFormatter? Formatter { get; }
 }

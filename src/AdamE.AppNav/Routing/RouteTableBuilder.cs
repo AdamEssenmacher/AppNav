@@ -57,7 +57,7 @@ public sealed class RouteTableBuilder
 
     /// <summary>
     /// Maps a route template to a route type, and declares how a route of that type is written back as a path of the
-    /// template, which <see cref="RouteTable.Format(AppRoute)"/> does.
+    /// template and a query, which <see cref="RouteTable.Format(AppRoute)"/> does.
     /// </summary>
     /// <typeparam name="TRoute">The type of route that a path matching the template produces.</typeparam>
     /// <param name="template">
@@ -69,12 +69,11 @@ public sealed class RouteTableBuilder
     /// </param>
     /// <param name="format">
     /// Declares, on the <see cref="RouteFormatBuilder{TRoute}"/> it receives, a function that reads the value of each
-    /// parameter of the template from a route, as in <c>format =&gt; format.Path("id", r =&gt; r.Id)</c>. It is
-    /// called once, here, and must declare every parameter of the template: required, optional and catch-all. For a
-    /// template with no parameters, pass an action that declares nothing, such as <c>_ =&gt; { }</c>. An exception it
-    /// throws propagates unchanged. In this version only path values are written, so a route whose create function
-    /// reads values from the query would be written without them, and a round trip would lose them: do not give such
-    /// a mapping a format function yet.
+    /// parameter of the template from a route, as in <c>format =&gt; format.Path("id", r =&gt; r.Id)</c>, and one for
+    /// each query value the route is written with, as in <c>.Query("page", r =&gt; r.Page)</c>. It is called once,
+    /// here, and must declare every parameter of the template: required, optional and catch-all. Query values are
+    /// optional, one value for each name. For a template with no parameters and a route with no query values, pass an
+    /// action that declares nothing, such as <c>_ =&gt; { }</c>. An exception it throws propagates unchanged.
     /// </param>
     /// <returns>This builder, so that calls can be chained.</returns>
     /// <remarks>
@@ -111,7 +110,9 @@ public sealed class RouteTableBuilder
     /// <see cref="ArgumentException.ParamName"/> is <c>format</c>.
     /// <para>-or-</para>
     /// <paramref name="format"/> declared a name that is not a parameter of the template, or declared a parameter
-    /// twice, as <see cref="RouteFormatBuilder{TRoute}.Path{TValue}(string, Func{TRoute, TValue})"/> describes; the
+    /// twice, as <see cref="RouteFormatBuilder{TRoute}.Path{TValue}(string, Func{TRoute, TValue})"/> describes, or
+    /// declared a query value name twice or one with a lone surrogate, as
+    /// <see cref="RouteFormatBuilder{TRoute}.Query{TValue}(string, Func{TRoute, TValue})"/> describes; the
     /// exception's <see cref="ArgumentException.ParamName"/> is <c>name</c>.
     /// <para>-or-</para>
     /// <typeparamref name="TRoute"/> is abstract, which happens when it is inferred from a create function whose
@@ -119,7 +120,8 @@ public sealed class RouteTableBuilder
     /// </exception>
     /// <exception cref="InvalidOperationException">
     /// <paramref name="format"/> declared a value of a type that cannot be written, as
-    /// <see cref="RouteFormatBuilder{TRoute}.Path{TValue}(string, Func{TRoute, TValue})"/> describes.
+    /// <see cref="RouteFormatBuilder{TRoute}.Path{TValue}(string, Func{TRoute, TValue})"/> and
+    /// <see cref="RouteFormatBuilder{TRoute}.Query{TValue}(string, Func{TRoute, TValue})"/> describe.
     /// </exception>
     public RouteTableBuilder Map<TRoute>(
         string template,

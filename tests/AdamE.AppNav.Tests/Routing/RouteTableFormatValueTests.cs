@@ -5,9 +5,10 @@ using Xunit;
 
 namespace AdamE.AppNav.Tests.Routing;
 
-// The canonical text of each type a format function can write, and the round trips between Format and Match: a route
-// written and matched again is equal to the one written, and text matched and written again is the canonical text,
-// which writing once more does not change.
+// The canonical text of each type a format function can write, as a path value and as a query value, and the round
+// trips between Format and Match: a route written and matched again is equal to the one written, and text matched and
+// written again is the canonical text, which writing once more does not change. A query value is checked through
+// relative and absolute URIs alike.
 public sealed class RouteTableFormatValueTests
 {
     private const string NoText = "has a value that cannot be written:";
@@ -194,6 +195,7 @@ public sealed class RouteTableFormatValueTests
             samples.Add(BitConverter.Int64BitsToDouble(random.NextInt64(long.MinValue, long.MaxValue)));
 
         RouteTable table = Table<double>();
+        RouteTable query = QueryTable<double>();
         foreach (double value in samples)
         {
             if (!double.IsFinite(value))
@@ -203,6 +205,10 @@ public sealed class RouteTableFormatValueTests
             Assert.DoesNotContain('E', path);
             ValueRoute<double> read = Assert.IsType<ValueRoute<double>>(Match(table, path).Route);
             Assert.Equal(value, read.Value);
+
+            string text = query.Format(new QueryRoute<double>(value));
+            Assert.Equal("/q?v=" + path["/v/".Length..], text);
+            Assert.Equal(new QueryRoute<double>(value), query.Match(new Uri("https://h" + text)).Route);
         }
     }
 
@@ -229,12 +235,16 @@ public sealed class RouteTableFormatValueTests
             samples.Add(BitConverter.Int32BitsToSingle(random.Next(int.MinValue, int.MaxValue)));
 
         RouteTable table = Table<float>();
+        RouteTable query = QueryTable<float>();
         foreach (float value in samples)
         {
             if (!float.IsFinite(value))
                 continue;
 
             string path = table.Format(new ValueRoute<float>(value));
+            string text = query.Format(new QueryRoute<float>(value));
+            Assert.Equal("/q?v=" + path["/v/".Length..], text);
+            Assert.Equal(new QueryRoute<float>(value), query.Match(new Uri("myapp://" + text)).Route);
             Assert.DoesNotContain('E', path);
             Assert.Equal(value, Assert.IsType<ValueRoute<float>>(Match(table, path).Route).Value);
 
@@ -302,6 +312,54 @@ public sealed class RouteTableFormatValueTests
         }
 
         AssertRoundTrip("\U0001D49C");
+    }
+
+    // Query names and values of any text read back exactly, through the reader's rules: '+' is a space there, so a
+    // space is written %20 and '+' is written %2B, and '&', '=', '#', '?' and '%' are encoded so that they are data.
+    // A name is any text, the empty name included, and a value can be empty or a dot segment, which a path value
+    // cannot.
+    [Fact]
+    public void QueryNamesAndValuesOfAnyTextReadBackExactly()
+    {
+        var random = new Random(29);
+        const string Alphabet =
+            "aZ09 +%/?#&=.-_~;,:@!$'()*[]\\\"<>^`{|}\u00E9\u65E5\t\n\r\u0001\u007F\u00A0\u200B";
+        string[] whole = ["", ".", "..", " ", "+", "&", "=", "#", "?", "%", "%20", "%2B", "a+b", "a b", "\U0001F600"];
+        for (var i = 0; i < 3000; i++)
+        {
+            string name = i < whole.Length ? whole[i] : RandomText(random, Alphabet, random.Next(0, 8));
+            string value = i < whole.Length ? whole[^(i + 1)] : RandomText(random, Alphabet, random.Next(0, 12));
+            if (random.Next(10) == 0)
+                value += "\U0001F600";
+
+            RouteTable table = new RouteTableBuilder()
+                .Map("/p", c => new QueryRoute<string?>(c.TryGetQuery(name, out string? v) ? v : null),
+                    f => f.Query(name, r => r.Value))
+                .Build();
+            var route = new QueryRoute<string?>(value);
+            string text = table.Format(route);
+
+            Assert.StartsWith("/p?", text, StringComparison.Ordinal);
+            Assert.DoesNotContain('+', text);
+            Assert.DoesNotContain(' ', text);
+            Assert.Equal(1, text.Count(c => c == '?'));
+            Assert.Equal(1, text.Count(c => c == '='));
+            Assert.DoesNotContain('#', text);
+            Assert.DoesNotContain('&', text);
+            Assert.True(text.All(char.IsAscii), text);
+
+            IReadOnlyDictionary<string, IReadOnlyList<string>> parsed = QueryString.Parse(text.AsSpan(2));
+            Assert.Equal(name, Assert.Single(parsed).Key);
+            Assert.Equal(value, Assert.Single(Assert.Single(parsed).Value));
+
+            bool dropsTrailingSpaces = value.EndsWith(' ') && HasEncodedNonAscii(text);
+            foreach (string prefix in Prefixes)
+            {
+                var uri = prefix.Length == 0 ? new Uri(text, UriKind.Relative) : new Uri(prefix + text);
+                string expected = prefix.Length > 0 && dropsTrailingSpaces ? value.TrimEnd(' ') : value;
+                Assert.Equal(new QueryRoute<string?>(expected), table.Match(uri).Route);
+            }
+        }
     }
 
     [Fact]
@@ -431,8 +489,16 @@ public sealed class RouteTableFormatValueTests
         }
     }
 
+    // The written text is matched as a relative URI, and after a scheme with a host, with an empty host, and with an
+    // empty host and an extra slash, which makes a path that starts with an empty segment.
+    private static readonly string[] Prefixes = ["", "https://h", "myapp://", "myapp:///"];
+
     private static void AssertNullIsLeftOut<T>()
     {
+        RouteTable query = QueryTable<T>();
+        Assert.Equal("/q", query.Format(new QueryRoute<T>(default!)));
+        Assert.Equal(new QueryRoute<T>(default!), Match(query, "/q").Route);
+
         RouteTable table = new RouteTableBuilder()
             .AddEnumValueCodec<Status>()
             .Map("/o/{v?}", c => new ValueRoute<T>(c.TryGetPath("v", out T? value) ? value! : default!),
@@ -468,14 +534,18 @@ public sealed class RouteTableFormatValueTests
             RouteMatchResult second = Match(table, canonical);
             Assert.Equal(first.Route, second.Route);
             Assert.Equal(canonical, table.Format(second.Route!));
+            AssertQueryCanonical<T>(text, canonical["/v/".Length..]);
         }
 
         return accepted;
     }
 
+    // The text is the same in a query as in a path segment: both are the canonical text encoded with
+    // Uri.EscapeDataString.
     private static void AssertWrites<T>(T value, string text)
     {
         Assert.Equal(text, Write(value));
+        Assert.Equal("/q?v=" + text, QueryTable<T>().Format(new QueryRoute<T>(value)));
         AssertRoundTrip(value);
     }
 
@@ -497,10 +567,59 @@ public sealed class RouteTableFormatValueTests
         Assert.True(result.IsSuccess, path);
         Assert.Equal(route, result.Route);
         Assert.Equal(path, table.Format(result.Route!));
+        AssertQueryRoundTrip(value);
+    }
+
+    // The value is written last in the query, so an absolute URI drops a trailing %20 from it when the URI also
+    // contains a non-ASCII character, which the text then has as a percent-encoded byte from %80 to %FF. That is the
+    // one change System.Uri makes, and it is asserted exactly; the relative text always reads back unchanged.
+    private static void AssertQueryRoundTrip<T>(T value)
+    {
+        RouteTable table = QueryTable<T>();
+        var route = new QueryRoute<T>(value);
+        string text = table.Format(route);
+        bool dropsTrailingSpaces = value is string s && s.EndsWith(' ') && HasEncodedNonAscii(text);
+
+        foreach (string prefix in Prefixes)
+        {
+            RouteMatchResult result = MatchText(table, prefix + text);
+            Assert.True(result.IsSuccess, prefix + text);
+            QueryRoute<T> read = Assert.IsType<QueryRoute<T>>(result.Route);
+            if (prefix.Length > 0 && dropsTrailingSpaces)
+                Assert.Equal(((string)(object)value!).TrimEnd(' '), (string?)(object?)read.Value);
+            else
+                Assert.Equal(route, read);
+        }
+
+        Assert.Equal(text, table.Format(MatchText(table, text).Route!));
+    }
+
+    private static void AssertQueryCanonical<T>(string text, string canonical)
+    {
+        RouteTable table = QueryTable<T>();
+
+        RouteMatchResult first = Match(table, "/q?v=" + Uri.EscapeDataString(text));
+        Assert.True(first.IsSuccess, text);
+        string written = table.Format(first.Route!);
+        Assert.Equal("/q?v=" + canonical, written);
+        Assert.Equal(first.Route, Match(table, written).Route);
+    }
+
+    private static bool HasEncodedNonAscii(string text)
+    {
+        for (var i = 0; i + 2 < text.Length; i++)
+        {
+            if (text[i] == '%' && text[i + 1] is >= '8' and <= '9' or >= 'A' and <= 'F')
+                return true;
+        }
+
+        return false;
     }
 
     private static void AssertCanonical<T>(string text, string canonical)
     {
+        AssertQueryCanonical<T>(text, canonical);
+
         RouteTable table = Table<T>();
 
         RouteMatchResult first = Match(table, "/v/" + Uri.EscapeDataString(text));
@@ -513,12 +632,22 @@ public sealed class RouteTableFormatValueTests
         Assert.Equal(path, table.Format(second.Route!));
     }
 
-    private static void AssertNoText(RouteTable table, AppRoute route)
+    private static void AssertNoText<T>(RouteTable table, ValueRoute<T> route)
     {
         ArgumentException exception = Assert.Throws<ArgumentException>(() => table.Format(route));
 
         Assert.Equal("route", exception.ParamName);
         Assert.Contains(NoText, exception.Message, StringComparison.Ordinal);
+        Assert.Contains("path parameter 'v'", exception.Message, StringComparison.Ordinal);
+
+        // The same value has no text in a query either, and the message says which query value it is.
+        exception = Assert.Throws<ArgumentException>(() => QueryTable<T>().Format(new QueryRoute<T>(route.Value)));
+        Assert.Equal("route", exception.ParamName);
+        Assert.Contains(NoText, exception.Message, StringComparison.Ordinal);
+        Assert.Contains("query value 'v'", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("path parameter", exception.Message, StringComparison.Ordinal);
+        Assert.Null(exception.InnerException);
+        Assert.Empty(exception.Data);
     }
 
     // The digits of a number's text without its sign, point, exponent, or leading and trailing zeros, which moving
@@ -529,6 +658,15 @@ public sealed class RouteTableFormatValueTests
         string mantissa = exponent < 0 ? text : text[..exponent];
         return mantissa.Replace("-", "", StringComparison.Ordinal).Replace(".", "", StringComparison.Ordinal)
             .Trim('0');
+    }
+
+    private static string RandomText(Random random, string alphabet, int length)
+    {
+        var chars = new char[length];
+        for (var i = 0; i < length; i++)
+            chars[i] = alphabet[random.Next(alphabet.Length)];
+
+        return new string(chars);
     }
 
     private static string PowerOfTen(int exponent)
@@ -550,12 +688,36 @@ public sealed class RouteTableFormatValueTests
             .Build();
     }
 
+    // Writes the value as the one query value of /q, and reads it with the typed read of the same type.
+    private static RouteTable QueryTable<T>()
+    {
+        return new RouteTableBuilder()
+            .AddEnumValueCodec<Status>()
+            .AddEnumValueCodec<Aliased>()
+            .AddEnumValueCodec<CaseSorted>()
+            .AddEnumValueCodec<AlphaFirst>()
+            .AddEnumValueCodec<AlphaMiddle>()
+            .AddEnumValueCodec<Access>()
+            .AddEnumValueCodec<Holder.Nested>()
+            .Map("/q", c => new QueryRoute<T>(c.TryGetQuery("v", out T? value) ? value! : default!),
+                f => f.Query("v", r => r.Value))
+            .Build();
+    }
+
     private static RouteMatchResult Match(RouteTable table, string path)
     {
         return table.Match(new Uri(path, UriKind.Relative));
     }
 
+    // A relative URI for text with no scheme, and an absolute one otherwise.
+    private static RouteMatchResult MatchText(RouteTable table, string text)
+    {
+        return table.Match(text.StartsWith('/') ? new Uri(text, UriKind.Relative) : new Uri(text));
+    }
+
     private sealed record ValueRoute<T>(T Value) : AppRoute;
+
+    private sealed record QueryRoute<T>(T Value) : AppRoute;
 
     private sealed record RequiredRoute<T>(T Value) : AppRoute;
 

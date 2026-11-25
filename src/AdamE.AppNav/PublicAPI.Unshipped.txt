@@ -12,6 +12,7 @@ AdamE.AppNav.Routing.RouteDiagnostic.Message.get -> string!
 AdamE.AppNav.Routing.RouteDiagnosticCodes
 AdamE.AppNav.Routing.RouteFormatBuilder<TRoute>
 AdamE.AppNav.Routing.RouteFormatBuilder<TRoute>.Path<TValue>(string! name, System.Func<TRoute!, TValue>! value) -> AdamE.AppNav.Routing.RouteFormatBuilder<TRoute!>!
+AdamE.AppNav.Routing.RouteFormatBuilder<TRoute>.Query<TValue>(string! name, System.Func<TRoute!, TValue>! value) -> AdamE.AppNav.Routing.RouteFormatBuilder<TRoute!>!
 AdamE.AppNav.Routing.RouteMatchContext
 AdamE.AppNav.Routing.RouteMatchContext.GetQueryValues(string! name) -> System.Collections.Generic.IReadOnlyList<string!>!
 AdamE.AppNav.Routing.RouteMatchContext.GetQueryValues<T>(string! name) -> System.Collections.Generic.IReadOnlyList<T>!

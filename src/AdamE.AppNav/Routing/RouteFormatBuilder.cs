@@ -1,8 +1,9 @@
 namespace AdamE.AppNav.Routing;
 
 /// <summary>
-/// Declares how a route of type <typeparamref name="TRoute"/> is written back as the path of the template it is
-/// mapped to: for each parameter of the template, a function that reads the parameter's value from the route.
+/// Declares how a route of type <typeparamref name="TRoute"/> is written back as a relative URI of the template it is
+/// mapped to: for each parameter of the template, a function that reads the parameter's value from the route, and for
+/// each query value, a function that reads it from the route.
 /// </summary>
 /// <typeparam name="TRoute">
 /// The type of route that the mapping produces, and that this builder declares how to write.
@@ -16,10 +17,16 @@ namespace AdamE.AppNav.Routing;
 /// <para>
 /// Every parameter of the template, required, optional and catch-all alike, must be declared once with
 /// <see cref="Path{TValue}(string, Func{TRoute, TValue})"/>. A template with no parameters is made formattable by an
-/// action that declares nothing. <see cref="RouteTable.Format(AppRoute)"/> then calls each declared function at most
-/// once, in template order, writes each value as text and builds the path with
-/// <see cref="RouteTemplate.Format(IReadOnlyDictionary{string, string})"/>. After a value that cannot be written as
-/// text, or an exception from a value function, the later functions are not called.
+/// action that declares nothing. Query values are declared with
+/// <see cref="Query{TValue}(string, Func{TRoute, TValue})"/>, any number of them, none included, before or after the
+/// path values.
+/// </para>
+/// <para>
+/// <see cref="RouteTable.Format(AppRoute)"/> calls each declared function at most once: the path functions in template
+/// order, then the query functions in the order they were declared. It writes each value as text, builds the path with
+/// <see cref="RouteTemplate.Format(IReadOnlyDictionary{string, string})"/>, and then writes each query value that is
+/// not <see langword="null"/> as <c>name=value</c>, joined by <c>&amp;</c> after a <c>?</c>. After a value that cannot
+/// be written, or an exception from a value function, the later functions are not called.
 /// </para>
 /// </remarks>
 public sealed class RouteFormatBuilder<TRoute>
@@ -31,8 +38,20 @@ public sealed class RouteFormatBuilder<TRoute>
     private const string UnsupportedTail =
         RouteValueTypes.NullableForms + "; convert the value to a string and write that instead.";
 
+    private const string UnsupportedQuery = "A query value cannot be written";
+
+    // Converting a collection to a string, as the other tail advises, would write one value that the typed read of the
+    // item type rejects, so a collection is told what is not supported instead.
+    private const string UnsupportedCollectionTail =
+        RouteValueTypes.NullableForms + ". A collection is not one of them: a value declared with Query is written " +
+        "as one value for its name, and several values for one name are not supported in this version.";
+
     private readonly RouteTemplate _template;
-    private readonly List<PathValueWriter<TRoute>> _writers = [];
+    private readonly List<ValueWriter<TRoute>> _writers = [];
+    private readonly List<ValueWriter<TRoute>> _queryWriters = [];
+
+    // The percent-encoded name of the query writer at the same index, as it is written into every query.
+    private readonly List<string> _queryNames = [];
     private bool _completed;
 
     internal RouteFormatBuilder(RouteTemplate template)
@@ -65,12 +84,12 @@ public sealed class RouteFormatBuilder<TRoute>
     /// The name of a parameter of the template, compared without regard to case, as the typed reads compare it.
     /// </param>
     /// <param name="value">
-    /// Reads the value from the route. It is called at most once each time a route is formatted, in template order;
-    /// after a value that cannot be written as text, or an exception from a value function, the later functions are
-    /// not called. A <see langword="null"/>
-    /// value, a null reference or a nullable value type without a value, leaves an optional or catch-all parameter
-    /// out, and makes <see cref="RouteTable.Format(AppRoute)"/> throw for a required one. An empty string is not left
-    /// out; the template rejects it.
+    /// Reads the value from the route. It is called at most once each time a route is formatted, in template order,
+    /// before every query value function; after a value that cannot be written as text, or an exception from a value
+    /// function, the later functions are not called. A <see langword="null"/> value, a null reference or a nullable
+    /// value type without a value, leaves an optional or catch-all parameter out, and makes
+    /// <see cref="RouteTable.Format(AppRoute)"/> throw for a required one. An empty string is not left out; the
+    /// template rejects it.
     /// </param>
     /// <returns>This builder, so that calls can be chained.</returns>
     /// <exception cref="ArgumentNullException">
@@ -91,13 +110,7 @@ public sealed class RouteFormatBuilder<TRoute>
     {
         ArgumentNullException.ThrowIfNull(name);
         ArgumentNullException.ThrowIfNull(value);
-
-        // A builder kept past the call to Map would declare nothing for the mapping, so its use then is a mistake.
-        if (_completed)
-        {
-            throw new InvalidOperationException(
-                "A route format builder can be used only during the call to the format action that receives it.");
-        }
+        ThrowIfCompleted();
 
         // Checked before the name, as the typed reads check the type first, so that a type that can never be written
         // fails whatever the name.
@@ -108,7 +121,7 @@ public sealed class RouteFormatBuilder<TRoute>
             $"The template '{_template.Value}' has no parameter named '{RouteText.EscapeForMessage(name)}'.",
             nameof(name));
 
-        foreach (PathValueWriter<TRoute> writer in _writers)
+        foreach (ValueWriter<TRoute> writer in _writers)
         {
             if (StringComparer.Ordinal.Equals(writer.Name, parameter))
             {
@@ -119,7 +132,93 @@ public sealed class RouteFormatBuilder<TRoute>
             }
         }
 
-        _writers.Add(new TypedPathValueWriter<TRoute, TValue>(parameter, value));
+        _writers.Add(new TypedValueWriter<TRoute, TValue>(parameter, $"path parameter '{parameter}'", value));
+        return this;
+    }
+
+    /// <summary>
+    /// Declares a query value: the function that reads it from the route, which
+    /// <see cref="RouteTable.Format(AppRoute)"/> writes after the path as <c>name=value</c>.
+    /// </summary>
+    /// <typeparam name="TValue">
+    /// The type of the value, one of those listed for <see cref="Path{TValue}(string, Func{TRoute, TValue})"/>, and
+    /// written as the same canonical text, which the typed read of the same type, such as
+    /// <see cref="RouteMatchContext.TryGetQuery{T}(string, out T)"/>, reads back to an equal value. A collection, such
+    /// as <c>string[]</c> or <c>List&lt;int&gt;</c>, is not one of them: this method writes one value for the name.
+    /// </typeparam>
+    /// <param name="name">
+    /// The name of the query value. Any text is a name, including the empty string, as for the query reads; it is
+    /// percent-encoded when it is written. A query value can have the name of a path parameter, since the two are read
+    /// separately.
+    /// </param>
+    /// <param name="value">
+    /// Reads the value from the route. It is called at most once each time a route is formatted, after every path
+    /// value function, in the order the query values were declared; after a value that cannot be written, or an
+    /// exception from a value function, the later functions are not called. A <see langword="null"/> value, a null
+    /// reference or a nullable value type without a value, leaves the query value out. An empty string is a value,
+    /// and is written as <c>name=</c>.
+    /// </param>
+    /// <returns>This builder, so that calls can be chained.</returns>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="name"/> or <paramref name="value"/> is <see langword="null"/>.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// <typeparamref name="TValue"/> is not one of the supported types, such as <see cref="Half"/>,
+    /// <c>DateTime?</c> or <c>string[]</c>; the message lists the supported types. An enum that is not registered is
+    /// not reported here, since it can be registered after the mapping, but by <see cref="RouteTableBuilder.Build"/>.
+    /// <para>-or-</para>
+    /// The call that maps the route has returned, so the builder can no longer be used.
+    /// </exception>
+    /// <exception cref="ArgumentException">
+    /// A query value of the name has already been declared, the names being compared ordinally without regard to
+    /// case, as the query reads compare them; or the name contains a lone surrogate, which cannot be percent-encoded
+    /// and read back unchanged. The exception's <see cref="ArgumentException.ParamName"/> is <c>name</c>.
+    /// </exception>
+    public RouteFormatBuilder<TRoute> Query<TValue>(string name, Func<TRoute, TValue> value)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        ArgumentNullException.ThrowIfNull(value);
+        ThrowIfCompleted();
+
+        // Checked before the name, as for a path value. String is a collection of chars but one value, and is
+        // supported, so only another type can be reported as a collection.
+        if (RouteValueTypes.SupportedTypeName<TValue>() is null && RouteValueTypes.EnumType<TValue>() is null)
+        {
+            throw RouteValueTypes.UnsupportedType<TValue>(
+                UnsupportedQuery,
+                typeof(System.Collections.IEnumerable).IsAssignableFrom(
+                    Nullable.GetUnderlyingType(typeof(TValue)) ?? typeof(TValue))
+                    ? UnsupportedCollectionTail
+                    : UnsupportedTail);
+        }
+
+        string quoted = RouteText.EscapeForMessage(name);
+        if (RouteText.ContainsLoneSurrogate(name))
+        {
+            throw new ArgumentException(
+                $"The query value name '{quoted}' is not valid UTF-16: it contains a lone surrogate, which cannot be " +
+                "percent-encoded and read back unchanged.",
+                nameof(name));
+        }
+
+        // The query reads take the first value of a name, ignoring case, so a second declaration would write a value
+        // that no read returns.
+        foreach (ValueWriter<TRoute> writer in _queryWriters)
+        {
+            if (StringComparer.OrdinalIgnoreCase.Equals(writer.Name, name))
+            {
+                string spelling = StringComparer.Ordinal.Equals(writer.Name, name)
+                    ? ""
+                    : $", as '{RouteText.EscapeForMessage(writer.Name)}'";
+                throw new ArgumentException(
+                    $"Query value '{quoted}' is already declared{spelling}; each name is declared once, and names " +
+                    "that differ only by case are the same name.",
+                    nameof(name));
+            }
+        }
+
+        _queryWriters.Add(new TypedValueWriter<TRoute, TValue>(name, $"query value '{quoted}'", value));
+        _queryNames.Add(Uri.EscapeDataString(name));
         return this;
     }
 
@@ -143,14 +242,14 @@ public sealed class RouteFormatBuilder<TRoute>
     private TypedRouteFormatter<TRoute> Complete()
     {
         ReadOnlySpan<RouteSegment> segments = _template.Segments;
-        var ordered = new PathValueWriter<TRoute>[_writers.Count];
+        var ordered = new ValueWriter<TRoute>[_writers.Count];
         var count = 0;
         foreach (RouteSegment segment in segments)
         {
             if (!segment.IsParameter)
                 continue;
 
-            PathValueWriter<TRoute> writer = FindWriter(segment.Text) ?? throw new ArgumentException(
+            ValueWriter<TRoute> writer = FindWriter(segment.Text) ?? throw new ArgumentException(
                 $"The format function for the template '{_template.Value}' does not declare path parameter " +
                 $"'{segment.Text}'. Every parameter of the template must be declared with Path, so that every value " +
                 "the path needs is read from the route.",
@@ -158,7 +257,17 @@ public sealed class RouteFormatBuilder<TRoute>
             ordered[count++] = writer;
         }
 
-        return new TypedRouteFormatter<TRoute>(_template, ordered);
+        return new TypedRouteFormatter<TRoute>(_template, ordered, _queryWriters.ToArray(), _queryNames.ToArray());
+    }
+
+    // A builder kept past the call to Map would declare nothing for the mapping, so its use then is a mistake.
+    private void ThrowIfCompleted()
+    {
+        if (_completed)
+        {
+            throw new InvalidOperationException(
+                "A route format builder can be used only during the call to the format action that receives it.");
+        }
     }
 
     // Returns the parameter's name as written in the template. A template has no two names that differ only by case,
@@ -174,9 +283,9 @@ public sealed class RouteFormatBuilder<TRoute>
         return null;
     }
 
-    private PathValueWriter<TRoute>? FindWriter(string parameter)
+    private ValueWriter<TRoute>? FindWriter(string parameter)
     {
-        foreach (PathValueWriter<TRoute> writer in _writers)
+        foreach (ValueWriter<TRoute> writer in _writers)
         {
             if (StringComparer.Ordinal.Equals(writer.Name, parameter))
                 return writer;
