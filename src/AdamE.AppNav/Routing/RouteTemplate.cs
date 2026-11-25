@@ -24,9 +24,9 @@ namespace AdamE.AppNav.Routing;
 /// <c>alpha</c>, whose names are compared without regard to case. Each checks the text exactly as decoded, without
 /// trimming, and independently of culture: <c>int</c> and <c>long</c> accept an optional leading <c>+</c> or
 /// <c>-</c> and ASCII digits within the type's range; <c>decimal</c> also accepts one <c>.</c>; <c>bool</c> accepts
-/// <c>true</c> or <c>false</c> in any ASCII case; <c>guid</c> accepts 32 hex digits, with or without hyphens in the
-/// 8-4-4-4-12 form; and <c>alpha</c> accepts one or more Unicode letters. The captured value is the decoded text,
-/// unchanged.
+/// <c>true</c> or <c>false</c> in any ASCII case; <c>guid</c> accepts only 32 hex digits, in either case, with
+/// hyphens in the 8-4-4-4-12 form; and <c>alpha</c> accepts one or more Unicode letters. The captured value is the
+/// decoded text, unchanged.
 /// </para>
 /// <para>
 /// A parameter written <c>{name?}</c> or <c>{name:constraint?}</c> is optional: it matches one segment or none. The
@@ -551,7 +551,8 @@ public sealed class RouteTemplate
         if (parameter.Constraint is { } constraint && !constraint.IsSatisfiedBy(value))
         {
             throw new ArgumentException(
-                $"Path parameter '{name}' has a value that does not satisfy its constraint '{constraint.Name}'.",
+                $"Path parameter '{name}' has a value that does not satisfy its constraint '{constraint.Name}'." +
+                constraint.HintFor(value),
                 nameof(pathValues));
         }
 

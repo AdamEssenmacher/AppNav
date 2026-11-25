@@ -24,6 +24,10 @@ public sealed class RouteTableAmbiguousTemplateTests
     private static readonly string Zeros = new('0', 32);
     private static readonly string Letters = new('a', 32);
 
+    // The guid the message gives, and a guid that is all letters but for its hyphens.
+    private const string ZeroGuid = "00000000-0000-0000-0000-000000000000";
+    private const string LetterGuid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+
     // The pairs of distinct built-in constraints that some text satisfies both, with the value the message gives.
     // Every other pair of distinct built-in constraints is disjoint, which the corpus test checks.
     private static readonly (string First, string Second, string Value)[] Overlapping =
@@ -31,10 +35,6 @@ public sealed class RouteTableAmbiguousTemplateTests
         ("int", "long", "0"),
         ("int", "decimal", "0"),
         ("long", "decimal", "0"),
-        ("guid", "int", Zeros),
-        ("guid", "long", Zeros),
-        ("guid", "decimal", Zeros),
-        ("guid", "alpha", Letters),
         ("bool", "alpha", "true"),
     ];
 
@@ -47,6 +47,10 @@ public sealed class RouteTableAmbiguousTemplateTests
         ("bool", "long"),
         ("bool", "decimal"),
         ("bool", "guid"),
+        ("guid", "int"),
+        ("guid", "long"),
+        ("guid", "decimal"),
+        ("guid", "alpha"),
     ];
 
     // The value each constraint shares with itself.
@@ -56,7 +60,7 @@ public sealed class RouteTableAmbiguousTemplateTests
         ("long", "0"),
         ("decimal", "0"),
         ("bool", "true"),
-        ("guid", Zeros),
+        ("guid", ZeroGuid),
         ("alpha", "a"),
     ];
 
@@ -217,7 +221,7 @@ public sealed class RouteTableAmbiguousTemplateTests
     [InlineData("/a/{x:bool?}/{z:int?}", "/a/{y:int?}/{w:alpha?}", "/a", OptionalAdvice)]
     [InlineData("/a/{n:int}/{x:int?}", "/a/{m:INT}/{y:alpha?}", "/a/0", OptionalAdvice)]
     [InlineData("/a/{x:int}/{o:alpha?}", "/a/{y:long}/{p:bool?}", "/a/0", GeneralAdvice)]
-    [InlineData("/f/{x:decimal}/{*rest}", "/f/{y:guid}/{*path}", "/f/00000000000000000000000000000000", GeneralAdvice)]
+    [InlineData("/f/{x:bool}/{*rest}", "/f/{y:alpha}/{*path}", "/f/true", GeneralAdvice)]
     [InlineData("/f/{x}/{y:int}/{*rest}", "/f/{z}/{w:long}/{*path}", "/f/x/0", GeneralAdvice)]
     public void OptionalParametersAndCatchAllsAlwaysOverlap(string first, string second, string path, string advice)
     {
@@ -235,16 +239,66 @@ public sealed class RouteTableAmbiguousTemplateTests
         Assert.Equal("/a/{y:alpha}", Winner(table, "/a/b"));
     }
 
-    // The case from the guide most likely to be met: a guid without hyphens can be all digits, and leading zeros are
-    // allowed in an int, so no built-in constraint keeps a guid apart from a number; a different literal does.
+    // The example from the guide: a guid has hyphens between its hex digits, which no number or letters can have, so a
+    // guid, a number and a word can share a position, in any order, and each path goes to its own route.
     [Fact]
-    public void AGuidBesideANumberIsRejectedAndADifferentLiteralKeepsThemApart()
+    public void AGuidBesideANumberOrAWordBuildsAndEachPathGoesToItsOwnRoute()
     {
-        AssertAmbiguous("/orders/{id:int}", "/orders/{key:guid}", $"/orders/{Zeros}", GeneralAdvice);
+        string[] templates = ["/orders/{id:int}", "/orders/{key:guid}", "/orders/{slug:alpha}"];
+        foreach (string[] order in new[] { templates, [templates[1], templates[2], templates[0]] })
+        {
+            RouteTable table = BuildTable(order);
+            Assert.Equal("/orders/{id:int}", Winner(table, "/orders/42"));
+            Assert.Equal("/orders/{id:int}", Winner(table, $"/orders/{Zeros}"));
+            Assert.Equal("/orders/{key:guid}", Winner(table, "/orders/6f9619ff-8b86-d011-b42d-00cf4fc964ff"));
+            Assert.Equal("/orders/{key:guid}", Winner(table, $"/orders/{ZeroGuid}"));
+            Assert.Equal("/orders/{key:guid}", Winner(table, $"/orders/{LetterGuid}"));
+            Assert.Equal("/orders/{slug:alpha}", Winner(table, $"/orders/{Letters}"));
+            Assert.Null(WinnerOrNull(table, "/orders/6f9619ff8b86d011b42d00cf4fc964ff"));
+        }
+    }
 
-        RouteTable table = BuildTable(["/orders/{id:int}", "/orders/by-key/{key:guid}"]);
+    // One class of overlapping constraints each: the numbers, bool and alpha, and guid. So three templates of one
+    // shape can share a position, which the cost of the check in Build allows for.
+    [Fact]
+    public void ANumberABoolAndAGuidBuildTogetherInEveryOrder()
+    {
+        string[] templates = ["/p/{a:int}", "/p/{a:bool}", "/p/{a:guid}"];
+        int[][] orders = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+        foreach (int[] order in orders)
+        {
+            RouteTable table = BuildTable([templates[order[0]], templates[order[1]], templates[order[2]]]);
+            Assert.Equal("/p/{a:int}", Winner(table, "/p/42"));
+            Assert.Equal("/p/{a:bool}", Winner(table, "/p/true"));
+            Assert.Equal("/p/{a:guid}", Winner(table, $"/p/{ZeroGuid}"));
+        }
+    }
+
+    // What the guide says of accepting both forms of a guid with a parameter without a constraint: beside a number
+    // and a word, a guid without hyphens made only of digits or only of letters goes to the constrained route.
+    [Fact]
+    public void AGuidWithoutHyphensGoesToAConstrainedRouteWhenItSatisfiesOne()
+    {
+        RouteTable table = BuildTable(["/orders/{id:int}", "/orders/{x:alpha}", "/orders/{key}"]);
+
         Assert.Equal("/orders/{id:int}", Winner(table, $"/orders/{Zeros}"));
-        Assert.Equal("/orders/by-key/{key:guid}", Winner(table, $"/orders/by-key/{Zeros}"));
+        Assert.Equal("/orders/{x:alpha}", Winner(table, $"/orders/{Letters}"));
+        Assert.Equal("/orders/{key}", Winner(table, "/orders/6f9619ff8b86d011b42d00cf4fc964ff"));
+        Assert.Equal("/orders/{key}", Winner(table, $"/orders/{ZeroGuid}"));
+
+        // Digits alone are not enough: 32 of them that are out of range for the number are not that number.
+        Assert.Equal("/orders/{key}", Winner(table, "/orders/12345678901234567890123456789012"));
+    }
+
+    // A guid still overlaps itself, so two templates of one shape with a guid at the same position are told apart
+    // only by their other positions, and the path given has the zero guid there.
+    [Theory]
+    [InlineData("/a/{x:guid}/{p:int}", "/a/{y:guid}/{q:long}", $"/a/{ZeroGuid}/0")]
+    [InlineData("/a/{x:guid}/{p:bool}", "/a/{y:GUID}/{q:alpha}", $"/a/{ZeroGuid}/true")]
+    public void TwoGuidsAtOnePositionAreStillRejected(string first, string second, string path)
+    {
+        AssertAmbiguous(first, second, path);
+        AssertAmbiguous(second, first, path);
     }
 
     [Fact]
@@ -271,8 +325,8 @@ public sealed class RouteTableAmbiguousTemplateTests
     {
         AssertAmbiguous(
             "/p/{a:int}/{b:alpha}/{c:guid}/{d}/q/{o:int?}",
-            "/p/{e:long}/{f:bool}/{g:alpha}/{h}/q/{r:bool?}",
-            $"/p/0/true/{Letters}/x/q");
+            "/p/{e:long}/{f:bool}/{g:guid}/{h}/q/{r:bool?}",
+            $"/p/0/true/{ZeroGuid}/x/q");
     }
 
     // Templates of different rank can match the same path, because precedence, not registration, decides.
@@ -336,21 +390,6 @@ public sealed class RouteTableAmbiguousTemplateTests
         Assert.Contains("'/b/0'", exception.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("'/a/", exception.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("'/b/{x:alpha}'", exception.Message, StringComparison.Ordinal);
-    }
-
-    // The third conflicts with both earlier ones, which do not conflict with each other; the earliest is reported.
-    [Fact]
-    public void TheEarliestDefinitionThatTheReportedOneConflictsWithIsReported()
-    {
-        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() => Build(
-            ("/c/{a:alpha}", typeof(SettingsRoute)),
-            ("/c/{b:int}", typeof(ProductRoute)),
-            ("/c/{g:guid}", typeof(FileRoute))));
-
-        AssertInOrder(exception.Message, "'/c/{a:alpha}'", "'/c/{g:guid}'");
-        AssertInOrder(exception.Message, Quoted(typeof(SettingsRoute)), Quoted(typeof(FileRoute)));
-        Assert.Contains($"'/c/{Letters}'", exception.Message, StringComparison.Ordinal);
-        Assert.DoesNotContain("'/c/{b:int}'", exception.Message, StringComparison.Ordinal);
     }
 
     // The same-template check runs over the whole table first, so a repeat is reported even when an ambiguous pair
@@ -718,7 +757,7 @@ public sealed class RouteTableAmbiguousTemplateTests
             "long" => ["0", "42", "9223372036854775807", "2147483648"],
             "decimal" => ["0", "1.5", ".5", "99999999999999999999"],
             "bool" => ["true", "FALSE", "tRuE"],
-            "guid" => [Zeros, Letters, "6f9619ff-8b86-d011-b42d-00cf4fc964ff", "6F9619FF8B86D011B42D00CF4FC964FF"],
+            "guid" => [ZeroGuid, LetterGuid, "6F9619FF-8b86-D011-b42d-00CF4fc964ff"],
             "alpha" => ["a", "true", "false", Letters, "caf%C3%A9", "x"],
             _ => ["x", "a", "b", "0", "true", Zeros, "%20"],
         };
@@ -737,8 +776,8 @@ public sealed class RouteTableAmbiguousTemplateTests
         return path.Length == 0 ? "/" : path.ToString();
     }
 
-    // Numbers of every shape and length, guids in both formats, bool text in every case, letters including the hex
-    // letters and letters outside ASCII and the Basic Multilingual Plane, the empty string, and random mixtures.
+    // Numbers of every shape and length, guids with and without hyphens, bool text in every case, letters including the
+    // hex letters and letters outside ASCII and the Basic Multilingual Plane, the empty string, and random mixtures.
     private static List<string> Corpus()
     {
         var random = new Random(27);
@@ -751,7 +790,8 @@ public sealed class RouteTableAmbiguousTemplateTests
             "79228162514264337593543950336", "a1", "1a", "true1", "1true", "-a", "+true", "t", "f", "tru", "fals",
             "truee", "true ", "\u00E9", "\u03B1\u03B2", "\uD835\uDC9C", "e\u0301", "\u0430\u0431", "\u65E5\u672C",
             Zeros, Letters, new string('f', 32), new string('F', 32), new string('g', 32), new string('a', 31),
-            new string('a', 33), new string('0', 36), new string('-', 36),
+            new string('a', 33), new string('0', 36), new string('-', 36), ZeroGuid, LetterGuid,
+            "{" + ZeroGuid + "}", ZeroGuid + "\n",
         };
 
         for (var length = 1; length <= 40; length++)
@@ -785,8 +825,11 @@ public sealed class RouteTableAmbiguousTemplateTests
             corpus.Add(guid.ToString("D").ToUpperInvariant());
             corpus.Add(RandomText(random, "0123456789", 32));
             corpus.Add(RandomText(random, "abcdefABCDEF", 32));
-            string letters = RandomText(random, "abcdef", 32);
-            corpus.Add($"{letters[..8]}-{letters[8..12]}-{letters[12..16]}-{letters[16..20]}-{letters[20..]}");
+            foreach (string hex in new[] { "abcdef", "0123456789" })
+            {
+                string digits = RandomText(random, hex, 32);
+                corpus.Add($"{digits[..8]}-{digits[8..12]}-{digits[12..16]}-{digits[16..20]}-{digits[20..]}");
+            }
         }
 
         foreach (string word in new[] { "true", "false" })
