@@ -21,7 +21,7 @@ Templates and paths are divided and decoded the same way:
 
 - Leading, trailing and repeated slashes do not create segments. `/a//b/` has the same segments as `/a/b`, and `/` is the root template, which has no segments.
 - Each segment is percent-decoded once, after the text is divided. `/files/a%20b` matches `/files/a b`, and `%2F` stays inside its segment, so `/files/a%2Fb` does not match `/files/a/b`. The exception is the segments a [catch-all parameter](#catch-all-parameters) captures, where `%2F` acts as `/`. A percent sequence that is not valid, or does not decode to valid UTF-8, such as `%zz` or `%FF`, is kept as written.
-- Literals are compared with path segments ordinally and case-sensitively.
+- Literals are compared with decoded path segments ordinally and case-sensitively, as described in [How text is compared](#how-text-is-compared).
 
 A path is otherwise taken as it is:
 
@@ -29,6 +29,18 @@ A path is otherwise taken as it is:
 - White space is significant: `/settings ` does not match `/settings`.
 - A query string or fragment is not removed, so remove it before calling `Match`.
 - `+` is not a space.
+
+### How text is compared
+
+A literal equals a decoded path segment when the two are the same sequence of UTF-16 code units: the comparison is ordinal and case-sensitive. No culture's rules are applied, so `/i` matches neither `/I` nor `/İ`, whatever the current culture. No Unicode normalization is applied either, so the same visible text in two normalization forms is two different literals. `/caf%C3%A9` ends in the single character `é` (U+00E9) and `/cafe%CC%81` ends in `e` followed by a combining acute accent (U+0301). They render the same, but neither matches the other.
+
+- A captured value keeps the form the path had. Nothing is normalized when a value is captured or when `Format` writes it, so the value captured from `/cafe%CC%81` is `e` followed by U+0301, and `Format` writes it back as `cafe%CC%81`.
+- Parameter names and constraint names are ASCII and are compared ignoring case, so normalization cannot affect them.
+- The [`alpha` constraint](#constraints) rejects combining marks, so decomposed text does not satisfy it.
+
+Write templates in NFC, the form in which `é` is one character and the one most keyboards and tools produce. If paths can arrive in another form, normalize them before calling `Match`: remove any query string or fragment, divide the path at `/`, and replace each segment with `Uri.EscapeDataString(Uri.UnescapeDataString(segment).Normalize(NormalizationForm.FormC))`. Encoding the text again keeps `%2F` inside its segment and keeps `%25` and invalid percent sequences meaning what they did. `path.Normalize(NormalizationForm.FormC)` alone changes nothing that is percent-encoded, because percent-encoded text is ASCII. `Normalize` throws `ArgumentException` for a segment that contains a lone surrogate, which `Match` accepts. NFC also replaces a few characters with their canonical equivalents, such as the Kelvin sign with `K`. To compare captured values in one form instead, normalize the values `Match` returns.
+
+Ordinal comparison is fast, unambiguous and the same on every platform and in every culture. Normalization would make two different paths the same route without the app asking for it.
 
 ### Dot segments
 
@@ -54,7 +66,7 @@ Console.WriteLine(product.Match("/stores/northwind/products") is null); // True:
 
 - A parameter is the whole segment. Its name starts with an ASCII letter or `_`, followed by ASCII letters, digits or `_`.
 - Names are compared without regard to case. A template cannot use two names that differ only by case. The dictionary `Match` returns is keyed by the names as written in the template and looks them up without regard to case.
-- A parameter matches exactly one segment, unless it is [optional](#optional-parameters) or a [catch-all](#catch-all-parameters). Its value is the segment after decoding, exactly as a literal would be compared: `%2F` becomes `/` inside the value, white space is kept, and an invalid percent sequence is kept as written. Unless the parameter has a [constraint](#constraints), values are not checked further, so a value can be any text, including a decoded control character.
+- A parameter matches exactly one segment, unless it is [optional](#optional-parameters) or a [catch-all](#catch-all-parameters). Its value is the segment after decoding, exactly as a literal would be compared: `%2F` becomes `/` inside the value, white space is kept, an invalid percent sequence is kept as written, and the text is not [normalized](#how-text-is-compared). Unless the parameter has a [constraint](#constraints), values are not checked further, so a value can be any text, including a decoded control character.
 - Each match that captures a value returns its own dictionary. Treat it as read-only.
 
 ## Constraints
@@ -86,7 +98,7 @@ The built-in constraints are:
 
 - Constraint names are compared without regard to case: `{id:INT}` is `{id:int}`.
 - Every check is the same in every culture and applies to the decoded text exactly as it is captured. Nothing is trimmed, so a value with white space, such as `%2042`, never satisfies a number, `bool` or `guid`. Only the characters in the table are allowed: no thousands separators, exponents, currency symbols, trailing signs or digits other than ASCII `0` to `9`, such as `٣`, and no braces or parentheses around a guid.
-- `alpha` is letters only. Digits, spaces, punctuation and combining marks are not letters, so decomposed text such as `e` followed by a combining acute accent (`e%CC%81`) does not satisfy it, though the single character `é` does.
+- `alpha` is letters only. Digits, spaces, punctuation and combining marks are not letters, so decomposed text such as `e` followed by a combining acute accent (`e%CC%81`) does not satisfy it, though the single character `é` does. Some text keeps combining marks even in NFC, such as most Devanagari words, and never satisfies it.
 - The captured value is the decoded text, unchanged: `+007` is captured as `+007`, not `7`.
 - Several texts can denote one value, such as `7`, `007` and `+7`, `true` and `TRUE`, or a guid in upper and lower case. Each satisfies the constraint and is captured as written, and `Format` writes whatever text it is given, so producing one canonical link for each value is the job of the code that turns typed values into text.
 
