@@ -69,9 +69,10 @@ public sealed class RouteTableBuilder
     /// <c>/a/{x:int?}</c> and <c>/a/{y:alpha?}</c>, which both match <c>/a</c>. The route that won for such a path
     /// would depend on the order of the mappings. The message names both templates and both route types, the earlier
     /// mapping first, and one path that both match: the first mapping, in the order the routes were mapped, that
-    /// conflicts with an earlier one is reported, with the earliest it conflicts with. Templates that are the same are
-    /// reported as the same, not as this. Templates that rank differently can match the same path, because precedence
-    /// decides between them. In either case, the builder is not changed.
+    /// conflicts with an earlier one is reported, with the earliest it conflicts with. The same template twice is
+    /// looked for first, across the whole table, so it is reported even when two other mappings that conflict in this
+    /// way come earlier. Templates that rank differently can match the same path, because precedence decides between
+    /// them. In either case, the builder is not changed.
     /// </exception>
     public RouteTable Build()
     {

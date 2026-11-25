@@ -66,6 +66,16 @@ public sealed class RouteTableAmbiguousTemplateTests
 
     public static TheoryData<string, string> OwnValues => new(Own);
 
+    // The tables here are written by hand, so a new built-in constraint must fail this until they cover it.
+    [Fact]
+    public void TheConstraintsListedHereAreTheBuiltInOnes()
+    {
+        string[] supported =
+            [.. Regex.Matches(RouteConstraint.SupportedNames, "'([a-z]+)'").Select(match => match.Groups[1].Value)];
+
+        Assert.Equal(supported, ConstraintNames);
+    }
+
     [Fact]
     public void EveryPairOfDistinctBuiltInConstraintsIsListedExactlyOnce()
     {
