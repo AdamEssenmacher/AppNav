@@ -150,9 +150,23 @@ public sealed class RouteTableUriTests
     [InlineData("https://example.com/%FF%20", "/%FF")]
     [InlineData("https://b\u00FCcher.example/a%20", "/a")]
     [InlineData("https://\u00E9@example.com/a%20", "/a")]
+    [InlineData("https://example.com/%41%20", "/A")]
+    [InlineData("https://example.com/%7E%20", "/~")]
+    [InlineData("https://example.com/%2D/%30%20", "/-/0")]
+    [InlineData("https://example.com/%e9%20", "/%e9")]
+    [InlineData("https://example.com/%41/a%20#", "/A/a%20")]
     [InlineData("https://example.com/a%20", "/a%20")]
     [InlineData("https://example.com/a%20%20", "/a%20%20")]
-    public void SystemUriDropsTrailingEncodedSpacesAtTheEndOfAUriWithNonAsciiText(string uri, string path)
+    [InlineData("https://example.com/<%20", "/%3C%20")]
+    [InlineData("https://example.com/%3c%20", "/%3c%20")]
+    [InlineData("https://example.com/%25%20", "/%25%20")]
+    [InlineData("https://example.com/%7F%20", "/%7F%20")]
+    [InlineData("https://example.com/a%2F%20", "/a%2F%20")]
+    [InlineData("HTTPS://EXAMPLE.com:443/x/../a%20", "/a%20")]
+    [InlineData("https://xn--bcher-kva.example/a%20", "/a%20")]
+    public void SystemUriDropsTrailingEncodedSpacesAfterNonAsciiOrAnEncodedUnreservedOrHighByte(
+        string uri,
+        string path)
     {
         Assert.Equal(path, ReadPath(new Uri(uri)));
     }
@@ -266,6 +280,28 @@ public sealed class RouteTableUriTests
 
         Assert.True(implicitFile.IsFile);
         Assert.Equal(implicitFile.AbsolutePath, ReadPath(implicitFile));
+    }
+
+    [Theory]
+    [InlineData(" /a?x=1")]
+    [InlineData("\t/a?x=1")]
+    public void AnImplicitFileUriWhoseTextDoesNotStartWithASlashHasNoQueryValues(string text)
+    {
+        if (!Uri.TryCreate(text, UriKind.Absolute, out Uri? implicitFile))
+            Assert.Skip(NotAnAbsoluteUriHere);
+
+        bool? found = null;
+        RouteTable table = new RouteTableBuilder()
+            .Map("/{*rest}", c =>
+            {
+                found = c.TryGetQuery("x", out _) || c.GetQueryValues("x").Count > 0;
+                return new FileRoute(c.TryGetPath("rest", out string? rest) ? rest : null);
+            })
+            .Build();
+
+        Assert.Equal("", implicitFile.Query);
+        Assert.Equal(new FileRoute("a?x=1"), table.Match(implicitFile).Route);
+        Assert.False(found);
     }
 
     [Theory]

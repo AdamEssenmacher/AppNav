@@ -22,13 +22,12 @@ internal static class QueryString
     // - Names are compared ordinally ignoring case, as path parameter names are; the dictionary looks them up the
     //   same way, and its key is the spelling of a name's first occurrence. Each name's values keep their order,
     //   including repeated and empty values. The order of the names themselves is not defined.
-    // Returns one shared empty dictionary when there are no pairs, and otherwise a new one. Treat the dictionary and
-    // its value lists as read-only, as with the values RouteTemplate.Match returns.
-    internal static IReadOnlyDictionary<string, IReadOnlyList<string>> Parse(string query)
+    // The query is a span, so that the query of a relative URI is parsed in place rather than copied first. Returns
+    // one shared empty dictionary when there are no pairs, and otherwise a new one. Treat the dictionary and its value
+    // lists as read-only, as with the values RouteTemplate.Match returns.
+    internal static IReadOnlyDictionary<string, IReadOnlyList<string>> Parse(ReadOnlySpan<char> query)
     {
-        ArgumentNullException.ThrowIfNull(query);
-
-        ReadOnlySpan<char> pairs = query.StartsWith('?') ? query.AsSpan(1) : query;
+        ReadOnlySpan<char> pairs = query.StartsWith('?') ? query[1..] : query;
         Dictionary<string, IReadOnlyList<string>>? values = null;
         foreach (Range range in pairs.Split('&'))
         {

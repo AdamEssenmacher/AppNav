@@ -33,8 +33,8 @@ public sealed class RouteTable
     /// Matches a URI to a route.
     /// </summary>
     /// <param name="uri">
-    /// The URI to match. Only its path is read; see the remarks for which part of an absolute or a relative URI that
-    /// is.
+    /// The URI to match. Only its path decides the route; see the remarks for which part of an absolute or a relative
+    /// URI that is, and for the query, which a create function can read.
     /// </param>
     /// <returns>
     /// A successful result with the route and its definition when a template matches the path, or a failed result
@@ -44,7 +44,7 @@ public sealed class RouteTable
     /// <remarks>
     /// <para>
     /// For an absolute URI, the path is <see cref="Uri.AbsolutePath"/>; the scheme, user information, host, port,
-    /// query and fragment are ignored. A link with a custom scheme and two slashes, such as
+    /// query and fragment do not affect which route matches. A link with a custom scheme and two slashes, such as
     /// <c>myapp://settings/profile</c>, has the host <c>settings</c> and the path <c>/profile</c>, so its first word
     /// is ignored with the host. Write such a link with three slashes, as <c>myapp:///settings/profile</c>, which has
     /// no host and the path <c>/settings/profile</c>.
@@ -53,16 +53,33 @@ public sealed class RouteTable
     /// The path of an absolute URI is the one <see cref="Uri"/> produces: it decodes percent-encoded unreserved
     /// characters, percent-encodes spaces and non-ASCII characters, and keeps repeated slashes. In a URI with an
     /// authority, even an empty one as in <c>myapp:///a/../b</c>, it also removes dot segments; in one with no
-    /// authority at all, such as <c>app:/a/../b</c>, it keeps them, so that path does not match. In a URI that
-    /// contains non-ASCII text anywhere, raw or percent-encoded, it also drops the encoded spaces at the very end:
-    /// the path of <c>https://host/%C3%A9%20</c> is <c>/%C3%A9</c>. The table does not work around this.
+    /// authority at all, such as <c>app:/a/../b</c>, it keeps them, so that path does not match.
+    /// </para>
+    /// <para>
+    /// <see cref="Uri"/> drops <c>%20</c> sequences at the very end of a URI that contains, anywhere including the
+    /// host, a non-ASCII character, a percent-encoded byte from <c>%80</c> to <c>%FF</c>, or a percent-encoded
+    /// unreserved character such as <c>%41</c>: the path of <c>https://example.com/%C3%A9%20</c> is <c>/%C3%A9</c>,
+    /// and the query of <c>https://example.com/%41?v=%20</c> is <c>?v=</c>. Any character after them, even a lone
+    /// <c>#</c> or <c>&amp;</c>, keeps them. The table does not work around this.
     /// </para>
     /// <para>
     /// For a relative URI, the path is <see cref="Uri.OriginalString"/> up to the first <c>?</c> or <c>#</c>, whichever
     /// comes first, with no other change: nothing is trimmed, and dot segments are not resolved, so a path with one
     /// does not match. Build app-relative links with <see cref="UriKind.Relative"/> or
     /// <see cref="UriKind.RelativeOrAbsolute"/>: <see cref="Uri(string)"/> makes a string that starts with <c>/</c> a
-    /// file URI on Unix-like platforms and throws for it on Windows. The table reads such a file URI as relative.
+    /// file URI on Unix-like platforms and throws for it on Windows. The table reads such a file URI as relative when
+    /// its text starts with <c>/</c>; with leading white space, as in <c> /a?x=1</c>, it is read as absolute, with the
+    /// <c>?</c> in its path and no query values.
+    /// </para>
+    /// <para>
+    /// The query never affects which route matches. A create function reads it through
+    /// <see cref="RouteMatchContext.TryGetQuery(string, out string)"/> and
+    /// <see cref="RouteMatchContext.GetQueryValues(string)"/>: for an absolute URI it is <see cref="Uri.Query"/>, as
+    /// <see cref="Uri"/> reports it, and for a relative one the original text from the first <c>?</c> that comes
+    /// before any <c>#</c>, up to the next <c>#</c>. Some schemes, such as <c>ftp</c>, have no query in
+    /// <see cref="Uri"/>, so a <c>?</c> in them is part of the path. It is
+    /// read and parsed only when a create function first asks for a value, at most once per match, so a URI that
+    /// matches nothing, and a route that reads no query values, pay nothing for it. It never appears in a diagnostic.
     /// </para>
     /// <para>
     /// The path is matched as <see cref="RouteTemplate.Match(string)"/> matches it. In this version, definitions are
@@ -90,7 +107,7 @@ public sealed class RouteTable
     {
         ArgumentNullException.ThrowIfNull(uri);
 
-        string path = ReadPath(uri);
+        string path = ReadPath(uri, out int queryStart);
 
         // The path is split once and each segment decoded at most once for all the definitions, so that allocation and
         // decoding grow with the path plus the definitions tried rather than with their product.
@@ -104,7 +121,7 @@ public sealed class RouteTable
 
             // The create function is not guarded: the first matching definition decides the route, so an exception
             // is the application's to see, and falling through to a later definition would hide it.
-            AppRoute route = definition.CreateRoute(new RouteMatchContext(uri, values)) ??
+            AppRoute route = definition.CreateRoute(new RouteMatchContext(uri, values, queryStart)) ??
                 throw new InvalidOperationException(
                     $"The create function for route type '{definition.RouteType}', mapped to the template " +
                     $"'{definition.Template.Value}', returned null; it must return a route.");
@@ -120,19 +137,27 @@ public sealed class RouteTable
             new Dictionary<string, object?>(1, StringComparer.Ordinal) { ["path"] = path }));
     }
 
-    private static string ReadPath(Uri uri)
+    // Where the path ends and where the query starts are decided here together, so that the two always agree. The
+    // query itself is not read: queryStart is -1 for an absolute URI, whose query is Uri.Query, and otherwise the index
+    // in OriginalString of the '?' that starts it, or the length of the text when there is none, so that a URI that
+    // matches nothing, and a route that reads no query values, pay nothing for it.
+    private static string ReadPath(Uri uri, out int queryStart)
     {
-        // A relative URI has no parsed parts: AbsolutePath throws for one, so its path is read from the text. On
+        // A relative URI has no parsed parts: AbsolutePath and Query throw for one, so both are read from the text. On
         // Unix-like platforms, new Uri("/settings?tab=1") is an implicit file URI whose AbsolutePath escapes the '?'
         // into the path, so a file URI whose text starts with '/', where the caller wrote no file: scheme, is read
         // from its text too, as the app-relative link it was meant to be.
         if (uri.IsAbsoluteUri && !(uri.IsFile && uri.OriginalString.StartsWith('/')))
+        {
+            queryStart = -1;
             return uri.AbsolutePath;
+        }
 
         // A fragment starts at the first '#' and a query at the first '?' before it, so the path ends at whichever
         // comes first.
         string text = uri.OriginalString;
         int end = text.AsSpan().IndexOfAny('?', '#');
+        queryStart = end >= 0 && text[end] == '?' ? end : text.Length;
         return end < 0 ? text : text[..end];
     }
 }
