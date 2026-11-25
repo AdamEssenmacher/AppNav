@@ -12,20 +12,37 @@ namespace AdamE.AppNav.Routing;
 /// </remarks>
 public sealed class RouteTable
 {
-    // The definitions in the order they are tried, kept apart from Definitions so that match order can differ from
-    // registration order. For now it is registration order.
+    // The definitions in the order they are tried, by precedence, sorted once here so that Match only walks it.
     private readonly RouteDefinition[] _matchOrder;
 
     internal RouteTable(RouteDefinition[] definitions)
     {
-        _matchOrder = definitions;
+        // Array.Sort is not stable, so it sorts registration indices and breaks ties on them: templates that rank
+        // equally at every position keep the order they were mapped in.
+        var order = new int[definitions.Length];
+        for (var i = 0; i < order.Length; i++)
+            order[i] = i;
+
+        Array.Sort(order, (x, y) =>
+        {
+            int difference = definitions[x].Template.ComparePrecedence(definitions[y].Template);
+            return difference != 0 ? difference : x.CompareTo(y);
+        });
+
+        _matchOrder = new RouteDefinition[order.Length];
+        for (var i = 0; i < order.Length; i++)
+            _matchOrder[i] = definitions[order[i]];
 
         // A read-only wrapper, so that a caller cannot cast Definitions back to the array and change the table.
         Definitions = Array.AsReadOnly(definitions);
     }
 
+    // Read by tests only, which check that the order does not depend on the order of registration.
+    internal ReadOnlySpan<RouteDefinition> MatchOrder => _matchOrder;
+
     /// <summary>
-    /// Gets the definitions in this table, in the order they were mapped.
+    /// Gets the definitions in this table, in the order they were mapped. This is not the order in which
+    /// <see cref="Match(Uri)"/> tries them, which follows precedence.
     /// </summary>
     public IReadOnlyList<RouteDefinition> Definitions { get; }
 
@@ -82,9 +99,12 @@ public sealed class RouteTable
     /// a route that reads no query values, pay nothing for it. It never appears in a diagnostic.
     /// </para>
     /// <para>
-    /// The path is matched as <see cref="RouteTemplate.Match(string)"/> matches it. In this version, definitions are
-    /// tried in the order they were mapped, and the first whose template matches wins; no later one is tried. Its
-    /// create function is called once, and any exception it throws propagates unchanged.
+    /// The path is matched as <see cref="RouteTemplate.Match(string)"/> matches it. Definitions are tried by
+    /// precedence, not in the order they were mapped: two templates are compared segment by segment from the left,
+    /// and at the first position where their ranks differ, the more specific one is tried first, as the "Which route
+    /// wins" section of the routing guide sets out. Templates that rank equally at every position are tried in the
+    /// order they were mapped. The first whose template matches wins; no later one is tried. Its create function is
+    /// called once, and any exception it throws propagates unchanged.
     /// </para>
     /// <para>
     /// A URI that no template matches is not an error. The table itself does not throw for the content of a URI; an
