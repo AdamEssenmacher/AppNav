@@ -24,8 +24,9 @@ public sealed class RouteTableBuilder
     /// <returns>This builder, so that calls can be chained.</returns>
     /// <remarks>
     /// In this version, the same route type or template can be mapped more than once, and nothing is rejected when
-    /// the table is built; later versions will reject some such mappings. See <see cref="RouteTable.Match(Uri)"/> for
-    /// which mapping wins when several match.
+    /// the table is built; later versions will reject some such mappings. The order of the calls sets the order of
+    /// <see cref="RouteTable.Definitions"/>, but not which mapping wins when several match, which follows the
+    /// precedence of their templates as <see cref="RouteTable.Match(Uri)"/> describes.
     /// </remarks>
     /// <exception cref="ArgumentNullException">
     /// <paramref name="template"/> or <paramref name="createRoute"/> is <see langword="null"/>.
@@ -52,6 +53,8 @@ public sealed class RouteTableBuilder
     /// <returns>
     /// A new, immutable table. Mappings made on this builder afterwards do not change it, and this method can be
     /// called again to build another table that includes them. A table with no mappings is valid and matches nothing.
+    /// Its <see cref="RouteTable.Definitions"/> are in the order they were mapped, and the order in which
+    /// <see cref="RouteTable.Match(Uri)"/> tries them, by precedence, is decided here, once.
     /// </returns>
     public RouteTable Build()
     {

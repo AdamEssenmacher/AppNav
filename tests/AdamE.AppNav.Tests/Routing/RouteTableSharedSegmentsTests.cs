@@ -11,15 +11,16 @@ namespace AdamE.AppNav.Tests.Routing;
 // exactly what its template alone captures from the same path.
 public sealed class RouteTableSharedSegmentsTests
 {
-    // In each row the first definition decodes a segment and then fails, and the path encodes '%' in that segment,
-    // so decoding it a second time for the later definition would change the captured value.
+    // In each row the first definition, which precedence also tries first, decodes a segment and then fails, and the
+    // path encodes '%' in that segment, so decoding it a second time for the later definition would change the
+    // captured value.
     [Theory]
     [InlineData("/{a}/lit", "/{a}/{b}", "/%2541/x", "a", "%41")]
     [InlineData("/a/{x:int}", "/a/{y}", "/a/%2520b", "y", "%20b")]
     [InlineData("/x%2Fy/lit", "/{a}/{b}", "/x%2Fy/q%2541", "b", "q%41")]
     [InlineData("/{a}/{b:int}", "/{a}/{b?}", "/%41/%2525", "b", "%25")]
-    [InlineData("/{a}/{*rest}", "/{a}/{b}", "/p/q%2F..%2F%2541", "b", "q/../%41")]
-    [InlineData("/{a}/{*rest}", "/{a}/{b}", "/p/%2E%2E%2F%2541", "b", "../%41")]
+    [InlineData("/p/{*rest}", "/{a}/{b}", "/p/q%2F..%2F%2541", "b", "q/../%41")]
+    [InlineData("/p/{*rest}", "/{a}/{b}", "/p/%2E%2E%2F%2541", "b", "../%41")]
     [InlineData("/f/{x:int}/{*r}", "/f/{*r}", "/f/%256E/a%2F%2Fb/c%20d", "r", "%6E/a/b/c d")]
     [InlineData("/o/{a}/lit", "/o/{a?}/{b?}", "/o/%E2%82%AC%2525/%E0%A4", "b", "%E0%A4")]
     [InlineData("/o/{a}/lit", "/o/{a?}/{b?}", "/o/%E2%82%AC%2525/%E0%A4", "a", "\u20AC%25")]
@@ -33,6 +34,7 @@ public sealed class RouteTableSharedSegmentsTests
     {
         (int winner, IReadOnlyDictionary<string, string>? values) = MatchTable([first, second], path);
 
+        Assert.True(RouteTemplate.Parse(first).ComparePrecedence(RouteTemplate.Parse(second)) < 0);
         Assert.Equal(1, winner);
         Assert.Equal(value, values![name]);
         AssertSameAsFirstMatchingTemplate([first, second], path);
@@ -75,7 +77,7 @@ public sealed class RouteTableSharedSegmentsTests
     [Fact]
     public void ALaterDefinitionThatCapturesNothingReturnsTheSharedEmptyDictionary()
     {
-        (int winner, IReadOnlyDictionary<string, string>? values) = MatchTable(["/z/{a:int}", "/z/lit"], "/z/lit");
+        (int winner, IReadOnlyDictionary<string, string>? values) = MatchTable(["/z/{a:int}", "/z/{*rest}"], "/z/%2F");
 
         Assert.Equal(1, winner);
         Assert.Same(ReadOnlyDictionary<string, string>.Empty, values);
@@ -89,7 +91,7 @@ public sealed class RouteTableSharedSegmentsTests
     }
 
     [Fact]
-    public void RandomTablesMatchLikeTheirFirstMatchingTemplate()
+    public void RandomTablesMatchLikeTheirFirstMatchingTemplateByPrecedence()
     {
         string[] pathPool =
         [
@@ -178,15 +180,22 @@ public sealed class RouteTableSharedSegmentsTests
         return template.Length == 0 ? "/" : template.ToString();
     }
 
+    // The first template in precedence order, with ties in registration order, that matches the path on its own.
     private static void AssertSameAsFirstMatchingTemplate(string[] templates, string path)
     {
         int expectedWinner = -1;
         IReadOnlyDictionary<string, string>? expected = null;
-        for (var i = 0; i < templates.Length && expected is null; i++)
+        IEnumerable<int> order = Enumerable.Range(0, templates.Length).OrderBy(
+            i => RouteTemplate.Parse(templates[i]),
+            Comparer<RouteTemplate>.Create((x, y) => x.ComparePrecedence(y)));
+        foreach (int i in order)
         {
             expected = RouteTemplate.Parse(templates[i]).Match(path);
             if (expected is not null)
+            {
                 expectedWinner = i;
+                break;
+            }
         }
 
         (int winner, IReadOnlyDictionary<string, string>? values) = MatchTable(templates, path);

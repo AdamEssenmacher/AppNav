@@ -272,7 +272,28 @@ A relative URI is read from its original text, so its values are decoded from ex
 
 ### Which route wins
 
-For now, templates are tried in the order they were mapped, and the first one that matches the path wins; later ones are not tried. In this version, the same route type, or the same template, can be mapped more than once, and `Build` rejects nothing. `Definitions` lists the table's mappings in the order they were made.
+Templates are tried by precedence, and the first one that matches the path wins; later ones are not tried. Precedence comes from the templates alone, so the more specific template wins whatever order the routes were mapped in; only templates that rank equally at every position, described below, fall back to that order. Two templates are compared segment by segment from the left, and the first position where their ranks differ decides: the higher rank is tried first. A template that has no segment at a position, because it has ended, has the rank *ended* there. The ranks, highest first:
+
+1. A literal, such as `settings`.
+2. A required parameter with a constraint, such as `{id:int}`.
+3. Ended.
+4. An optional parameter with a constraint, such as `{id:int?}`.
+5. A required parameter without a constraint, such as `{name}`.
+6. An optional parameter without a constraint, such as `{name?}`.
+7. A catch-all parameter, such as `{*rest}`.
+
+Which constraint a parameter has, which text a literal has, and parameter names do not affect the rank. So:
+
+- A literal beats any parameter: for `/products/new`, `/products/new` wins over `/products/{id}`.
+- A constrained parameter beats an unconstrained one, even when it is optional and the other required: for `/products/42`, `/products/{id:int?}` wins over `/products/{name}`.
+- Otherwise a required parameter beats an optional one: for `/products/42`, `/products/{id}` wins over `/products/{id?}`.
+- Anything beats a catch-all: for `/files/a`, `/files/{name}` wins over `/files/{*path}`.
+- An exact template beats one that continues with an optional or catch-all parameter: for `/a`, `/a` wins over `/a/{b?}` and `/a/{*rest}`. Exactly where *ended* sits among the ranks above the optional kinds makes no difference, because a template that has ended and one that needs another segment never match the same path.
+- The leftmost difference in rank decides when templates cross: for `/a/b`, `/a/{y}` wins over `/{x}/b`.
+
+The leftmost rule decides even when a later segment is more specific. For `/a/5/edit`, `/a/{id:int}/{*rest}` is tried before `/a/{name}/edit`, because their ranks first differ at the second segment, where a constrained parameter outranks an unconstrained one. If that is not what you want, give the edit route the same constraint, as in `/a/{id:int}/edit`, so that the two templates first differ at the literal, which wins; or do not let a catch-all share a prefix with more specific routes.
+
+For now, templates that rank equally at every position, such as `/products/{id}` and `/products/{name}`, are tried in the order they were mapped. In this version, the same route type, or the same template, can be mapped more than once, and `Build` rejects nothing. `Definitions` lists the table's mappings in the order they were made, not the order they are tried in.
 
 ### Creating the route
 

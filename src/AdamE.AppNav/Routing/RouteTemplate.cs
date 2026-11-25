@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Text;
 
 namespace AdamE.AppNav.Routing;
@@ -82,6 +83,19 @@ namespace AdamE.AppNav.Routing;
 /// </remarks>
 public sealed class RouteTemplate
 {
+    // The ranks of a template's positions, in the order a route table tries them, lowest first: what a position must
+    // match widens from fixed text, through a constrained value, to any value, then to any number of segments.
+    // EndedRank, for a position past a template's last segment, must sit above every optional kind and the catch-all.
+    // How far above is arbitrary, because a template that has ended and one that requires another segment never
+    // match the same path; it must still be one fixed rank, so that the comparison stays consistent.
+    private const int LiteralRank = 0;
+    private const int ConstrainedParameterRank = 1;
+    private const int EndedRank = 2;
+    private const int ConstrainedOptionalParameterRank = 3;
+    private const int ParameterRank = 4;
+    private const int OptionalParameterRank = 5;
+    private const int CatchAllParameterRank = 6;
+
     private readonly RouteSegment[] _segments;
     private readonly int _parameterCount;
 
@@ -270,6 +284,44 @@ public sealed class RouteTemplate
             values.Add(_segments[^1].Text, rest);
 
         return values;
+    }
+
+    // Compares which of two templates a route table tries first: negative when this one is, positive when the other
+    // is, and zero when they rank equally at every position. The first position whose ranks differ decides. Every
+    // position has exactly one rank, including Ended for one past a template's last segment, so the comparison is a
+    // total preorder: it is transitive, so sorting by it gives the same order whatever order the routes were mapped
+    // in. If a missing segment instead beat every optional parameter but lost to every required one, /a would beat
+    // /a/{id:int?}, which beats /a/{name}, which would beat /a, and the winner would depend on registration order.
+    internal int ComparePrecedence(RouteTemplate other)
+    {
+        int length = Math.Max(_segments.Length, other._segments.Length);
+        for (var i = 0; i < length; i++)
+        {
+            int difference = Rank(_segments, i) - Rank(other._segments, i);
+            if (difference != 0)
+                return difference;
+        }
+
+        return 0;
+    }
+
+    // The rank of a position, from the kind and the constraint of its segment, or Ended past the last one. It is
+    // written out rather than taken from RouteSegmentKind, whose order says nothing about precedence.
+    private static int Rank(RouteSegment[] segments, int position)
+    {
+        if (position >= segments.Length)
+            return EndedRank;
+
+        RouteSegment segment = segments[position];
+        return segment.Kind switch
+        {
+            RouteSegmentKind.Literal => LiteralRank,
+            RouteSegmentKind.Parameter => segment.Constraint is null ? ParameterRank : ConstrainedParameterRank,
+            RouteSegmentKind.OptionalParameter =>
+                segment.Constraint is null ? OptionalParameterRank : ConstrainedOptionalParameterRank,
+            RouteSegmentKind.CatchAllParameter => CatchAllParameterRank,
+            _ => throw new UnreachableException(),
+        };
     }
 
     /// <summary>
