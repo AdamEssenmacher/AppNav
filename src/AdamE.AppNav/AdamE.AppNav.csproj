@@ -17,4 +17,8 @@
         <PackageReference Include="Microsoft.CodeAnalysis.PublicApiAnalyzers" PrivateAssets="all" />
     </ItemGroup>
 
+    <ItemGroup>
+        <InternalsVisibleTo Include="AdamE.AppNav.Tests" />
+    </ItemGroup>
+
 </Project>
