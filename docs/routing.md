@@ -293,7 +293,20 @@ Which constraint a parameter has, which text a literal has, and parameter names 
 
 The leftmost rule decides even when a later segment is more specific. For `/a/5/edit`, `/a/{id:int}/{*rest}` is tried before `/a/{name}/edit`, because their ranks first differ at the second segment, where a constrained parameter outranks an unconstrained one. If that is not what you want, give the edit route the same constraint, as in `/a/{id:int}/edit`, so that the two templates first differ at the literal, which wins; or do not let a catch-all share a prefix with more specific routes.
 
-For now, templates that rank equally at every position, such as `/products/{id}` and `/products/{name}`, are tried in the order they were mapped. In this version, the same route type, or the same template, can be mapped more than once, and `Build` rejects nothing. `Definitions` lists the table's mappings in the order they were made, not the order they are tried in.
+For now, templates that rank equally at every position but are not [the same template](#the-same-template-twice), such as `/products/{id:int}` and `/products/{n:long}`, are tried in the order they were mapped. In this version, the same route type can be mapped to more than one template. `Definitions` lists the table's mappings in the order they were made, not the order they are tried in.
+
+#### The same template twice
+
+`Build` throws `InvalidOperationException` when two mappings have the same template, because the one mapped second could never be matched. The message names both templates and both route types, the earlier mapping first. When there are several such pairs, the first mapping, in the order the routes were mapped, whose template repeats an earlier one is reported, with the mapping it repeats.
+
+Two templates are the same when, once parsed, they have the same number of segments and, at every position, the same kind of segment (a literal, a required, optional or catch-all parameter), the same decoded text for a literal, compared [ordinally and case-sensitively](#how-text-is-compared), and the same constraint, or none, for a parameter. Parameter names do not count. So:
+
+- `/a/{x}` and `/a/{y}` are the same, and so are `/a/{id:int}` and `/a/{n:INT}`.
+- `/caf%C3%A9` and `/café` are the same, and so are `/a//b/` and `/a/b`.
+- `/Users` and `/users` are not the same, nor are `/a/{id}` and `/a/{id?}`.
+- `/a/{id:int}` and `/a/{id:long}` are not the same.
+
+This applies even when both mappings are for the same route type.
 
 ### Creating the route
 

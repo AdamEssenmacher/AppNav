@@ -90,6 +90,9 @@ public sealed class RouteTableSharedSegmentsTests
         Assert.Equal(-1, MatchTable(["/{a}/lit", "/{a}/{b}", "/{*rest}"], "/x/%2E").Winner);
     }
 
+    // Each random table matches like the first template, by precedence, that matches the path on its own. Because a
+    // repeated shape is drawn again, no table here has two equal-rank templates that both match the path; the order
+    // of such ties is covered by the tests named for it.
     [Fact]
     public void RandomTablesMatchLikeTheirFirstMatchingTemplateByPrecedence()
     {
@@ -101,9 +104,17 @@ public sealed class RouteTableSharedSegmentsTests
         var random = new Random(20261125);
         for (var iteration = 0; iteration < 3000; iteration++)
         {
+            // A table cannot map the same template twice, so a template with the shape of an earlier one is drawn
+            // again.
             var templates = new string[random.Next(1, 7)];
+            var shapes = new HashSet<string>(StringComparer.Ordinal);
             for (var i = 0; i < templates.Length; i++)
-                templates[i] = RandomTemplate(random);
+            {
+                string shape;
+                do
+                    (templates[i], shape) = RandomTemplate(random);
+                while (!shapes.Add(shape));
+            }
 
             var path = new StringBuilder();
             int segmentCount = random.Next(0, 6);
@@ -115,18 +126,24 @@ public sealed class RouteTableSharedSegmentsTests
     }
 
     // A miss on the first literal only splits the path; a miss on a dot segment at the end of a catch-all decodes every
-    // segment first. Splitting and decoding again for each definition would allocate about twenty times as much.
+    // segment first. Splitting and decoding again for each definition would allocate about twenty times as much. In
+    // the format, {0} is the definition's index and {1} that many parameters and one more, so that no two definitions
+    // have the same template.
     [Theory]
     [InlineData("/q{0}/{{x}}/{{*rest}}", "s%20")]
-    [InlineData("/{{a{0}}}/{{*rest}}", "%2E%2E")]
+    [InlineData("{1}/{{*rest}}", "%2E%2E")]
     public void AMissOnManyDefinitionsAllocatesAboutAsMuchAsAMissOnOne(string templateFormat, string lastSegment)
     {
         var uri = new Uri(
             "/" + string.Join('/', Enumerable.Range(0, 999).Select(i => "s%20" + i)) + "/" + lastSegment,
             UriKind.Relative);
-        RouteTable one = BuildTable([string.Format(CultureInfo.InvariantCulture, templateFormat, 0)]);
-        RouteTable twenty = BuildTable(
-            [.. Enumerable.Range(0, 20).Select(i => string.Format(CultureInfo.InvariantCulture, templateFormat, i))]);
+        string Template(int index) => string.Format(
+            CultureInfo.InvariantCulture,
+            templateFormat,
+            index,
+            string.Concat(Enumerable.Range(0, index + 1).Select(i => $"/{{a{i}}}")));
+        RouteTable one = BuildTable([Template(0)]);
+        RouteTable twenty = BuildTable([.. Enumerable.Range(0, 20).Select(Template)]);
 
         long oneBytes = AllocatedBytesPerMiss(one, uri);
         long twentyBytes = AllocatedBytesPerMiss(twenty, uri);
@@ -149,35 +166,52 @@ public sealed class RouteTableSharedSegmentsTests
         return (GC.GetAllocatedBytesForCurrentThread() - before) / Calls;
     }
 
-    // Up to three literals and parameters, then nothing, one or two optional parameters, or a catch-all.
-    private static string RandomTemplate(Random random)
+    // Up to three literals and parameters, then nothing, one or two optional parameters, or a catch-all. The shape
+    // has a token for each segment, the same for two literals that decode to the same text, such as A and %41, and
+    // for parameters that differ only by name, so that two templates have the same shape exactly when they are the
+    // same template.
+    private static (string Value, string Shape) RandomTemplate(Random random)
     {
         string[] literals = ["a", "A", "b", "lit", "%41", "a%2Fb", "%25"];
+        string[] literalTokens = ["a", "A", "b", "lit", "A", "a-slash-b", "percent"];
         string[] parameters = ["{#}", "{#:int}", "{#:alpha}"];
         var template = new StringBuilder();
+        var shape = new StringBuilder();
         var names = 0;
         int positionalCount = random.Next(0, 4);
         for (var i = 0; i < positionalCount; i++)
         {
-            template.Append('/').Append(random.Next(2) == 0
-                ? literals[random.Next(literals.Length)]
-                : parameters[random.Next(parameters.Length)].Replace("#", "p" + names++, StringComparison.Ordinal));
+            if (random.Next(2) == 0)
+            {
+                int literal = random.Next(literals.Length);
+                template.Append('/').Append(literals[literal]);
+                shape.Append(' ').Append(literalTokens[literal]);
+            }
+            else
+            {
+                string parameter = parameters[random.Next(parameters.Length)];
+                template.Append('/').Append(parameter.Replace("#", "p" + names++, StringComparison.Ordinal));
+                shape.Append(' ').Append(parameter);
+            }
         }
 
         switch (random.Next(4))
         {
             case 1:
                 template.Append("/{o").Append(names++).Append("?}");
+                shape.Append(" {#?}");
                 break;
             case 2:
                 template.Append("/{o").Append(names++).Append("?}/{o").Append(names++).Append(":int?}");
+                shape.Append(" {#?} {#:int?}");
                 break;
             case 3:
                 template.Append("/{*rest}");
+                shape.Append(" {*#}");
                 break;
         }
 
-        return template.Length == 0 ? "/" : template.ToString();
+        return (template.Length == 0 ? "/" : template.ToString(), shape.ToString());
     }
 
     // The first template in precedence order, with ties in registration order, that matches the path on its own.

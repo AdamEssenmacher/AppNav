@@ -33,7 +33,9 @@ internal sealed class RouteConstraint
     // The name in lowercase, as messages write it, whatever case the template used.
     public string Name { get; }
 
-    // Returns the built-in constraint with this name, ignoring case, or null when there is none.
+    // Returns the built-in constraint with this name, ignoring case, or null when there is none. Each built-in
+    // constraint is one instance, which SameTemplateComparer relies on to compare the constraints of templates by
+    // reference.
     public static RouteConstraint? Find(string name)
     {
         foreach (RouteConstraint constraint in BuiltIn)

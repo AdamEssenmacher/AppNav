@@ -119,8 +119,8 @@ public sealed class RouteTablePrecedenceTests
     [Fact]
     public void EqualRankTemplatesCurrentlyMatchInRegistrationOrder()
     {
-        Assert.Equal("/p/{id}", Winner(["/p/{id}", "/p/{name}"], "/p/1"));
-        Assert.Equal("/p/{name}", Winner(["/p/{name}", "/p/{id}"], "/p/1"));
+        Assert.Equal("/p/{id:int?}", Winner(["/p/{id:int?}", "/p/{n:decimal?}"], "/p/1"));
+        Assert.Equal("/p/{n:decimal?}", Winner(["/p/{n:decimal?}", "/p/{id:int?}"], "/p/1"));
         Assert.Equal("/p/{id:int}", Winner(["/p/{id:int}", "/p/{n:long}"], "/p/1"));
         Assert.Equal("/p/{n:long}", Winner(["/p/{n:long}", "/p/{id:int}"], "/p/1"));
     }
@@ -150,11 +150,12 @@ public sealed class RouteTablePrecedenceTests
     }
 
     // Below 17 elements Array.Sort happens to be stable, so only a larger table shows whether ties are broken on
-    // registration order rather than left to the sort.
+    // registration order rather than left to the sort. The parameter templates differ only in a literal after the
+    // parameter, so they rank equally without being the same template.
     [Fact]
     public void ManyEqualRankTemplatesCurrentlyKeepRegistrationOrder()
     {
-        string[] parameters = [.. Enumerable.Range(0, 40).Select(i => $"/p/{{n{i}}}")];
+        string[] parameters = [.. Enumerable.Range(0, 40).Select(i => $"/p/{{n{i}}}/l{i}")];
         string[] literals = [.. Enumerable.Range(0, 40).Select(i => $"/p/l{i}")];
         string[] interleaved = [.. parameters.Zip(literals).SelectMany(pair => new[] { pair.First, pair.Second })];
 
@@ -184,9 +185,17 @@ public sealed class RouteTablePrecedenceTests
         var random = new Random(20261125);
         for (var iteration = 0; iteration < 500; iteration++)
         {
+            // A table cannot map the same template twice, so a template with the shape of an earlier one is drawn
+            // again.
             var templates = new (string Value, string Ranks)[random.Next(2, 8)];
+            var shapes = new HashSet<string>(StringComparer.Ordinal);
             for (var i = 0; i < templates.Length; i++)
-                templates[i] = RandomTemplate(random, i);
+            {
+                string shape;
+                do
+                    (templates[i].Value, templates[i].Ranks, shape) = RandomTemplate(random, i);
+                while (!shapes.Add(shape));
+            }
 
             for (var i = 0; i < templates.Length; i++)
             {
@@ -238,16 +247,19 @@ public sealed class RouteTablePrecedenceTests
 
     // A template of up to three literals, constrained and unconstrained parameters, then nothing, optional
     // parameters or a catch-all, with its ranks as one letter per segment, so that two templates rank equally at
-    // every position exactly when the letters are equal. Names and constraints vary within a rank.
-    private static (string Value, string Ranks) RandomTemplate(Random random, int index)
+    // every position exactly when the letters are equal. Names and constraints vary within a rank. The shape is the
+    // template before names are filled in, which is the same for two templates exactly when they are the same.
+    private static (string Value, string Ranks, string Shape) RandomTemplate(Random random, int index)
     {
         var value = new StringBuilder();
         var ranks = new StringBuilder();
+        var shape = new StringBuilder();
         var names = 0;
         void Append(string segment, char rank)
         {
             value.Append('/').Append(segment.Replace("#", $"p{index}x{names++}", StringComparison.Ordinal));
             ranks.Append(rank);
+            shape.Append('/').Append(segment);
         }
 
         int positionalCount = random.Next(0, 4);
@@ -284,7 +296,7 @@ public sealed class RouteTablePrecedenceTests
                 break;
         }
 
-        return (value.Length == 0 ? "/" : value.ToString(), ranks.ToString());
+        return (value.Length == 0 ? "/" : value.ToString(), ranks.ToString(), shape.ToString());
     }
 
     private static int CompareRanks(string first, string second)
@@ -300,7 +312,6 @@ public sealed class RouteTablePrecedenceTests
         return 0;
     }
 
-    // By reference, because a template without parameters can be mapped twice with the same text.
     private static int IndexOf(IReadOnlyList<RouteDefinition> definitions, RouteDefinition definition)
     {
         for (var i = 0; i < definitions.Count; i++)

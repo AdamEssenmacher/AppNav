@@ -23,8 +23,8 @@ public sealed class RouteTableBuilder
     /// </param>
     /// <returns>This builder, so that calls can be chained.</returns>
     /// <remarks>
-    /// In this version, the same route type or template can be mapped more than once, and nothing is rejected when
-    /// the table is built; later versions will reject some such mappings. The order of the calls sets the order of
+    /// In this version, the same route type can be mapped to more than one template. The same template cannot be
+    /// mapped twice, but that is checked by <see cref="Build"/>, not here. The order of the calls sets the order of
     /// <see cref="RouteTable.Definitions"/>, but not which mapping wins when several match, which follows the
     /// precedence of their templates as <see cref="RouteTable.Match(Uri)"/> describes.
     /// </remarks>
@@ -56,6 +56,14 @@ public sealed class RouteTableBuilder
     /// Its <see cref="RouteTable.Definitions"/> are in the order they were mapped, and the order in which
     /// <see cref="RouteTable.Match(Uri)"/> tries them, by precedence, is decided here, once.
     /// </returns>
+    /// <exception cref="InvalidOperationException">
+    /// Two mappings have the same template: the same number of segments and, at every position, the same kind of
+    /// segment, the same decoded literal text, compared ordinally and case-sensitively, and the same constraint or
+    /// none. Parameter names do not count, so <c>/a/{x}</c> and <c>/a/{y}</c> are the same. The message names both
+    /// templates and both route types, the earlier mapping first: the first mapping, in the order the routes were
+    /// mapped, whose template repeats an earlier one is reported, with the mapping it repeats. The builder is not
+    /// changed.
+    /// </exception>
     public RouteTable Build()
     {
         return new RouteTable(_definitions.ToArray());
