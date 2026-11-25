@@ -504,11 +504,16 @@ public sealed class RouteMatchContextTypedQueryTests
                     AssertNullableList(() => context.GetQueryValues<ulong?>(name!), "'UInt64?'", "'UInt64'");
                     AssertNullableList(() => context.GetQueryValues<float?>(name!), "'Single?'", "'Single'");
                     AssertNullableList(() => context.GetQueryValues<double?>(name!), "'Double?'", "'Double'");
-                    AssertNullableList(() => context.GetQueryValues<DayOfWeek?>(name!), "'DayOfWeek?'", "'DayOfWeek'");
+                    AssertNullableList(
+                        () => context.GetQueryValues<DayOfWeek?>(name!),
+                        "'DayOfWeek?'",
+                        "'DayOfWeek'",
+                        "DayOfWeek");
                     AssertNullableList(
                         () => context.GetQueryValues<Status?>(name!),
                         "'" + StatusName + "?'",
-                        "'" + StatusName + "'");
+                        "'" + StatusName + "'",
+                        StatusName);
                 }
             });
 
@@ -1163,9 +1168,21 @@ public sealed class RouteMatchContextTypedQueryTests
         Assert.Contains(typeName, exception.Message, StringComparison.Ordinal);
     }
 
-    private static void AssertNullableList(Action read, string typeName, string underlyingName)
+    // The advice to read the underlying type would fail in turn for an enum that is not registered, so then the
+    // message also names the registration, and only then.
+    private static void AssertNullableList(
+        Action read,
+        string typeName,
+        string underlyingName,
+        string? unregisteredEnum = null)
     {
         InvalidOperationException exception = Assert.Throws<InvalidOperationException>(read);
+
+        if (unregisteredEnum is null)
+            Assert.DoesNotContain("AddEnumValueCodec", exception.Message, StringComparison.Ordinal);
+        else
+            Assert.Contains($"AddEnumValueCodec<{unregisteredEnum}>", exception.Message, StringComparison.Ordinal);
+
 
         Assert.Contains(ListOfQueryValues, exception.Message, StringComparison.Ordinal);
         Assert.Contains(Unsupported, exception.Message, StringComparison.Ordinal);

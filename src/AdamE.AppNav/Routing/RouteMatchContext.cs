@@ -350,14 +350,19 @@ public sealed class RouteMatchContext
         // Of the supported types, only string and the nullable ones have a null default, and the test is a constant
         // once the method is compiled for a value type, so a read of a value type never reaches the rest of it. The
         // nullable form of an enum is rejected for being nullable whether or not the enum is registered, since
-        // registering it would not help.
+        // registering it would not help. When it is not registered, the message says that too, so that following
+        // its advice does not lead straight to a second failure.
         if (default(T) is null && typeof(T) != typeof(string)
             && (SupportedTypeName<T>() is not null || Nullable.GetUnderlyingType(typeof(T)) is { IsEnum: true }))
         {
+            Type underlying = Nullable.GetUnderlyingType(typeof(T))!;
+            string register = underlying.IsEnum && !_codecs.ContainsKey(underlying)
+                ? ", after registering the enum with " +
+                  $"RouteTableBuilder.AddEnumValueCodec<{DisplayName(underlying)}>() when building the table"
+                : "";
             throw new InvalidOperationException(
                 $"A list of query values cannot be read as type '{DisplayName(typeof(T))}': an element of the list " +
-                $"is never absent, so read it as type '{DisplayName(Nullable.GetUnderlyingType(typeof(T))!)}' " +
-                "instead.");
+                $"is never absent, so read it as type '{DisplayName(underlying)}' instead{register}.");
         }
 
         ValueCodec<T>? codec = FindCodec<T>("A list of query values", ListTypesTail, out string typeName);
