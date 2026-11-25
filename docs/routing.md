@@ -260,6 +260,7 @@ A create function reads the query of the URI with `TryGetQuery(name, out value)`
 - Names are compared ordinally without regard to case, as path parameter names are.
 - `TryGetQuery` gives the first value when a name repeats, so `?tab=a&tab=b` gives `a`. That is what a browser's `URLSearchParams.get` and most web frameworks return, so the app and a web page handling the same link agree on which value they read; code that needs every value uses `GetQueryValues`. Names that differ only by case are one name here, unlike in a browser, so `?Tab=x&tab=y` gives `x`. `TryGetQuery` gives the empty string for a name with no value, as in `?flag` or `?flag=`. It returns `false` with `null` when the query does not have the name, and never throws for a missing value.
 - `GetQueryValues` gives every value of a name in order, including repeated and empty values, and an empty list when there are none. The list cannot be changed.
+- `TryGetQuery<T>` and `GetQueryValues<T>` read values as numbers, `bool` or `Guid`, as described in [Typed query values](#typed-query-values).
 
 The query is read and parsed only when a create function first asks for a value, at most once per match, so a URI that matches nothing, and a route that reads no query values, pay nothing for the query. Nothing limits the size of a query, and the cost of reading it grows linearly with its length. `System.Uri` itself accepts a query of a million characters, absolute or relative, so an app that receives links from outside should bound their length before calling `Match`; nothing else does. Like the path, the query can carry a secret, so it never appears in a diagnostic.
 
@@ -339,7 +340,7 @@ When a template matches, its create function is called once with a `RouteMatchCo
 - `Path<T>(name)` and `TryGetPath<T>(name, out value)` read a value as a number, `bool` or `Guid`, as described in [Typed values](#typed-values).
 - Names are compared without regard to case.
 - `PathValues` is the dictionary `RouteTemplate.Match` returned. Treat it as read-only.
-- `TryGetQuery(name, out value)` and `GetQueryValues(name)` read the query, as described in [Query values](#query-values).
+- `TryGetQuery(name, out value)` and `GetQueryValues(name)` read the query, as described in [Query values](#query-values), and `TryGetQuery<T>(name, out value)` and `GetQueryValues<T>(name)` read query values as typed values, as described in [Typed query values](#typed-query-values).
 - `SourceUri` is the URI that was matched.
 
 An exception the create function throws propagates out of `Match` unchanged, and no later template is tried, except a `RouteValueException`, which rejects a value as described [below](#rejecting-a-value). A create function that returns `null` makes `Match` throw `InvalidOperationException`.
@@ -377,9 +378,62 @@ public sealed record ListRoute(int? Page) : AppRoute;
 >     && int.TryParse(text, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out int parsed) ? parsed : 1;
 > ```
 
-With the constraint of the same name in the template, such as `{id:int}` read with `Path<int>`, the conversion cannot fail, because a value that does not satisfy the constraint never reaches the create function. A different constraint does not give that guarantee: `{id:long}` read with `Path<int>` lets `/3000000000` through, and `{id:int}` read with `Path<bool>` lets `/1` through, and each then fails the match. Without a constraint, a value that does not convert fails the match for that URI, and no other template is tried, even one that would also match the path. The exception's `ValueName` is the name the create function passed, and its message names the value and the type, as in `The value of 'id' is not a valid int.`, but never quotes the value, which can carry a secret from the URI.
+With the constraint of the same name in the template, such as `{id:int}` read with `Path<int>`, the conversion cannot fail, because a value that does not satisfy the constraint never reaches the create function. A different constraint does not give that guarantee: `{id:long}` read with `Path<int>` lets `/3000000000` through, and `{id:int}` read with `Path<bool>` lets `/1` through, and each then fails the match. Without a constraint, a value that does not convert fails the match for that URI, and no other template is tried, even one that would also match the path. The exception's `ValueName` is the name the create function passed, and its message names the parameter and the type, as in `The path value of 'id' is not a valid int.`, but never quotes the value, which can carry a secret from the URI.
 
 Other types, such as other number types, enums, and their nullable forms, are not supported in this version. Using one throws `InvalidOperationException` whether or not the path has the value, and it propagates out of `Match`, since it is a mistake in the app rather than in the URI.
+
+#### Typed query values
+
+`TryGetQuery<T>(name, out value)` and `GetQueryValues<T>(name)` read query values as the same types, by the same rules, so `TryGetQuery<int>` accepts exactly the text that `Path<int>` accepts and gives the same value. The query is read, decoded and compared by name as described in [Query values](#query-values).
+
+```csharp
+RouteTable table = new RouteTableBuilder()
+    .Map("/products", c =>
+    {
+        c.TryGetQuery("page", out int? page);
+        IReadOnlyList<string> tags = c.GetQueryValues<string>("tag");
+        return new ProductsRoute(page ?? 1, string.Join(",", tags));
+    })
+    .Build();
+
+// /products?page=2&tag=a&tag=b gives ProductsRoute(2, "a,b"), /products gives ProductsRoute(1, ""), and
+// /products?page=x and /products?page= fail the match.
+
+public sealed record ProductsRoute(int Page, string Tags) : AppRoute;
+```
+
+- `TryGetQuery<T>` returns `false` with the default value of `T`, which is `null` for a nullable type, only when the query does not have the name or there is no query.
+- A value that is present but does not convert rejects the match with a `RouteValueException`, as a path value does. An empty value is present: `?page=` and `?page` give the empty string, which is not a valid number, `bool` or `Guid`, so `TryGetQuery<int>` rejects both. `TryGetQuery<string>` gives the empty string, as `TryGetQuery` does.
+- The first value decides, as for `TryGetQuery`: `?page=x&page=2` read as `int` fails the match, although the second value is valid, and `?page=2&page=x` gives 2.
+- `GetQueryValues<T>` gives every value in order, converted, or fails: one value that does not convert, an empty one included, rejects the match, so `?id=3&id=5` read as `int` gives 3 and 5, and `?id=3&id=x` fails. A name the query does not have gives an empty list. The list cannot be changed, and `GetQueryValues<string>` gives the same values as `GetQueryValues`.
+- `GetQueryValues<T>` does not support a nullable type, such as `int?`, since an element of the list is never absent; read the list as `int`. It throws `InvalidOperationException`, as an unsupported type does, whether or not the query has the name.
+- `+` is a space in a query, so `?n=+5` gives a space followed by `5`, which is not a valid `int`, while `?n=%2B5` gives `+5`, which is 5.
+- The message of the exception says that it is a query value, as in `The query value of 'page' is not a valid int.`, where a path value gives `The path value of 'page' is not a valid int.`, so a path parameter and a query value of the same name are told apart. Neither message quotes the value, which can carry a secret such as a sign-in token.
+
+For a lenient read, read the string and use `int.TryParse`, as for a path value:
+
+```csharp
+int page = c.TryGetQuery("page", out string? text)
+    && int.TryParse(text, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out int parsed) ? parsed : 1;
+```
+
+Whether a query value is required is the app's decision. To require one, reject the match when it is absent, with a message that says what is missing, since the default message of `RouteValueException` does not say where the value was expected:
+
+```csharp
+RouteTable table = new RouteTableBuilder()
+    .Map("/results", context =>
+    {
+        if (!context.TryGetQuery("page", out int page))
+            throw new RouteValueException("page", "The query value 'page' is required.");
+
+        return new ResultsRoute(page);
+    })
+    .Build();
+
+// /results?page=2 gives ResultsRoute(2), and /results and /results?page=x fail the match.
+
+public sealed record ResultsRoute(int Page) : AppRoute;
+```
 
 ### Rejecting a value
 
