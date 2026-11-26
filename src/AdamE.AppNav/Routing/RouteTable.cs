@@ -407,6 +407,9 @@ public sealed class RouteTable
     /// The exception's <see cref="ArgumentException.ParamName"/> is <c>baseUri</c>, and its message names the scheme
     /// alone.
     /// <para>-or-</para>
+    /// <see cref="Uri"/> cannot parse the link written behind <paramref name="baseUri"/>, which no base or route is
+    /// known to cause. The exception's <see cref="ArgumentException.ParamName"/> is <c>baseUri</c>.
+    /// <para>-or-</para>
     /// The last value written ends with a space, and the URI contains a non-ASCII character, so <see cref="Uri"/>
     /// drops the space. The exception's <see cref="ArgumentException.ParamName"/> is <c>route</c>, and its message
     /// names the route type and the template, but neither the value, the text nor the base.
@@ -426,10 +429,17 @@ public sealed class RouteTable
 
         string authority = ReadAuthority(baseUri);
         string text = Write(route, out RouteDefinition owner);
-        // No base that passes the checks above is known to give text that Uri cannot parse; should one, it is refused
-        // like a scheme that changes the link, so that a UriFormatException never escapes.
+        // No base that passes the checks above, and no text Format writes, is known to give a link that Uri cannot
+        // parse. Should one, it is refused in its own words, so that a UriFormatException never escapes and the
+        // message does not blame a scheme that may be fine.
         if (!Uri.TryCreate(authority + text, UriKind.Absolute, out Uri? uri))
-            throw SchemeChangesLink(baseUri);
+        {
+            throw new ArgumentException(
+                $"The route type '{RouteValueTypes.DisplayName(route.GetType())}' cannot be written by the template " +
+                $"'{owner.Template.Value}' as an absolute URI: System.Uri cannot parse the link written behind the " +
+                "base URI. Use the relative text that Format returns.",
+                nameof(baseUri));
+        }
 
         // Read as Match reads it, so that the check holds for what Match will see, and compared in place, so that a
         // link read back unchanged costs no more strings than reading it does.
@@ -449,8 +459,9 @@ public sealed class RouteTable
                 $"The route type '{RouteValueTypes.DisplayName(route.GetType())}' cannot be written by the template " +
                 $"'{owner.Template.Value}' as an absolute URI: the last value written ends with a space, which " +
                 "System.Uri drops from the end of an absolute URI that contains a non-ASCII character, so the link " +
-                "would be read back differently. Write a value that does not end with a space, use a base whose " +
-                "host and user information are ASCII, or use the relative text that Format returns.",
+                "would be read back differently. Write a value that does not end with a space, or use the relative " +
+                "text that Format returns. A base whose host and user information are ASCII avoids this only when " +
+                "nothing else in the link is non-ASCII.",
                 nameof(route));
         }
 
