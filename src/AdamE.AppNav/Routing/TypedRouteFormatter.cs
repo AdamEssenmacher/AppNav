@@ -1,11 +1,10 @@
 using System.Collections.Frozen;
 using System.Diagnostics;
-using System.Text;
 
 namespace AdamE.AppNav.Routing;
 
 // The formatter for routes of type TRoute: a writer for every parameter of the template, in template order, and a
-// writer for every query value, in the order they were declared, each with its name already percent-encoded.
+// writer for every query declaration, in the order they were declared, each with its name already percent-encoded.
 internal sealed class TypedRouteFormatter<TRoute> : RouteFormatter
     where TRoute : AppRoute
 {
@@ -16,30 +15,29 @@ internal sealed class TypedRouteFormatter<TRoute> : RouteFormatter
 
     private readonly RouteTemplate _template;
     private readonly ValueWriter<TRoute>[] _pathWriters;
-    private readonly ValueWriter<TRoute>[] _queryWriters;
-
-    // The name of each query writer at the same index, encoded once when it was declared rather than each time.
-    private readonly string[] _queryNames;
+    private readonly QueryWriter<TRoute>[] _queryWriters;
 
     public TypedRouteFormatter(
         RouteTemplate template,
         ValueWriter<TRoute>[] pathWriters,
-        ValueWriter<TRoute>[] queryWriters,
-        string[] queryNames)
+        QueryWriter<TRoute>[] queryWriters)
     {
         _template = template;
         _pathWriters = pathWriters;
         _queryWriters = queryWriters;
-        _queryNames = queryNames;
     }
 
     public override RouteFormatter Bind(FrozenDictionary<Type, object> codecs)
     {
-        return new TypedRouteFormatter<TRoute>(
-            _template,
-            Bind(_pathWriters, codecs, _template),
-            Bind(_queryWriters, codecs, _template),
-            _queryNames);
+        var pathWriters = new ValueWriter<TRoute>[_pathWriters.Length];
+        for (var i = 0; i < pathWriters.Length; i++)
+            pathWriters[i] = _pathWriters[i].Bind(codecs, _template);
+
+        var queryWriters = new QueryWriter<TRoute>[_queryWriters.Length];
+        for (var i = 0; i < queryWriters.Length; i++)
+            queryWriters[i] = _queryWriters[i].Bind(codecs, _template);
+
+        return new TypedRouteFormatter<TRoute>(_template, pathWriters, queryWriters);
     }
 
     // Each value function is called at most once: the path functions in template order, then the query functions in
@@ -68,50 +66,19 @@ internal sealed class TypedRouteFormatter<TRoute> : RouteFormatter
         return _queryWriters.Length == 0 ? written : AppendQuery(typed, written);
     }
 
-    private static ValueWriter<TRoute>[] Bind(
-        ValueWriter<TRoute>[] writers,
-        FrozenDictionary<Type, object> codecs,
-        RouteTemplate template)
-    {
-        var bound = new ValueWriter<TRoute>[writers.Length];
-        for (var i = 0; i < bound.Length; i++)
-            bound[i] = writers[i].Bind(codecs, template);
-
-        return bound;
-    }
-
-    // The builder is made only for the first value that is written, so a route whose query values are all null costs
-    // nothing beyond its path, which is returned as it is. Every name and value is encoded with Uri.EscapeDataString,
-    // which leaves only ASCII letters, digits and '-', '.', '_' and '~' as they are: a space becomes %20 and '+'
-    // becomes %2B, because the query reader takes '+' for a space, and '&', '=', '#', '?' and '%' are encoded, so that
-    // the reader splits the pairs where they were joined and decodes each name and value back to the text written.
-    // Names are encoded once, when they are declared, so only values are encoded here.
+    // Each declaration appends its own pairs, so the pairs of a list stay where the list was declared among the
+    // others. A declaration that cannot write its value stops the calls, as a path value does.
     private string AppendQuery(TRoute route, string path)
     {
-        StringBuilder? builder = null;
-        for (var i = 0; i < _queryWriters.Length; i++)
+        var query = new QueryBuilder(path);
+        foreach (QueryWriter<TRoute> writer in _queryWriters)
         {
-            ValueWriter<TRoute> writer = _queryWriters[i];
-            if (!writer.TryWrite(route, out string? text))
-                throw NotWritten(writer.Subject, $"has a value that cannot be written: {writer.NoTextReason}");
-
-            if (text is null)
-                continue;
-
-            // Uri.EscapeDataString writes a lone surrogate as the encoding of U+FFFD, so the value would be read back
-            // changed. It is refused, as a path value with one is.
-            if (RouteText.ContainsLoneSurrogate(text))
-                throw NotWritten(writer.Subject, LoneSurrogate);
-
-            if (builder is null)
-                builder = new StringBuilder(path.Length + 64).Append(path).Append('?');
-            else
-                builder.Append('&');
-
-            builder.Append(_queryNames[i]).Append('=').Append(Uri.EscapeDataString(text));
+            QueryValueProblem problem = writer.Write(route, ref query);
+            if (problem != QueryValueProblem.None)
+                throw NotWritten(writer.Subject, Describe(problem, writer.NoTextReason));
         }
 
-        return builder?.ToString() ?? path;
+        return query.ToString();
     }
 
     // Route values can be secrets, such as a sign-in token, and messages tend to be logged, so every message here
@@ -123,6 +90,21 @@ internal sealed class TypedRouteFormatter<TRoute> : RouteFormatter
             $"The route type '{RouteValueTypes.DisplayName(typeof(TRoute))}' cannot be written by the template " +
             $"'{_template.Value}': {subject} {problem}.",
             "route");
+    }
+
+    // Which element of a list failed goes unsaid: the kind of failure tells the developer what to look for, and the
+    // position would say how many values come before it, which is something about the route's data.
+    private static string Describe(QueryValueProblem problem, string noTextReason)
+    {
+        return problem switch
+        {
+            QueryValueProblem.NoText => $"has a value that cannot be written: {noTextReason}",
+            QueryValueProblem.LoneSurrogate => LoneSurrogate,
+            QueryValueProblem.NullElement =>
+                "has a null element, which cannot be written, because an element of a list is never absent; leave " +
+                "it out of the list instead",
+            _ => throw new UnreachableException("A query writer reported a problem that has no message."),
+        };
     }
 
     // These messages say what is structurally wrong, such as an empty or null value or a dot segment, which the

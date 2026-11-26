@@ -1,3 +1,5 @@
+using System.Collections;
+using System.Collections.Immutable;
 using System.Globalization;
 using AdamE.AppNav.Routing;
 using Xunit;
@@ -17,6 +19,7 @@ public sealed class RouteTableFormatTests
     private const string NotMapped = "no mapping of exactly that type exists";
     private const string NoFormat = "none of its mappings has a format function";
     private const string CapturedFirst = "is matched first by the template";
+    private const string NullElement = "has a null element";
 
     // Text that stands for a secret a route can carry, distinctive enough that finding it in a message is not a
     // coincidence.
@@ -1036,6 +1039,338 @@ public sealed class RouteTableFormatTests
             AssertRoundTrip(table, route);
     }
 
+    // Each element is its own pair, in the order the list gives it, where the list was declared among the others.
+    [Fact]
+    public void TheElementsOfAListAreWrittenInOrderWhereTheListWasDeclared()
+    {
+        RouteTable table = TagsTable();
+
+        Assert.Equal("/t?page=2&tag=a&tag=b&sort=x", table.Format(new TagsRoute(2, ["a", "b"], "x")));
+        Assert.Equal("/t?tag=b&tag=a&tag=b", table.Format(new TagsRoute(null, ["b", "a", "b"], null)));
+        Assert.Equal("/t?page=1&tag=", table.Format(new TagsRoute(1, [""], null)));
+        Assert.Equal("/t?tag=&tag=&sort=", table.Format(new TagsRoute(null, ["", ""], "")));
+        Assert.Equal("/t?tag=a%20b&tag=a%2Bb&tag=%26%3D%23", table.Format(new TagsRoute(null, ["a b", "a+b", "&=#"],
+            null)));
+        AssertRoundTrip(table, new TagsRoute(2, ["a", "b"], "x"));
+
+        RouteTable interleaved = new RouteTableBuilder()
+            .Map("/i", _ => new TagsRoute(null, null, null), f => f
+                .QueryValues("a", r => r.Tags)
+                .Query("x", r => r.Sort)
+                .QueryValues("b", r => r.Tags?.Reverse())
+                .Query("y", r => r.Page))
+            .Build();
+        Assert.Equal("/i?a=1&a=2&x=s&b=2&b=1&y=3", interleaved.Format(new TagsRoute(3, ["1", "2"], "s")));
+    }
+
+    // A null list and an empty one write nothing, and the '?' only appears when some pair is written.
+    [Fact]
+    public void ANullOrEmptyListWritesNothing()
+    {
+        RouteTable table = TagsTable();
+
+        Assert.Equal("/t", table.Format(new TagsRoute(null, null, null)));
+        Assert.Equal("/t", table.Format(new TagsRoute(null, [], null)));
+        Assert.Equal("/t?sort=x", table.Format(new TagsRoute(null, [], "x")));
+        Assert.Equal("/t?page=1", table.Format(new TagsRoute(1, null, null)));
+        Assert.Equal(new TagsRoute(null, [], null), Match(table, "/t").Route);
+    }
+
+    // A null element is never written, since an element of a list read back is never absent; an empty string is a
+    // value.
+    [Fact]
+    public void ANullElementIsRejected()
+    {
+        var calls = new List<string>();
+        RouteTable table = new RouteTableBuilder()
+            .Map("/n", _ => new TagsRoute(null, null, null), f => f
+                .QueryValues("tag", r =>
+                {
+                    calls.Add("tag");
+                    return r.Tags;
+                })
+                .Query("sort", r => Log(calls, "sort", r.Sort)))
+            .Build();
+
+        AssertQueryNotWritten(table, new TagsRoute(null, ["a", null!, "b"], "x"), "/n", "tag", NullElement);
+        AssertQueryNotWritten(table, new TagsRoute(null, [null!], null), "/n", "tag", "never absent");
+        Assert.Equal(["tag", "tag"], calls);
+        Assert.Equal("/n?tag=&sort=x", table.Format(new TagsRoute(null, [""], "x")));
+    }
+
+    // An element with no text fails the format; the elements after it are not read and the later value functions are
+    // not called. The list is enumerated once, and its enumerator disposed.
+    [Fact]
+    public void AnElementThatCannotBeWrittenStopsTheList()
+    {
+        var calls = new List<string>();
+        var numbers = new RecordingList<double>([1, double.NaN, 3, 4]);
+        var accesses = new RecordingList<Access>([Access.Read, (Access)8, Access.Write]);
+        var texts = new RecordingList<string>(["a", "b\uD800", "c"]);
+        RouteTable table = new RouteTableBuilder()
+            .AddEnumValueCodec<Access>()
+            .Map("/e", _ => new SettingsRoute(), f => f
+                .QueryValues("n", _ => Log(calls, "n", numbers))
+                .QueryValues("a", _ => Log(calls, "a", accesses))
+                .QueryValues("t", _ => Log(calls, "t", texts))
+                .Query("after", _ => Log(calls, "after", "x")))
+            .Build();
+
+        AssertQueryNotWritten(table, new SettingsRoute(), "/e", "n", NoText);
+        Assert.Equal(["n"], calls);
+        Assert.Equal((1, 2, 1), numbers.Counts);
+
+        numbers.Replace([1, 3]);
+        calls.Clear();
+        AssertQueryNotWritten(table, new SettingsRoute(), "/e", "a", NoText);
+        Assert.Equal(["n", "a"], calls);
+        Assert.Equal((1, 2, 1), accesses.Counts);
+
+        accesses.Replace([Access.Write]);
+        calls.Clear();
+        AssertQueryNotWritten(table, new SettingsRoute(), "/e", "t", LoneSurrogate);
+        Assert.Equal(["n", "a", "t"], calls);
+        Assert.Equal((1, 2, 1), texts.Counts);
+
+        texts.Replace(["c"]);
+        calls.Clear();
+        Assert.Equal("/e?n=1&n=3&a=Write&t=c&after=x", table.Format(new SettingsRoute()));
+        Assert.Equal(["n", "a", "t", "after"], calls);
+        Assert.Equal((1, 2, 1), texts.Counts);
+    }
+
+    // An exception from the list propagates unchanged, and the enumerator is still disposed.
+    [Fact]
+    public void AnExceptionFromTheListPropagatesUnchanged()
+    {
+        var thrown = new InvalidOperationException("from the app");
+        var list = new RecordingList<int>([1, 2, 3]) { ThrowAt = 2, Thrown = thrown };
+        var calls = new List<string>();
+        RouteTable table = new RouteTableBuilder()
+            .Map("/x", _ => new SettingsRoute(), f => f
+                .QueryValues("v", _ => list)
+                .Query("after", _ => Log(calls, "after", "x")))
+            .Build();
+
+        Assert.Same(thrown, Assert.Throws<InvalidOperationException>(() => table.Format(new SettingsRoute())));
+        Assert.Equal((1, 3, 1), list.Counts);
+        Assert.Empty(calls);
+    }
+
+    // The value function is called once and its list enumerated once, so a lazy list is evaluated once, and a list
+    // that changes between calls writes what it holds at each call.
+    [Fact]
+    public void AListIsReadOnceEachTimeARouteIsFormatted()
+    {
+        var evaluations = 0;
+        var calls = 0;
+        var list = new List<int> { 1 };
+        RouteTable table = new RouteTableBuilder()
+            .Map("/l", _ => new SettingsRoute(), f => f
+                .QueryValues("lazy", _ =>
+                {
+                    calls++;
+                    return Lazy();
+                })
+                .QueryValues("list", _ => list))
+            .Build();
+
+        Assert.Equal("/l?lazy=0&lazy=1&lazy=2&list=1", table.Format(new SettingsRoute()));
+        Assert.Equal((1, 3), (calls, evaluations));
+
+        list.Add(2);
+        Assert.Equal("/l?lazy=3&lazy=4&lazy=5&list=1&list=2", table.Format(new SettingsRoute()));
+        list.Clear();
+        Assert.Equal("/l?lazy=6&lazy=7&lazy=8", table.Format(new SettingsRoute()));
+        Assert.Equal((3, 9), (calls, evaluations));
+
+        IEnumerable<int> Lazy()
+        {
+            for (var i = 0; i < 3; i++)
+                yield return evaluations++;
+        }
+    }
+
+    // The values of a list that cannot be written, the failing one and its neighbours alike, never appear in the
+    // exception, nor does where in the list the failing one is.
+    [Fact]
+    public void AnElementThatCannotBeWrittenIsNeverQuoted()
+    {
+        const string Before = "nb-Q7x2Lk9Pd";
+        const string After = "na-W4m8Rt1Zc";
+        RouteTable[] tables =
+        [
+            new RouteTableBuilder()
+                .Map("/s", _ => new SettingsRoute(), f => f.QueryValues("t", _ => new[] { Before, Secret + "\uD800",
+                    After }))
+                .Build(),
+            new RouteTableBuilder()
+                .Map("/s", _ => new SettingsRoute(), f => f.QueryValues("t", _ => new[] { Before, null!, After }))
+                .Build(),
+            new RouteTableBuilder()
+                .Map("/s", _ => new SettingsRoute(), f => f.QueryValues("t", _ => new[] { 7654.321, double.NaN,
+                    1234.567 }))
+                .Build(),
+        ];
+
+        foreach (RouteTable failing in tables)
+        {
+            ArgumentException exception = Assert.Throws<ArgumentException>(() => failing.Format(new SettingsRoute()));
+
+            Assert.Equal("route", exception.ParamName);
+            Assert.Null(exception.InnerException);
+            Assert.Empty(exception.Data);
+            Assert.Contains("query value 't'", exception.Message, StringComparison.Ordinal);
+            foreach (string quoted in new[] { Secret, Before, After, "7654.321", "1234.567", "\uFFFD" })
+                Assert.DoesNotContain(quoted, exception.ToString(), StringComparison.Ordinal);
+        }
+    }
+
+    // Nothing in the message says where in the list the failing element is: with a template, a name and a route type
+    // that have no digits, the message of each kind of element failure, for the fourth of seven elements, has none
+    // beyond the fixed words "UTF-16".
+    [Fact]
+    public void AFailingElementIsNotLocatedInTheMessage()
+    {
+        RouteTable table = new RouteTableBuilder()
+            .AddEnumValueCodec<Access>()
+            .Map("/s", _ => new SettingsRoute(), f => f
+                .QueryValues("t", _ => Seven("a", null!))
+                .QueryValues("u", _ => Seven("a", "b\uD800"))
+                .QueryValues("n", _ => Seven(1.5, double.NaN))
+                .QueryValues("e", _ => Seven(Access.Read, (Access)8)))
+            .Build();
+        RouteTable[] failing =
+        [
+            table,
+            new RouteTableBuilder().Map("/s", _ => new SettingsRoute(), f => f
+                .QueryValues("u", _ => Seven("a", "b\uD800"))).Build(),
+            new RouteTableBuilder().Map("/s", _ => new SettingsRoute(), f => f
+                .QueryValues("n", _ => Seven(1.5, double.NaN))).Build(),
+            new RouteTableBuilder().AddEnumValueCodec<Access>().Map("/s", _ => new SettingsRoute(), f => f
+                .QueryValues("e", _ => Seven(Access.Read, (Access)8))).Build(),
+        ];
+        string[] kinds = [NullElement, LoneSurrogate, NoText, NoText];
+
+        for (var i = 0; i < failing.Length; i++)
+        {
+            RouteTable current = failing[i];
+            ArgumentException exception = Assert.Throws<ArgumentException>(() => current.Format(new SettingsRoute()));
+
+            Assert.Equal("route", exception.ParamName);
+            Assert.Contains(kinds[i], exception.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain(exception.Message.Replace("UTF-16", "", StringComparison.Ordinal), char.IsAsciiDigit);
+        }
+
+        static T[] Seven<T>(T good, T bad)
+        {
+            return [good, good, good, bad, good, good, good];
+        }
+    }
+
+    // A default ImmutableArray is neither null nor empty: enumerating it throws, and that exception propagates as any
+    // exception from the app's list does.
+    [Fact]
+    public void ADefaultImmutableArrayThrowsItsOwnException()
+    {
+        RouteTable table = new RouteTableBuilder()
+            .Map("/i", _ => new SettingsRoute(), f => f.QueryValues("v", _ => default(ImmutableArray<int>)))
+            .Build();
+
+        Assert.IsType<InvalidOperationException>(Assert.ThrowsAny<Exception>(() => table.Format(new SettingsRoute())));
+    }
+
+    // The capture check still reads the path alone, after every value function and every list.
+    [Fact]
+    public void TheCaptureCheckReadsThePathAloneAfterTheLists()
+    {
+        var list = new RecordingList<string>(["new", "x"]);
+        RouteTable table = new RouteTableBuilder()
+            .Map("/products/new", _ => new SettingsRoute())
+            .Map("/products/{name}",
+                c => new ProductQueryRoute(c.Path("name"), null),
+                f => f.Path("name", r => r.Name).QueryValues("new", _ => list))
+            .Build();
+
+        AssertCaptured(table, new ProductQueryRoute("new", null), "/products/{name}", "/products/new");
+        Assert.Equal((1, 3, 1), list.Counts);
+        Assert.Equal("/products/widget?new=new&new=x", table.Format(new ProductQueryRoute("widget", null)));
+    }
+
+    // A route whose lists are all null or empty arrays allocates nothing more than one with no query declarations: no
+    // builder and, for an empty array, no enumerator. An empty List allocates one boxed enumerator, whose size is the
+    // runtime's affair, so it is bounded loosely.
+    [Fact]
+    public void FormatAllocatesNothingMoreForListsThatAreNullOrEmpty()
+    {
+        RouteTable plain = TextTable("/products/{id}");
+        RouteTable empty = new RouteTableBuilder()
+            .Map("/products/{id}", c => new TextRoute(c.Path("id")), f => f
+                .Path("id", r => r.Text)
+                .QueryValues("a", _ => (int[]?)null)
+                .QueryValues("b", _ => Array.Empty<string>())
+                .QueryValues("c", _ => (IEnumerable<Guid>?)null)
+                .QueryValues("d", _ => Array.Empty<Access>()))
+            .AddEnumValueCodec<Access>()
+            .Build();
+        var emptyList = new List<int>();
+        RouteTable list = new RouteTableBuilder()
+            .Map("/products/{id}", c => new TextRoute(c.Path("id")), f => f
+                .Path("id", r => r.Text)
+                .QueryValues("a", _ => emptyList))
+            .Build();
+        var route = new TextRoute("widget");
+
+        Assert.Equal("/products/widget", empty.Format(route));
+        Assert.Equal("/products/widget", list.Format(route));
+        long plainBytes = AllocatedBytesPerFormat(plain, route);
+
+        Assert.InRange(AllocatedBytesPerFormat(empty, route) - plainBytes, long.MinValue, 0);
+        Assert.InRange(AllocatedBytesPerFormat(list, route) - plainBytes, long.MinValue, 64);
+    }
+
+    // What each further element of an int[] allocates is its text and its share of the query: the text of a five digit
+    // int is a 32-byte string, which Uri.EscapeDataString returns as it is, and its pair, '&v=' and the digits, is 8
+    // chars, 16 bytes. The StringBuilder's chunks hold at most about twice the chars written and ToString copies them
+    // once more, so a pair costs at most 48 bytes in all, plus a chunk header now and then. A list of the same texts as
+    // strings allocates exactly the 32 bytes of each text less, so no element is boxed, which would add 24 bytes.
+    [Fact]
+    public void EachElementAllocatesOnlyItsTextAndItsShareOfTheQuery()
+    {
+        var random = new Random(41);
+        var numbers = new int[110];
+        for (var i = 0; i < numbers.Length; i++)
+            numbers[i] = random.Next(10000, 100000);
+        string[] texts = Array.ConvertAll(numbers, n => n.ToString(Invariant));
+
+        long numberBytes = AllocatedBytesPerFormat(ListTable(numbers), new SettingsRoute())
+            - AllocatedBytesPerFormat(ListTable(numbers[..10]), new SettingsRoute());
+        long textBytes = AllocatedBytesPerFormat(ListTable(texts), new SettingsRoute())
+            - AllocatedBytesPerFormat(ListTable(texts[..10]), new SettingsRoute());
+
+        Assert.InRange(textBytes / 100, long.MinValue, 48 + 4);
+        Assert.InRange((numberBytes - textBytes) / 100, 32 - 2, 32 + 2);
+    }
+
+    // A long list is written in linear time: ten times the elements allocate about ten times the bytes, as a single
+    // StringBuilder that grows by chunks does, where copying the query for each element would allocate about a hundred
+    // times as much. Only that upper bound is asserted, since how the builder sizes its chunks is the runtime's affair.
+    [Fact]
+    public void ALongListIsWrittenInLinearTime()
+    {
+        int[] thousand = Enumerable.Range(10000, 1000).ToArray();
+        int[] tenThousand = Enumerable.Range(10000, 10000).ToArray();
+        RouteTable large = ListTable(tenThousand);
+
+        string text = large.Format(new SettingsRoute());
+        Assert.Equal(10000, text.Split('&').Length);
+        Assert.Equal(tenThousand, ReadList(text));
+
+        long smallBytes = AllocatedBytesPerFormat(ListTable(thousand), new SettingsRoute());
+        long largeBytes = AllocatedBytesPerFormat(large, new SettingsRoute());
+        Assert.InRange(largeBytes, long.MinValue, smallBytes * 15);
+    }
+
     public static TheoryData<string, AppRoute, string> SecretFailures => new()
     {
         { "constraint", new TextRoute(Secret), "/c/{v:int}" },
@@ -1288,7 +1623,40 @@ public sealed class RouteTableFormatTests
         return least;
     }
 
-    private static string? Log(List<string> calls, string name, string? value)
+    private static RouteTable TagsTable()
+    {
+        return new RouteTableBuilder()
+            .Map("/t",
+                c => new TagsRoute(
+                    c.TryGetQuery("page", out int page) ? page : null,
+                    c.GetQueryValues("tag"),
+                    c.TryGetQuery("sort", out string? sort) ? sort : null),
+                f => f.Query("page", r => r.Page).QueryValues("tag", r => r.Tags).Query("sort", r => r.Sort))
+            .Build();
+    }
+
+    private static RouteTable ListTable<T>(T[] values)
+    {
+        return new RouteTableBuilder()
+            .Map("/l", _ => new SettingsRoute(), f => f.QueryValues("v", _ => values))
+            .Build();
+    }
+
+    private static IReadOnlyList<int>? ReadList(string text)
+    {
+        IReadOnlyList<int>? read = null;
+        RouteTable reader = new RouteTableBuilder()
+            .Map("/l", c =>
+            {
+                read = c.GetQueryValues<int>("v");
+                return new SettingsRoute();
+            })
+            .Build();
+        Assert.True(reader.Match(new Uri(text, UriKind.Relative)).IsSuccess);
+        return read;
+    }
+
+    private static T Log<T>(List<string> calls, string name, T value)
     {
         calls.Add(name);
         return value;
@@ -1468,6 +1836,83 @@ public sealed class RouteTableFormatTests
     private sealed record SpacedRoute(string Name, string? Q, string? R) : AppRoute;
 
     private sealed record NumbersRoute(int Int, Guid Guid, decimal Decimal) : AppRoute;
+
+    // Lists compare by their elements, so that a route read back is equal to the one written.
+    private sealed record TagsRoute(int? Page, IReadOnlyList<string>? Tags, string? Sort) : AppRoute
+    {
+        public bool Equals(TagsRoute? other)
+        {
+            return other is not null && Page == other.Page && Sort == other.Sort
+                && (Tags ?? []).SequenceEqual(other.Tags ?? []);
+        }
+
+        public override int GetHashCode()
+        {
+            return HashCode.Combine(Page, Sort);
+        }
+    }
+
+    // A list that counts the calls made to it, and can throw from MoveNext at an index.
+    private sealed class RecordingList<T>(IReadOnlyList<T> items) : IEnumerable<T>
+    {
+        private int _enumerators;
+        private int _moves;
+        private int _disposals;
+
+        public IReadOnlyList<T> Items { get; private set; } = items;
+
+        public int ThrowAt { get; init; } = -1;
+
+        public Exception? Thrown { get; init; }
+
+        public (int Enumerators, int Moves, int Disposals) Counts => (_enumerators, _moves, _disposals);
+
+        // Starts over with other items, and counts from zero.
+        public void Replace(IReadOnlyList<T> items)
+        {
+            Items = items;
+            (_enumerators, _moves, _disposals) = (0, 0, 0);
+        }
+
+        public IEnumerator<T> GetEnumerator()
+        {
+            _enumerators++;
+            return new Enumerator(this);
+        }
+
+        IEnumerator IEnumerable.GetEnumerator()
+        {
+            return GetEnumerator();
+        }
+
+        private sealed class Enumerator(RecordingList<T> owner) : IEnumerator<T>
+        {
+            private int _index = -1;
+
+            public T Current => owner.Items[_index];
+
+            object? IEnumerator.Current => Current;
+
+            public bool MoveNext()
+            {
+                owner._moves++;
+                if (_index + 1 == owner.ThrowAt)
+                    throw owner.Thrown!;
+
+                return ++_index < owner.Items.Count;
+            }
+
+            public void Reset()
+            {
+                throw new NotSupportedException();
+            }
+
+            public void Dispose()
+            {
+                owner._disposals++;
+            }
+        }
+    }
 
     private sealed record CaptureCase(
         string Writer,

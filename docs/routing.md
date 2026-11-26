@@ -552,13 +552,13 @@ Console.WriteLine(table.Match(new Uri(path, UriKind.Relative)).Route); // OrderR
 public sealed record OrderRoute(int Id) : AppRoute;
 ```
 
-`Format` returns the route as the text of a relative URI: its path and, when at least one query value is written, its query, as described in [Writing query values](#writing-query-values). It never writes a fragment. Repeated values, several values for one name, and full URIs, with a scheme and a host, are not written yet.
+`Format` returns the route as the text of a relative URI: its path and, when at least one query value is written, its query, as described in [Writing query values](#writing-query-values). It never writes a fragment. Full URIs, with a scheme and a host, are not written yet.
 
 #### Declaring the values
 
 - The format function runs once, while `Map` maps the route, not each time a route is written.
 - It must declare every parameter of the template, required, optional and catch-all alike, with `Path(name, value)`. `Map` throws `ArgumentException` for one that is missing, naming the template and the first parameter in template order that is not declared, and for a name that is not a parameter of the template or is declared twice. Names are compared without regard to case, as the typed reads compare them.
-- It declares each query value with `Query(name, value)`, before or after the path values, as [Writing query values](#writing-query-values) describes. A mapping may declare none.
+- It declares each query value with `Query(name, value)`, and each list of values for one name with `QueryValues(name, values)`, before or after the path values, as [Writing query values](#writing-query-values) describes. A mapping may declare none.
 - A template with no parameters is made writable with a format function that declares nothing, as in `.Map("/settings", _ => new SettingsRoute(), _ => { })`. A mapping made without a format function cannot write its route.
 - The type of a value is one the [typed reads](#typed-values) support: `string`, `bool`, `Guid`, `decimal`, `double`, `float`, the eight integer types, a registered enum, or the nullable form of any of them but `string`. `Path` throws `InvalidOperationException` for any other type, such as `DateTime`; convert such a value to a string and declare that instead. An enum must be registered with `AddEnumValueCodec`, before or after the `Map` call, so `Build`, not `Path`, throws `InvalidOperationException` for one that is not.
 - The type argument of `Map` must be a type that can be instantiated. A route is written by the mapping of its exact type, so `Map` throws `ArgumentException` for an abstract route type given a format function, which happens when the type is inferred from a create function whose result is a base type. Give the type argument explicitly, as in `Map<OrderRoute>(...)`, or map each concrete type.
@@ -635,36 +635,75 @@ public sealed record ProductsRoute(int? Page, string? Sort) : AppRoute;
 ```
 
 - The values are written in the order they were declared, as `name=value` pairs joined by `&`, after a `?`. There is no `?` when no value is written.
-- The type of a value is one that `Path` accepts, and the value is written as the same canonical text, as [How values are written](#how-values-are-written) describes. `Query` throws `InvalidOperationException` for any other type, collections such as `string[]` and `List<int>` included, since it writes one value for the name. As for `Path`, `Build` reports an enum that is not registered.
+- The type of a value is one that `Path` accepts, and the value is written as the same canonical text, as [How values are written](#how-values-are-written) describes. `Query` throws `InvalidOperationException` for any other type, collections such as `string[]` and `List<int>` included, since it writes one value for the name; the message for a collection says to declare several values for one name with `QueryValues`, described below. As for `Path`, `Build` reports an enum that is not registered.
 - `null`, a null reference or a nullable value type without a value, leaves the value out. An empty string is a value: it is written as `name=`, which reads back as the empty string. There is no way to write a name without `=`.
-- A name is any text, the empty string included, as on the read side. `Query` throws `ArgumentException` for a name declared twice, compared as the reads compare names, ordinally without regard to case, because the reads take the first value of a name, so the second would never be read. It throws one too for a name that contains a lone surrogate. A query value may have the name of a path parameter: in `/items/{id}?id=x`, the two are read separately.
+- A name is any text, the empty string included, as on the read side. `Query` throws `ArgumentException` for a name declared twice, with `Query` or `QueryValues`, compared as the reads compare names, ordinally without regard to case, because the reads take the first value of a name, so the second would never be read. It throws one too for a name that contains a lone surrogate. A query value may have the name of a path parameter: in `/items/{id}?id=x`, the two are read separately.
 - Names and values are percent-encoded with `Uri.EscapeDataString`, which leaves only ASCII letters, digits, `-`, `.`, `_` and `~` as they are. A space is written as `%20`, never `+`, because the query reader takes `+` for a space, as form encoding does, so a literal `+` is written as `%2B`. `&`, `=`, `#`, `?` and `%` are encoded too, so that they are read back as data rather than splitting or ending the query: `a b+c&d` is written as `a%20b%2Bc%26d`, and the reader gives back exactly the text written.
+
+`QueryValues(name, values)` declares a list of values for one name: a function that reads the list from the route, each element of which `Format` writes as its own `name=value` pair.
+
+```csharp
+RouteTable table = new RouteTableBuilder()
+    .Map("/products",
+        c => new ProductsRoute(c.TryGetQuery("page", out int page) ? page : null, c.GetQueryValues("tag")),
+        format => format
+            .Query("page", r => r.Page)
+            .QueryValues("tag", r => r.Tags))
+    .Build();
+
+Console.WriteLine(table.Format(new ProductsRoute(2, ["a", "b"])));         // /products?page=2&tag=a&tag=b
+Console.WriteLine(table.Format(new ProductsRoute(null, ["b", "a", "b"]))); // /products?tag=b&tag=a&tag=b
+Console.WriteLine(table.Format(new ProductsRoute(2, [])));                 // /products?page=2
+Console.WriteLine(table.Format(new ProductsRoute(null, [""])));            // /products?tag=
+
+public sealed record ProductsRoute(int? Page, IReadOnlyList<string> Tags) : AppRoute
+{
+    // A record compares a list member by reference, so this route compares its tags by their elements.
+    public bool Equals(ProductsRoute? other) =>
+        other is not null && Page == other.Page && Tags.SequenceEqual(other.Tags);
+
+    public override int GetHashCode() => HashCode.Combine(Page, Tags.Count);
+}
+```
+
+The route defines its own equality because a record compares a list member by reference, and [The route table](#the-route-table) asks for routes whose members compare by value. With it, matching `/products?page=2&tag=a&tag=b` gives a route equal to `new ProductsRoute(2, ["a", "b"])`. Without it, the matched route would have the same tags and still not be equal to the route that was written, as [What a round trip promises](#what-a-round-trip-promises) explains.
+
+- The element type is one that `GetQueryValues<T>` reads: `string`, `bool`, `Guid`, `decimal`, `double`, `float`, the eight integer types or a registered enum, each written as the same canonical text as a single value. It is inferred from the function, so a function that returns `string[]`, `List<int>`, `IReadOnlyList<Guid>`, `HashSet<string>`, `ImmutableArray<int>` or `IEnumerable<long>` needs no type argument. A function that returns only `null` or `[]` has no type to infer from; give it, as in `QueryValues<string>("tag", _ => [])`. A default `ImmutableArray<T>`, which is what an unset member of that type holds, is neither `null` nor empty: enumerating it throws `InvalidOperationException`, which propagates unchanged, as any exception from the list does.
+- A nullable element type, such as `int?`, is not supported, since an element of a list is never absent, and neither is a collection, so a list of lists cannot be written. `QueryValues` throws `InvalidOperationException` for either, and for any other type. For the nullable form of a supported type or of an enum, the message names the type to declare instead; another nullable type, such as `DateTime?`, gets the message for an unsupported type. A string given to `QueryValues` is a list of `char`, and its message says to declare it with `Query`; a list of lists gets a message that says to declare each list under its own name. As for `Query`, `Build` reports an enum that is not registered.
+- A `null` list and an empty one both write nothing. There is no `?` when no value is written, by any declaration.
+- An element that is `null`, which only a list of strings can have, cannot be written, and `Format` throws for it. An empty string is a value, written as `name=`.
+- The elements are written in the order the list gives them, repeated and empty ones included, where the list was declared among the other query values: `.QueryValues("a", ...).Query("x", ...).QueryValues("b", ...)` writes `?a=1&a=2&x=m&b=3`.
+- The function is called at most once each time a route is formatted, and the list it returns is enumerated once, so a list computed lazily is computed once. After an element that cannot be written, the elements after it are not read and the later functions are not called. An exception thrown while the list is enumerated propagates unchanged.
+- A name belongs to one declaration: `QueryValues` throws `ArgumentException` for a name already declared with `Query` or `QueryValues`, and `Query` for one already declared with either, compared ordinally without regard to case. Otherwise a name follows the rules of `Query`, and each element is encoded as a single value is.
+
+`QueryValues` is a method of its own, rather than a collection given to `Query`, because `Query` writes one value for its name. A collection given to `Query` is rejected, and the message names `QueryValues`, so a list is never written by accident as one value or as several.
 
 #### When a route cannot be written
 
-`Format` throws `ArgumentNullException` for a `null` route. It throws `ArgumentException`, whose `ParamName` is `route`, when a value cannot be written. The checks are those of [`RouteTemplate.Format`](#formatting-a-path), applied to the text of each path value, one more for a path or query value that has no text, and one for a query value that cannot be encoded:
+`Format` throws `ArgumentNullException` for a `null` route. It throws `ArgumentException`, whose `ParamName` is `route`, when a value cannot be written. The checks are those of [`RouteTemplate.Format`](#formatting-a-path), applied to the text of each path value, one more for a path or query value that has no text, one for a query value that cannot be encoded, and one for a `null` element of a list of query values. An element of a list is checked as a single query value is:
 
 - a required parameter's value is `null`;
 - a value is empty, contains a lone surrogate, or is `.` or `..`;
 - a value does not satisfy the parameter's [constraint](#constraints), which happens when the value's type is wider than the constraint, as for `{id:int}` written from a `long` above 2147483647, or when a string does not fit it, as for `{n:alpha}` written from `ab1`;
 - a catch-all value starts or ends with `/`, contains `//`, or has `.` or `..` as a part;
 - an optional parameter has a value although an earlier optional parameter is left out, as for `/a/{b?}/{c?}` with a value for `c` and none for `b`;
-- a value has no text: a `double` or `float` that is NaN or infinite, or an enum value that no member has; or
-- a query value contains a lone surrogate, which `Uri.EscapeDataString` would write as the encoding of U+FFFD, so that it would read back changed.
+- a value has no text: a `double` or `float` that is NaN or infinite, or an enum value that no member has;
+- a query value contains a lone surrogate, which `Uri.EscapeDataString` would write as the encoding of U+FFFD, so that it would read back changed; or
+- an element of a list of query values is `null`, which no read of the list could return.
 
 `Format` also throws `ArgumentException`, after all of these checks and once every value function has been called, when every value can be written but a template that ranks higher matches the path first, as [What a round trip promises](#what-a-round-trip-promises) describes.
 
-The message names the route type, the template and the parameter, and says what is wrong in fixed words, as in `The route type 'ProductRoute' cannot be written by the template '/products/{name}': path parameter 'name' is required, but its value is null.` For a query value, it names the query value where a path failure names the path parameter, as in `The route type 'ProductsRoute' cannot be written by the template '/products': query value 'sort' has a value that is not valid UTF-16: it contains a lone surrogate, which cannot be percent-encoded and read back unchanged.` It never quotes the value, because a route can carry a secret, such as a sign-in token, and messages tend to be logged, and the exception has no inner exception that could. When more than one value cannot be written, which one is reported is not specified, beyond the check of the path against other templates coming last. An exception thrown by a value function propagates unchanged.
+The message names the route type, the template and the parameter, and says what is wrong in fixed words, as in `The route type 'ProductRoute' cannot be written by the template '/products/{name}': path parameter 'name' is required, but its value is null.` For a query value, it names the query value where a path failure names the path parameter, as in `The route type 'ProductsRoute' cannot be written by the template '/products': query value 'sort' has a value that is not valid UTF-16: it contains a lone surrogate, which cannot be percent-encoded and read back unchanged.` For an element of a list, it names the list's query value the same way, as in `The route type 'ProductsRoute' cannot be written by the template '/products': query value 'tag' has a null element, which cannot be written, because an element of a list is never absent; leave it out of the list instead.`, and says neither which element it is nor anything about the others. It never quotes the value, because a route can carry a secret, such as a sign-in token, and messages tend to be logged, and the exception has no inner exception that could. When more than one value cannot be written, which one is reported is not specified, beyond the check of the path against other templates coming last. An exception thrown by a value function propagates unchanged.
 
-Each value function is called at most once each time a route is formatted: the path functions in template order, then the query functions in the order they were declared. After a value that cannot be written, or an exception from a value function, the later functions are not called, so no query function is called for a route whose path cannot be written.
+Each value function is called at most once each time a route is formatted: the path functions in template order, then the query functions in the order they were declared. After a value that cannot be written, or an exception from a value function, the later functions are not called, so no query function is called for a route whose path cannot be written. A list of query values is enumerated once, and stops at its first element that cannot be written.
 
 `Format` never changes the table.
 
 #### What a round trip promises
 
-When `Format` returns, `Match` of the text it returns selects the mapping that wrote it, and the typed read of the type a value function returns reads each text back to a value equal to the one written. So the route that matches is equal to the one written, provided the create function reads each parameter with that typed read and builds the route from the values as the format function reads them, which the table cannot check. In the other direction, text that a typed read accepts is written back as its canonical text, and writing the route again changes nothing: `/orders/+007` matches as `OrderRoute { Id = 7 }`, which is written as `/orders/7`. The mapping that writes a route is the one of its exact type, so a mapping whose create function returns routes of several types derived from its route type creates routes that it does not write.
+When `Format` returns, `Match` of the text it returns selects the mapping that wrote it, and the typed reads give back the values the format function read: each single value, read with the typed read of the type its value function returns, is equal to the one written, and each list, read with `GetQueryValues<T>`, has equal elements in the same order. The route that matches is then equal to the one written, provided the create function reads each value that way and builds the route from the values as the format function reads them, which the table cannot check, and provided the route type compares its lists by their elements. A record does not do that by default: it compares a list member by reference, as [The route table](#the-route-table) notes, so a record with a list member reads back with equal values but is not equal to the route written unless it defines its own equality. In the other direction, text that a typed read accepts is written back as its canonical text, and writing the route again changes nothing: `/orders/+007` matches as `OrderRoute { Id = 7 }`, which is written as `/orders/7`. The mapping that writes a route is the one of its exact type, so a mapping whose create function returns routes of several types derived from its route type creates routes that it does not write.
 
-The same holds for a query value read with the typed read of its type, `TryGetQuery<T>`, which reads the first value of a name. `Format` writes one value for each name, so that first value is the one written; a link with the name repeated reads its first value, and is written back with that value alone. A query value never affects which template matches: `Match` chooses by the path alone, and so does the check below.
+The same holds for a query value read with the typed read of its type, `TryGetQuery<T>`, which reads the first value of a name. `Format` writes one value for each name declared with `Query`, so that first value is the one written; a link with the name repeated reads its first value, and is written back with that value alone. A list declared with `QueryValues` reads back through `GetQueryValues<T>`, or `GetQueryValues` for strings, as a list with the same elements in the same order. That is exact because those reads return every value of a name in the order the query gives them, repeated and empty values included, and `Format` writes the elements in the order of the list, under the one name that only that declaration writes. The one difference is `null`: a `null` list writes nothing, as an empty list does, and a name the query does not have reads back as an empty list, not as `null`. A query value never affects which template matches: `Match` chooses by the path alone, and so does the check below.
 
 [Precedence](#which-route-wins) decides which template wins, and `Build` rejects only templates that rank equally, so a template that ranks higher can match a path that another template writes. `Format` does not return such a path. After writing it, `Format` finds the template that `Match` would select for it, by the templates and their constraints alone, without calling a create function, and throws `ArgumentException`, whose `ParamName` is `route`, when that is not the template of the mapping that wrote it:
 

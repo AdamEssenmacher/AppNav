@@ -3,7 +3,7 @@ namespace AdamE.AppNav.Routing;
 /// <summary>
 /// Declares how a route of type <typeparamref name="TRoute"/> is written back as a relative URI of the template it is
 /// mapped to: for each parameter of the template, a function that reads the parameter's value from the route, and for
-/// each query value, a function that reads it from the route.
+/// each query value, or list of query values of one name, a function that reads it from the route.
 /// </summary>
 /// <typeparam name="TRoute">
 /// The type of route that the mapping produces, and that this builder declares how to write.
@@ -17,16 +17,18 @@ namespace AdamE.AppNav.Routing;
 /// <para>
 /// Every parameter of the template, required, optional and catch-all alike, must be declared once with
 /// <see cref="Path{TValue}(string, Func{TRoute, TValue})"/>. A template with no parameters is made formattable by an
-/// action that declares nothing. Query values are declared with
-/// <see cref="Query{TValue}(string, Func{TRoute, TValue})"/>, any number of them, none included, before or after the
-/// path values.
+/// action that declares nothing. A query value is declared with
+/// <see cref="Query{TValue}(string, Func{TRoute, TValue})"/>, and a list of values for one name with
+/// <see cref="QueryValues{TValue}(string, Func{TRoute, IEnumerable{TValue}})"/>, any number of them, none included,
+/// before or after the path values, each name once.
 /// </para>
 /// <para>
 /// <see cref="RouteTable.Format(AppRoute)"/> calls each declared function at most once: the path functions in template
 /// order, then the query functions in the order they were declared. It writes each value as text, builds the path with
 /// <see cref="RouteTemplate.Format(IReadOnlyDictionary{string, string})"/>, and then writes each query value that is
-/// not <see langword="null"/> as <c>name=value</c>, joined by <c>&amp;</c> after a <c>?</c>. After a value that cannot
-/// be written, or an exception from a value function, the later functions are not called.
+/// not <see langword="null"/>, and each element of each list, as <c>name=value</c>, joined by <c>&amp;</c> after a
+/// <c>?</c>. After a value that cannot be written, or an exception from a value function, the later functions are not
+/// called.
 /// </para>
 /// </remarks>
 public sealed class RouteFormatBuilder<TRoute>
@@ -44,14 +46,27 @@ public sealed class RouteFormatBuilder<TRoute>
     // item type rejects, so a collection is told what is not supported instead.
     private const string UnsupportedCollectionTail =
         RouteValueTypes.NullableForms + ". A collection is not one of them: a value declared with Query is written " +
-        "as one value for its name, and several values for one name are not supported in this version.";
+        "as one value for its name; declare several values for one name with QueryValues.";
+
+    private const string UnsupportedList = "A list of query values cannot be written";
+
+    // A list has no nullable forms, since its elements are never absent, as for the read of a list.
+    private const string UnsupportedListTail = "; convert the values to strings and write those instead.";
+
+    // Converting an element that is a collection to a string would hide a second list inside each value, so a nested
+    // collection is told what to do instead.
+    private const string NestedCollectionTail =
+        ". An element that is itself a collection is not one of them: write one list of values for a name, or " +
+        "declare each list under its own name.";
+
+    // A string given to QueryValues is a list of chars, which is what makes the element type char; the advice to
+    // convert to strings would point back at the mistake.
+    private const string CharElement =
+        ". A string is one value, not a list of characters: declare it with Query, or return a list of strings.";
 
     private readonly RouteTemplate _template;
     private readonly List<ValueWriter<TRoute>> _writers = [];
-    private readonly List<ValueWriter<TRoute>> _queryWriters = [];
-
-    // The percent-encoded name of the query writer at the same index, as it is written into every query.
-    private readonly List<string> _queryNames = [];
+    private readonly List<QueryWriter<TRoute>> _queryWriters = [];
     private bool _completed;
 
     internal RouteFormatBuilder(RouteTemplate template)
@@ -145,6 +160,8 @@ public sealed class RouteFormatBuilder<TRoute>
     /// written as the same canonical text, which the typed read of the same type, such as
     /// <see cref="RouteMatchContext.TryGetQuery{T}(string, out T)"/>, reads back to an equal value. A collection, such
     /// as <c>string[]</c> or <c>List&lt;int&gt;</c>, is not one of them: this method writes one value for the name.
+    /// Declare several values for one name with
+    /// <see cref="QueryValues{TValue}(string, Func{TRoute, IEnumerable{TValue}})"/>.
     /// </typeparam>
     /// <param name="name">
     /// The name of the query value. Any text is a name, including the empty string, as for the query reads; it is
@@ -164,15 +181,19 @@ public sealed class RouteFormatBuilder<TRoute>
     /// </exception>
     /// <exception cref="InvalidOperationException">
     /// <typeparamref name="TValue"/> is not one of the supported types, such as <see cref="Half"/>,
-    /// <c>DateTime?</c> or <c>string[]</c>; the message lists the supported types. An enum that is not registered is
-    /// not reported here, since it can be registered after the mapping, but by <see cref="RouteTableBuilder.Build"/>.
+    /// <c>DateTime?</c> or <c>string[]</c>; the message lists the supported types, and for a collection names
+    /// <see cref="QueryValues{TValue}(string, Func{TRoute, IEnumerable{TValue}})"/>. An enum that is not registered
+    /// is not reported here, since it can be registered after the mapping, but by
+    /// <see cref="RouteTableBuilder.Build"/>.
     /// <para>-or-</para>
     /// The call that maps the route has returned, so the builder can no longer be used.
     /// </exception>
     /// <exception cref="ArgumentException">
-    /// A query value of the name has already been declared, the names being compared ordinally without regard to
-    /// case, as the query reads compare them; or the name contains a lone surrogate, which cannot be percent-encoded
-    /// and read back unchanged. The exception's <see cref="ArgumentException.ParamName"/> is <c>name</c>.
+    /// A query value of the name has already been declared, with this method or with
+    /// <see cref="QueryValues{TValue}(string, Func{TRoute, IEnumerable{TValue}})"/>, the names being compared ordinally
+    /// without regard to case, as the query reads compare them; or the name contains a lone surrogate, which cannot be
+    /// percent-encoded and read back unchanged. The exception's <see cref="ArgumentException.ParamName"/> is
+    /// <c>name</c>.
     /// </exception>
     public RouteFormatBuilder<TRoute> Query<TValue>(string name, Func<TRoute, TValue> value)
     {
@@ -192,33 +213,124 @@ public sealed class RouteFormatBuilder<TRoute>
                     : UnsupportedTail);
         }
 
-        string quoted = RouteText.EscapeForMessage(name);
-        if (RouteText.ContainsLoneSurrogate(name))
+        string subject = QuerySubject(name);
+        _queryWriters.Add(
+            new ValueQueryWriter<TRoute>(
+                new TypedValueWriter<TRoute, TValue>(name, subject, value),
+                Uri.EscapeDataString(name)));
+        return this;
+    }
+
+    /// <summary>
+    /// Declares a list of query values for one name: the function that reads the list from the route, each element of
+    /// which <see cref="RouteTable.Format(AppRoute)"/> writes after the path as its own <c>name=value</c> pair.
+    /// </summary>
+    /// <typeparam name="TValue">
+    /// The type of the elements, one of those that <see cref="RouteMatchContext.GetQueryValues{T}(string)"/> reads:
+    /// <see cref="string"/>, <see cref="bool"/>, <see cref="Guid"/>, <see cref="decimal"/>, <see cref="double"/>,
+    /// <see cref="float"/>, one of the integer types <see cref="sbyte"/>, <see cref="byte"/>, <see cref="short"/>,
+    /// <see cref="ushort"/>, <see cref="int"/>, <see cref="uint"/>, <see cref="long"/> and <see cref="ulong"/>, or an
+    /// enum registered with <see cref="RouteTableBuilder.AddEnumValueCodec{TEnum}"/>. Each element is written as the
+    /// canonical text described for <see cref="Path{TValue}(string, Func{TRoute, TValue})"/>. A nullable type, such as
+    /// <c>int?</c>, is not one of them, since an element of a list is never absent, and neither is a collection, so
+    /// a list of lists cannot be written, nor is <see cref="char"/>, which a function that returns a string gives,
+    /// since a string is one value. It is inferred from the function, as <see cref="int"/> for a function that
+    /// returns <c>int[]</c>, <c>List&lt;int&gt;</c> or <c>ImmutableArray&lt;int&gt;</c>.
+    /// </typeparam>
+    /// <param name="name">
+    /// The name of the query values, by the rules of <see cref="Query{TValue}(string, Func{TRoute, TValue})"/>: any
+    /// text, including the empty string, percent-encoded when it is written, and possibly the name of a path
+    /// parameter.
+    /// </param>
+    /// <param name="values">
+    /// Reads the list from the route. It is called at most once each time a route is formatted, after every path value
+    /// function, in the order the query values were declared, and the list it returns is enumerated once, its
+    /// enumerator disposed. A <see langword="null"/> list and an empty one both write nothing. A default
+    /// <c>ImmutableArray&lt;T&gt;</c> is neither: enumerating it throws its own exception, which propagates unchanged.
+    /// </param>
+    /// <returns>This builder, so that calls can be chained.</returns>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="name"/> or <paramref name="values"/> is <see langword="null"/>.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// <typeparamref name="TValue"/> is not one of the supported types, such as <see cref="Half"/>, <c>DateTime?</c> or
+    /// <c>string[]</c>, and the message lists the supported types, or, for <see cref="char"/>, which a function that
+    /// returns a string gives, says to declare the string with Query; or it is the nullable form of a supported type or
+    /// of an enum, such as <c>int?</c>, and the message names the type to declare instead. An enum that is not
+    /// registered is not reported here, since it can be registered after the mapping, but by
+    /// <see cref="RouteTableBuilder.Build"/>.
+    /// <para>-or-</para>
+    /// The call that maps the route has returned, so the builder can no longer be used.
+    /// </exception>
+    /// <exception cref="ArgumentException">
+    /// A query value of the name has already been declared, with this method or with
+    /// <see cref="Query{TValue}(string, Func{TRoute, TValue})"/>, the names being compared ordinally without regard
+    /// to case, as the query reads compare them; or the name contains a lone surrogate, which cannot be
+    /// percent-encoded and read back unchanged. The exception's <see cref="ArgumentException.ParamName"/> is
+    /// <c>name</c>.
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// The elements are written in the order the list gives them, repeated and empty ones included, as
+    /// <c>name=value</c> pairs joined by <c>&amp;</c>, where the list was declared among the other query values, so
+    /// <c>.Query("page", r =&gt; r.Page).QueryValues("tag", r =&gt; r.Tags)</c> writes a page of 2 and the tags
+    /// <c>a</c> and <c>b</c> as <c>?page=2&amp;tag=a&amp;tag=b</c>.
+    /// <see cref="RouteMatchContext.GetQueryValues{T}(string)"/> of the name reads the elements back, equal and in
+    /// order; a route type that is a record still compares a list member by reference. An empty string is a value,
+    /// written as <c>name=</c>.
+    /// </para>
+    /// <para>
+    /// An element that cannot be written makes <see cref="RouteTable.Format(AppRoute)"/> throw: a
+    /// <see langword="null"/> element, which only a list of strings can have, since nullable element types are not
+    /// supported; an element with no text, such as a <see cref="double"/> that is NaN or an enum value that is not the
+    /// value of a member; and a string that contains a lone surrogate. The elements after it are not read, and the
+    /// later value functions are not called. An exception thrown while the list is enumerated propagates unchanged.
+    /// </para>
+    /// <para>
+    /// This is a separate method because <see cref="Query{TValue}(string, Func{TRoute, TValue})"/> writes one value
+    /// for its name, and rejects a collection rather than guess what writing it means.
+    /// </para>
+    /// </remarks>
+    public RouteFormatBuilder<TRoute> QueryValues<TValue>(string name, Func<TRoute, IEnumerable<TValue>?> values)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        ArgumentNullException.ThrowIfNull(values);
+        ThrowIfCompleted();
+
+        // Checked before the name, as for a single value. The types are those of the read of a list: the nullable form
+        // of a supported type or of an enum is rejected with the type to use instead, and any other type that is
+        // neither built in nor an enum is rejected outright, with advice that depends on what it is. String is a
+        // collection of chars, but one value.
+        Type? enumType = RouteValueTypes.EnumType<TValue>();
+        Type? underlying = Nullable.GetUnderlyingType(typeof(TValue));
+        if (underlying is not null && (RouteValueTypes.SupportedTypeName<TValue>() is not null || enumType is not null))
         {
-            throw new ArgumentException(
-                $"The query value name '{quoted}' is not valid UTF-16: it contains a lone surrogate, which cannot be " +
-                "percent-encoded and read back unchanged.",
-                nameof(name));
+            string register = enumType is not null
+                ? ", with the enum registered by RouteTableBuilder.AddEnumValueCodec" +
+                  $"<{RouteValueTypes.DisplayName(enumType)}>() when building the table"
+                : "";
+            throw new InvalidOperationException(
+                $"{UnsupportedList} as type '{RouteValueTypes.DisplayName(typeof(TValue))}': an element of the list " +
+                $"is never absent, so write it as type '{RouteValueTypes.DisplayName(underlying)}' instead{register}.");
         }
 
-        // The query reads take the first value of a name, ignoring case, so a second declaration would write a value
-        // that no read returns.
-        foreach (ValueWriter<TRoute> writer in _queryWriters)
+        if (RouteValueTypes.SupportedTypeName<TValue>() is null && enumType is null)
         {
-            if (StringComparer.OrdinalIgnoreCase.Equals(writer.Name, name))
+            if (typeof(TValue) == typeof(char))
             {
-                string spelling = StringComparer.Ordinal.Equals(writer.Name, name)
-                    ? ""
-                    : $", as '{RouteText.EscapeForMessage(writer.Name)}'";
-                throw new ArgumentException(
-                    $"Query value '{quoted}' is already declared{spelling}; each name is declared once, and names " +
-                    "that differ only by case are the same name.",
-                    nameof(name));
+                throw new InvalidOperationException(
+                    $"{UnsupportedList} as type '{RouteValueTypes.DisplayName(typeof(TValue))}'{CharElement}");
             }
+
+            throw RouteValueTypes.UnsupportedType<TValue>(
+                UnsupportedList,
+                typeof(System.Collections.IEnumerable).IsAssignableFrom(underlying ?? typeof(TValue))
+                    ? NestedCollectionTail
+                    : UnsupportedListTail);
         }
 
-        _queryWriters.Add(new TypedValueWriter<TRoute, TValue>(name, $"query value '{quoted}'", value));
-        _queryNames.Add(Uri.EscapeDataString(name));
+        _queryWriters.Add(
+            new ListQueryWriter<TRoute, TValue>(name, QuerySubject(name), Uri.EscapeDataString(name), values));
         return this;
     }
 
@@ -257,7 +369,7 @@ public sealed class RouteFormatBuilder<TRoute>
             ordered[count++] = writer;
         }
 
-        return new TypedRouteFormatter<TRoute>(_template, ordered, _queryWriters.ToArray(), _queryNames.ToArray());
+        return new TypedRouteFormatter<TRoute>(_template, ordered, _queryWriters.ToArray());
     }
 
     // A builder kept past the call to Map would declare nothing for the mapping, so its use then is a mistake.
@@ -268,6 +380,38 @@ public sealed class RouteFormatBuilder<TRoute>
             throw new InvalidOperationException(
                 "A route format builder can be used only during the call to the format action that receives it.");
         }
+    }
+
+    // Checks a query name against the rules that Query and QueryValues share, and returns the subject that messages
+    // call its declaration. One name has one declaration, whichever method made it: the single-value reads take the
+    // first value of a name, ignoring case, and the list reads take all of them, so a second declaration would write
+    // values that its read never returns, or that the other declaration's read would return as its own.
+    private string QuerySubject(string name)
+    {
+        string quoted = RouteText.EscapeForMessage(name);
+        if (RouteText.ContainsLoneSurrogate(name))
+        {
+            throw new ArgumentException(
+                $"The query value name '{quoted}' is not valid UTF-16: it contains a lone surrogate, which cannot be " +
+                "percent-encoded and read back unchanged.",
+                nameof(name));
+        }
+
+        foreach (QueryWriter<TRoute> writer in _queryWriters)
+        {
+            if (StringComparer.OrdinalIgnoreCase.Equals(writer.Name, name))
+            {
+                string spelling = StringComparer.Ordinal.Equals(writer.Name, name)
+                    ? ""
+                    : $", as '{RouteText.EscapeForMessage(writer.Name)}'";
+                throw new ArgumentException(
+                    $"Query value '{quoted}' is already declared{spelling}; each name is declared once, and names " +
+                    "that differ only by case are the same name.",
+                    nameof(name));
+            }
+        }
+
+        return $"query value '{quoted}'";
     }
 
     // Returns the parameter's name as written in the template. A template has no two names that differ only by case,

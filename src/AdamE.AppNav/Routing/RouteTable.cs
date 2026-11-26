@@ -233,7 +233,7 @@ public sealed class RouteTable
     /// query, such as <c>/orders/42</c> or <c>/products?page=2&amp;sort=name</c>. Each value is written as the
     /// canonical text of its type that
     /// <see cref="RouteFormatBuilder{TRoute}.Path{TValue}(string, Func{TRoute, TValue})"/> describes. The text never
-    /// has a fragment. Repeated values, several for one name, are not written in this version.
+    /// has a fragment.
     /// </returns>
     /// <remarks>
     /// <para>
@@ -242,26 +242,31 @@ public sealed class RouteTable
     /// functions in template order, then the query functions in the order they were declared. After a value that
     /// cannot be written, or an exception from a value function, the later functions are not called, so no query
     /// function is called for a route whose path cannot be written. A <see langword="null"/> value leaves out an
-    /// optional or catch-all parameter, or a query value.
+    /// optional or catch-all parameter, or a query value, and a <see langword="null"/> or empty list of query values
+    /// writes nothing.
     /// </para>
     /// <para>
     /// The query values are written in the order they were declared, as <c>name=value</c> pairs joined by
-    /// <c>&amp;</c>, and the <c>?</c> only when there is at least one. An empty string is written as <c>name=</c>,
+    /// <c>&amp;</c>, the elements of a list of values in the order the list gives them, where the list was declared,
+    /// and the <c>?</c> only when there is at least one pair. An empty string is written as <c>name=</c>,
     /// which reads back as the empty string. Names and values are percent-encoded with
     /// <see cref="Uri.EscapeDataString(string)"/>, so a space is written as <c>%20</c>, never <c>+</c>, which the query
     /// reads take for a space, and a <c>+</c> as <c>%2B</c>; <c>&amp;</c>, <c>=</c>, <c>#</c>, <c>%</c> and every
     /// character but ASCII letters, digits, <c>-</c>, <c>.</c>, <c>_</c> and <c>~</c> are encoded too.
     /// </para>
     /// <para>
-    /// When this method returns, <see cref="Match(Uri)"/> of the text selects the mapping that wrote it, and each
-    /// value reads back equal through the typed read of its type, a query value through the read of its first value,
-    /// which is the only one written. So the route that matches is equal to the one written provided the create
-    /// function and the format function agree, which the table cannot check. A path that a template ranking higher
-    /// would match first is not returned: with <c>/products/new</c> and <c>/products/{name}</c> in one table, the name
-    /// <c>new</c> cannot be written, because <c>/products/new</c> would open the other route. Which template a path
-    /// selects is decided exactly as <see cref="Match(Uri)"/> decides it, by the templates alone, so a query value
-    /// never changes it, and no create function is called. That check comes after every other, once every value
-    /// function has been called, and calls none. A mapping of the same route type that ranks higher also counts,
+    /// When this method returns, <see cref="Match(Uri)"/> of the text selects the mapping that wrote it, and each value
+    /// reads back equal through the typed read of its type: a query value through the read of its first value, which is
+    /// the only one written, and a list of query values through
+    /// <see cref="RouteMatchContext.GetQueryValues{T}(string)"/>, which gives equal elements in the same order, and an
+    /// empty list for a list that was <see langword="null"/>. So the route that matches is equal to the one written
+    /// provided the create function and the format function agree, which the table cannot check, and the route type
+    /// compares any list it holds by its elements, which a record does not do by default. A path that a template
+    /// ranking higher would match first is not returned: with <c>/products/new</c> and <c>/products/{name}</c> in one
+    /// table, the name <c>new</c> cannot be written, because <c>/products/new</c> would open the other route. Which
+    /// template a path selects is decided exactly as <see cref="Match(Uri)"/> decides it, by the templates alone, so a
+    /// query value never changes it, and no create function is called. That check comes after every other, once every
+    /// value function has been called, and calls none. A mapping of the same route type that ranks higher also counts,
     /// because the table cannot know that its create function makes the same route.
     /// </para>
     /// <para>
@@ -290,12 +295,13 @@ public sealed class RouteTable
     /// A value of the route cannot be written: a required parameter's value is <see langword="null"/>; a value is
     /// empty, contains a lone surrogate, does not satisfy the parameter's constraint or is a dot segment, <c>.</c> or
     /// <c>..</c>; a catch-all value starts or ends with <c>/</c>, contains <c>//</c> or has a dot segment as a part; an
-    /// optional parameter has a value although an earlier one is left out; a query value contains a lone surrogate; or
-    /// a value has no text, such as a <see cref="double"/> that is NaN or an enum value that is not the value of a
-    /// member. The exception's <see cref="ArgumentException.ParamName"/> is <c>route</c>, and its message names the
-    /// route type, the template and the path parameter or query value and says what is wrong, but never quotes the
-    /// value, which can be a secret, such as a sign-in token. It has no inner exception. When more than one value
-    /// cannot be written, which one is reported is not specified.
+    /// optional parameter has a value although an earlier one is left out; a query value contains a lone surrogate; an
+    /// element of a list of query values is <see langword="null"/>; or a value has no text, such as a
+    /// <see cref="double"/> that is NaN or an enum value that is not the value of a member. The exception's
+    /// <see cref="ArgumentException.ParamName"/> is <c>route</c>, and its message names the route type, the template
+    /// and the path parameter or query value and says what is wrong, but never quotes the value, which can be a secret,
+    /// such as a sign-in token. It has no inner exception. When more than one value cannot be written, which one is
+    /// reported is not specified.
     /// <para>-or-</para>
     /// The path written for the route is matched first by the template of another mapping, one that ranks higher, so
     /// <see cref="Match(Uri)"/> of it would select that mapping instead, whether or not that mapping has a format
@@ -305,7 +311,8 @@ public sealed class RouteTable
     /// parameter or by giving one of them a literal of its own.
     /// </exception>
     /// <exception cref="Exception">
-    /// Any exception that a value function throws, unchanged.
+    /// Any exception that a value function throws, or that a list of query values throws while it is enumerated,
+    /// unchanged.
     /// </exception>
     public string Format(AppRoute route)
     {

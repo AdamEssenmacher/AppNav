@@ -468,6 +468,54 @@ public sealed class RouteTableFormatValueTests
         AssertNullIsLeftOut<Status?>();
     }
 
+    // A list of every element type is written and read back through GetQueryValues<T> as an equal list, in order,
+    // with its repeated and empty values, between single values before and after it, under names that need encoding,
+    // from a relative URI and an absolute one alike. A null list and an empty one read back as an empty list.
+    [Fact]
+    public void AListOfEveryTypeReadsBackEqualAndInOrder()
+    {
+        var random = new Random(53);
+        AssertListRoundTrips(random, r => RandomText(r, ListAlphabet, r.Next(0, 6)));
+        AssertListRoundTrips(random, r => r.Next(2) == 0);
+        AssertListRoundTrips(random, r => new Guid(RandomBytes(r, 16)));
+        AssertListRoundTrips(random, r => new decimal(r.Next(), r.Next(), r.Next(), r.Next(2) == 0, (byte)r.Next(29)));
+        AssertListRoundTrips(random, r => FiniteDouble(r));
+        AssertListRoundTrips(random, r => (float)FiniteDouble(r) is var f && float.IsFinite(f) ? f : 1.5f);
+        AssertListRoundTrips(random, r => (sbyte)RandomBytes(r, 1)[0]);
+        AssertListRoundTrips(random, r => RandomBytes(r, 1)[0]);
+        AssertListRoundTrips(random, r => BitConverter.ToInt16(RandomBytes(r, 2)));
+        AssertListRoundTrips(random, r => BitConverter.ToUInt16(RandomBytes(r, 2)));
+        AssertListRoundTrips(random, r => BitConverter.ToInt32(RandomBytes(r, 4)));
+        AssertListRoundTrips(random, r => BitConverter.ToUInt32(RandomBytes(r, 4)));
+        AssertListRoundTrips(random, r => BitConverter.ToInt64(RandomBytes(r, 8)));
+        AssertListRoundTrips(random, r => BitConverter.ToUInt64(RandomBytes(r, 8)));
+        AssertListRoundTrips(random, r => r.Next(2) == 0 ? Status.Pending : Status.Shipped);
+        AssertListRoundTrips(random, r => Access.Read | (Access)(r.Next(2) * 6));
+    }
+
+    // Two lists of one route are each read back as written, in the order of their declarations around a single value.
+    [Fact]
+    public void TwoListsInterleavedWithASingleValueReadBackEach()
+    {
+        RouteTable table = new RouteTableBuilder()
+            .Map("/two",
+                c => new TwoListsRoute(c.GetQueryValues<int>("a"), c.TryGetQuery("x", out string? x) ? x : null,
+                    c.GetQueryValues("b")),
+                f => f.QueryValues("a", r => r.A).Query("x", r => r.X).QueryValues("b", r => r.B))
+            .Build();
+        var route = new TwoListsRoute([3, 1, 3], "m", ["", "z", ""]);
+
+        string text = table.Format(route);
+        Assert.Equal("/two?a=3&a=1&a=3&x=m&b=&b=z&b=", text);
+        foreach (string prefix in Prefixes)
+        {
+            var read = Assert.IsType<TwoListsRoute>(MatchText(table, prefix + text).Route);
+            Assert.Equal(route.A, read.A);
+            Assert.Equal(route.X, read.X);
+            Assert.Equal(route.B, read.B);
+        }
+    }
+
     private static void AssertIntegerEdges<T>()
         where T : struct, IBinaryInteger<T>, IMinMaxValue<T>
     {
@@ -650,6 +698,91 @@ public sealed class RouteTableFormatValueTests
         Assert.Empty(exception.Data);
     }
 
+    private const string ListAlphabet = "aZ09 +%/?#&=.-_~;\u00E9\u65E5\t";
+
+    private static readonly string[] ListNames = ["v", "", "a b&=+", "\u00E9", "V%20"];
+
+    // Lists of 0, 1, 2 and 1,000 elements, the longer ones with repeats from a few values, written between a single
+    // value before and one after, and a null list, each under every name.
+    private static void AssertListRoundTrips<T>(Random random, Func<Random, T> next)
+    {
+        foreach (string name in ListNames)
+        {
+            RouteTable table = ListTable<T>(name);
+            foreach (int count in new[] { 0, 1, 2, 1000 })
+            {
+                T[] pool = Enumerable.Range(0, 4).Select(_ => next(random)).ToArray();
+                var values = new T[count];
+                for (var i = 0; i < count; i++)
+                    values[i] = random.Next(3) == 0 ? pool[random.Next(pool.Length)] : next(random);
+
+                AssertListRoundTrip(table, new ListRoute<T>(random.Next(2) == 0 ? null : "b", values, "z"), name);
+            }
+
+            AssertListRoundTrip(table, new ListRoute<T>("b", null, "z"), name);
+        }
+    }
+
+    // The single value after the list is never null, so the list is never the end of the text, whose trailing %20 an
+    // absolute URI with non-ASCII text drops.
+    private static void AssertListRoundTrip<T>(RouteTable table, ListRoute<T> route, string name)
+    {
+        string text = table.Format(route);
+        IReadOnlyList<T> expected = route.Values ?? [];
+        int pairs = expected.Count + (route.Before is null ? 0 : 1) + 1;
+
+        Assert.Equal(pairs, text.Split('&').Length);
+        Assert.Equal(1, text.Count(c => c == '?'));
+        Assert.EndsWith("after=z", text, StringComparison.Ordinal);
+        foreach (string prefix in Prefixes)
+        {
+            RouteMatchResult result = MatchText(table, prefix + text);
+            Assert.True(result.IsSuccess, prefix + text);
+            ListRoute<T> read = Assert.IsType<ListRoute<T>>(result.Route);
+            Assert.Equal(route.Before, read.Before);
+            Assert.Equal(expected, read.Values);
+            Assert.Equal(route.After, read.After);
+            Assert.Equal(expected.Count, read.Texts.Count);
+            if (typeof(T) == typeof(string))
+                Assert.Equal((IEnumerable<string>)expected, read.Texts);
+        }
+
+        Assert.Equal(text, table.Format(MatchText(table, text).Route!));
+        string pair = Uri.EscapeDataString(name) + "=";
+        Assert.Equal(expected.Count, text[(text.IndexOf('?') + 1)..].Split('&').Count(p => p.StartsWith(pair,
+            StringComparison.Ordinal) && p.IndexOf('=') == pair.Length - 1));
+    }
+
+    private static RouteTable ListTable<T>(string name)
+    {
+        return new RouteTableBuilder()
+            .AddEnumValueCodec<Status>()
+            .AddEnumValueCodec<Access>()
+            .Map("/l",
+                c => new ListRoute<T>(
+                    c.TryGetQuery("before", out string? before) ? before : null,
+                    c.GetQueryValues<T>(name),
+                    c.TryGetQuery("after", out string? after) ? after : null)
+                {
+                    Texts = c.GetQueryValues(name),
+                },
+                f => f.Query("before", r => r.Before).QueryValues(name, r => r.Values).Query("after", r => r.After))
+            .Build();
+    }
+
+    private static byte[] RandomBytes(Random random, int count)
+    {
+        var bytes = new byte[count];
+        random.NextBytes(bytes);
+        return bytes;
+    }
+
+    private static double FiniteDouble(Random random)
+    {
+        double value = BitConverter.Int64BitsToDouble(random.NextInt64());
+        return double.IsFinite(value) ? value : random.NextDouble();
+    }
+
     // The digits of a number's text without its sign, point, exponent, or leading and trailing zeros, which moving
     // the point by the exponent adds.
     private static string SignificantDigits(string text)
@@ -720,6 +853,14 @@ public sealed class RouteTableFormatValueTests
     private sealed record QueryRoute<T>(T Value) : AppRoute;
 
     private sealed record RequiredRoute<T>(T Value) : AppRoute;
+
+    private sealed record ListRoute<T>(string? Before, IReadOnlyList<T>? Values, string? After) : AppRoute
+    {
+        // The values as strings, as the untyped read gives them, which the format function does not write.
+        public IReadOnlyList<string> Texts { get; init; } = [];
+    }
+
+    private sealed record TwoListsRoute(IReadOnlyList<int> A, string? X, IReadOnlyList<string> B) : AppRoute;
 
     private enum Status
     {

@@ -40,17 +40,18 @@ internal static class RouteText
         return false;
     }
 
+    // A plain loop, as in RouteConstraint, because until the JIT optimizes it the vectorized span search allocates on
+    // every call, and this runs for every query value and every element of a list that a route is written with.
     public static bool ContainsLoneSurrogate(string value)
     {
-        int start = value.AsSpan().IndexOfAnyInRange('\uD800', '\uDFFF');
-        if (start < 0)
-            return false;
-
-        for (int i = start; i < value.Length; i++)
+        for (var i = 0; i < value.Length; i++)
         {
+            if (!char.IsSurrogate(value[i]))
+                continue;
+
             if (char.IsHighSurrogate(value[i]) && i + 1 < value.Length && char.IsLowSurrogate(value[i + 1]))
                 i++;
-            else if (char.IsSurrogate(value[i]))
+            else
                 return true;
         }
 
