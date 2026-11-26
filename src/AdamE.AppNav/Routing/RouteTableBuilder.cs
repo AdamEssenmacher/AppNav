@@ -12,7 +12,8 @@ public sealed class RouteTableBuilder
 {
     private readonly List<RouteDefinition> _definitions = [];
 
-    // The codecs registered so far, each under the type it reads, an enum and its nullable form side by side.
+    // The codecs registered so far, each under the type it reads: an enum of AddEnumValueCodec and its nullable form
+    // side by side, and a type of AddValueCodec alone, since its nullable form cannot be named without reflection.
     private readonly Dictionary<Type, object> _codecs = [];
 
     /// <summary>
@@ -86,8 +87,9 @@ public sealed class RouteTableBuilder
     /// route while only one of them says how to write it.
     /// </para>
     /// <para>
-    /// A value declared as an enum must be registered with <see cref="AddEnumValueCodec{TEnum}"/> before
-    /// <see cref="Build"/>, before or after this call; <see cref="Build"/> reports one that is not.
+    /// A value of a type that is not built in must have a codec, registered with <see cref="AddEnumValueCodec{TEnum}"/>
+    /// for an enum or with <see cref="AddValueCodec{TValue}"/> for any type, before <see cref="Build"/>, before or
+    /// after this call; <see cref="Build"/> reports one that has none.
     /// </para>
     /// <para>
     /// A route is written by the mapping of its exact type, so <typeparamref name="TRoute"/> must be a type that can be
@@ -121,8 +123,8 @@ public sealed class RouteTableBuilder
     /// result is a base type. The exception's <see cref="ArgumentException.ParamName"/> is <c>TRoute</c>.
     /// </exception>
     /// <exception cref="InvalidOperationException">
-    /// <paramref name="format"/> declared a value of a type that cannot be written, as
-    /// <see cref="RouteFormatBuilder{TRoute}.Path{TValue}(string, Func{TRoute, TValue})"/>,
+    /// <paramref name="format"/> declared a value of a type that can never be written, whatever is registered, such as
+    /// a collection, as <see cref="RouteFormatBuilder{TRoute}.Path{TValue}(string, Func{TRoute, TValue})"/>,
     /// <see cref="RouteFormatBuilder{TRoute}.Query{TValue}(string, Func{TRoute, TValue})"/> and
     /// <see cref="RouteFormatBuilder{TRoute}.QueryValues{TValue}(string, Func{TRoute, IEnumerable{TValue}})"/>
     /// describe.
@@ -173,8 +175,9 @@ public sealed class RouteTableBuilder
     /// empty text. Two names for the same value both convert, to that value. An enum with
     /// <see cref="FlagsAttribute"/> can be registered, but only the name of a single member converts, never a
     /// combination. An enum with no members can be registered, and then no text converts. Renaming a member changes
-    /// which links work, so treat the names of a registered enum as part of the links of the app. For another
-    /// spelling, such as <c>in-progress</c>, read the value as a string and map it yourself.
+    /// which links work, so treat the names of a registered enum as part of the links of the app. For other spellings,
+    /// such as <c>in-progress</c>, register a codec of your own for the enum with <see cref="AddValueCodec{TValue}"/>
+    /// instead.
     /// </para>
     /// <para>
     /// A format function given to
@@ -191,19 +194,178 @@ public sealed class RouteTableBuilder
     /// </remarks>
     /// <exception cref="ArgumentException">
     /// Two members of <typeparamref name="TEnum"/> have names that differ only by case, such as <c>A</c> and
-    /// <c>a</c>, so a text that names one would name both. The message names the enum and both members. The builder
-    /// is not changed.
+    /// <c>a</c>, so a text that names one would name both. The message names the enum and both members.
+    /// <para>-or-</para>
+    /// <typeparamref name="TEnum"/> already has a codec registered with <see cref="AddValueCodec{TValue}"/> on this
+    /// builder, and a type has one codec. The message names the enum.
+    /// <para/>
+    /// The exception's <see cref="ArgumentException.ParamName"/> is <c>TEnum</c>, and the builder is not changed.
     /// </exception>
     public RouteTableBuilder AddEnumValueCodec<TEnum>()
         where TEnum : struct, Enum
     {
-        if (_codecs.ContainsKey(typeof(TEnum)))
-            return this;
+        if (_codecs.TryGetValue(typeof(TEnum), out object? existing))
+        {
+            return existing is DelegateValueCodec<TEnum>
+                ? throw AlreadyHasCodec(typeof(TEnum), "AddValueCodec", nameof(TEnum))
+                : this;
+        }
 
         // Made before either is added, so that an enum that cannot be registered leaves the builder as it was.
         var codec = new EnumValueCodec<TEnum>();
         _codecs.Add(typeof(TEnum), codec);
         _codecs.Add(typeof(TEnum?), new NullableValueCodec<TEnum>(codec));
+        return this;
+    }
+
+    /// <summary>
+    /// Lets the typed reads and the format functions of every table this builder builds from then on read and write
+    /// values of the application's own type <typeparamref name="TValue"/>, by a parser and a writer of its own.
+    /// </summary>
+    /// <typeparam name="TValue">
+    /// The type to read and write values as: a class, a struct, a record, an interface, an abstract class or an enum,
+    /// but not one of the built-in types, <see cref="string"/>, <see cref="bool"/>, <see cref="Guid"/>,
+    /// <see cref="decimal"/>, <see cref="double"/>, <see cref="float"/>, <see cref="sbyte"/>, <see cref="byte"/>,
+    /// <see cref="short"/>, <see cref="ushort"/>, <see cref="int"/>, <see cref="uint"/>, <see cref="long"/> and
+    /// <see cref="ulong"/>, not <see cref="char"/>, which is one character of a string, not a nullable value type and
+    /// not a collection. A value is found by its codec by exactly
+    /// this type: a codec for an interface or a base class does not read or write a type that implements or derives
+    /// from it, nor the other way round.
+    /// </typeparam>
+    /// <param name="tryParse">
+    /// Reads a text as a value. It returns <see langword="true"/> with the value, which must not be
+    /// <see langword="null"/>, for a text that is a valid value, and <see langword="false"/> for one that is not.
+    /// </param>
+    /// <param name="format">
+    /// Writes a value as its text, or returns <see langword="null"/> for a value that cannot be written. It is never
+    /// called with <see langword="null"/>, which a format function leaves out before asking for text.
+    /// </param>
+    /// <returns>This builder, so that calls can be chained.</returns>
+    /// <remarks>
+    /// <para>
+    /// Once registered, <typeparamref name="TValue"/> can be read by <see cref="RouteMatchContext.Path{T}(string)"/>,
+    /// <see cref="RouteMatchContext.TryGetPath{T}(string, out T)"/>,
+    /// <see cref="RouteMatchContext.TryGetQuery{T}(string, out T)"/> and
+    /// <see cref="RouteMatchContext.GetQueryValues{T}(string)"/>, and written by a format function given to
+    /// <see cref="Map{TRoute}(string, Func{RouteMatchContext, TRoute}, Action{RouteFormatBuilder{TRoute}})"/> with
+    /// <see cref="RouteFormatBuilder{TRoute}.Path{TValue}(string, Func{TRoute, TValue})"/>,
+    /// <see cref="RouteFormatBuilder{TRoute}.Query{TValue}(string, Func{TRoute, TValue})"/> and
+    /// <see cref="RouteFormatBuilder{TRoute}.QueryValues{TValue}(string, Func{TRoute, IEnumerable{TValue}})"/>. For a
+    /// value type, its nullable form can then be read and written wherever the nullable form of a built-in type can,
+    /// by the same codec; each value read or written in that form costs one allocation, a box around the value. As for
+    /// the built-in types, a list of values cannot have a nullable element type.
+    /// </para>
+    /// <para>
+    /// The two functions are a contract that the library relies on but cannot check in full.
+    /// <paramref name="tryParse"/> must accept every text that <paramref name="format"/> writes, and
+    /// <paramref name="format"/> should give equal values the same text, so that one value has one link. Both must be
+    /// safe to call from several threads at once, since a built table is, and should have no side effects: either can
+    /// be called more than once for one value, because <see cref="RouteTable.Format(AppRoute)"/> reads back each text
+    /// <paramref name="format"/> writes with <paramref name="tryParse"/>, and throws <see cref="ArgumentException"/>
+    /// for one it does not accept. That check does not compare the value read back with the one written, so it does not
+    /// catch a <paramref name="format"/> that gives two different values the same text, nor a
+    /// <paramref name="tryParse"/> that reads a written text back as a different value: the round trip is the codec's
+    /// promise, and a value reads back equal exactly when the codec makes it so. A parser that accepts several
+    /// spellings of one value is fine: each spelling matches, and <see cref="RouteTable.Format(AppRoute)"/> writes the
+    /// one <paramref name="format"/> gives. A path value must also satisfy the constraint of its parameter, if the
+    /// template gives one. A <c>TryParse</c> method of the base class library, such as
+    /// <c>DateOnly.TryParse(string, out DateOnly)</c>, reads by the current culture, so pass a lambda that gives
+    /// <see cref="System.Globalization.CultureInfo.InvariantCulture"/> and an exact format instead, and write the
+    /// value by the same format.
+    /// </para>
+    /// <para>
+    /// A text that <paramref name="tryParse"/> does not accept makes the typed read throw
+    /// <see cref="RouteValueException"/>, as a text that is not a valid <see cref="int"/> does, so that
+    /// <see cref="RouteTable.Match(Uri)"/> fails for the URI; its message names the type by its simple name and never
+    /// quotes the value. A <see langword="null"/> from <paramref name="format"/> makes
+    /// <see cref="RouteTable.Format(AppRoute)"/> throw <see cref="ArgumentException"/>, as a <see cref="double"/> that
+    /// is NaN does. An empty text is a text: as a query value it is written as <c>name=</c>, and as a path value the
+    /// template rejects it, as it rejects any empty path value. An exception that either function throws propagates
+    /// unchanged, out of the read and <see cref="RouteTable.Match(Uri)"/>, or out of
+    /// <see cref="RouteTable.Format(AppRoute)"/>, except a <see cref="RouteValueException"/> that
+    /// <paramref name="tryParse"/> throws during a read, which <see cref="RouteTable.Match(Uri)"/> takes as a value
+    /// that is not valid, as it takes one thrown by a create function. Return <see langword="false"/> or
+    /// <see langword="null"/> for a value that is not valid, rather than throw.
+    /// </para>
+    /// <para>
+    /// The built-in types cannot be given a codec, because their text is fixed by the library so that it always agrees
+    /// with template constraints such as <c>{id:int}</c>; for another text, use a type of your own. An enum can be
+    /// registered here instead of with <see cref="AddEnumValueCodec{TEnum}"/>, which is how it gets spellings of its
+    /// own, such as <c>in-progress</c>. No template constraint is named after a type registered here.
+    /// </para>
+    /// <para>
+    /// Registering applies to the whole table, so the order of this call and of the <c>Map</c> calls does not matter.
+    /// A table already built does not change; <see cref="Build"/> builds one that includes the registration, and keeps
+    /// the two functions given here, whatever this builder registers later.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="tryParse"/> or <paramref name="format"/> is <see langword="null"/>.
+    /// </exception>
+    /// <exception cref="ArgumentException">
+    /// <typeparamref name="TValue"/> is one of the built-in types, or the nullable form of one; or it is a collection,
+    /// which a type of your own can wrap, or the nullable form of one; or it is <see cref="char"/> or its nullable
+    /// form; or it is the nullable form of another value type, whose codec is registered for that type instead; or it
+    /// already has a codec registered on this builder, with this method or with
+    /// <see cref="AddEnumValueCodec{TEnum}"/>, and a type has one codec. The message names the type, and the
+    /// exception's <see cref="ArgumentException.ParamName"/> is <c>TValue</c>. The builder is not changed.
+    /// </exception>
+    public RouteTableBuilder AddValueCodec<TValue>(RouteValueParser<TValue> tryParse, Func<TValue, string?> format)
+    {
+        ArgumentNullException.ThrowIfNull(tryParse);
+        ArgumentNullException.ThrowIfNull(format);
+
+        string type = RouteValueTypes.DisplayName(typeof(TValue));
+        // A type that can never have a codec is reported before the nullable form of a type, so that the advice to
+        // register the underlying type is given only when that would work. Each test looks through a nullable form.
+        Type? underlying = Nullable.GetUnderlyingType(typeof(TValue));
+        if (RouteValueTypes.SupportedTypeName<TValue>() is not null)
+        {
+            string what = underlying is null ? "one of the built-in types" : "the nullable form of a built-in type";
+            throw new ArgumentException(
+                $"The type '{type}' cannot be given a codec, because it is {what}, whose text is fixed by the " +
+                "library so that it always agrees with template constraints such as {id:int}. For another text, " +
+                "use a type of your own and register a codec for it.",
+                nameof(TValue));
+        }
+
+        if (RouteValueTypes.IsCollection<TValue>())
+        {
+            throw new ArgumentException(
+                $"The type '{type}' cannot be given a codec, because it is a collection, and a codec reads and " +
+                "writes one value. Wrap the collection in a type of your own and register a codec for that type, or " +
+                "read and write its elements as a list of query values.",
+                nameof(TValue));
+        }
+
+        // QueryValues rejects char, which a string given by mistake makes the element type, so a codec for it could
+        // not work everywhere a codec works.
+        if ((underlying ?? typeof(TValue)) == typeof(char))
+        {
+            throw new ArgumentException(
+                $"The type '{type}' cannot be given a codec, because a char is one character of a string. Read and " +
+                "write it as a string, or use a type of your own.",
+                nameof(TValue));
+        }
+
+        if (underlying is not null)
+        {
+            string name = RouteValueTypes.DisplayName(underlying);
+            throw new ArgumentException(
+                $"The type '{type}' cannot be given a codec, because it is the nullable form of '{name}'. Register " +
+                $"the codec for '{name}' instead; its nullable form is then read and written by that codec.",
+                nameof(TValue));
+        }
+
+        if (_codecs.TryGetValue(typeof(TValue), out object? existing))
+        {
+            throw AlreadyHasCodec(
+                typeof(TValue),
+                existing is DelegateValueCodec<TValue> ? "AddValueCodec" : "AddEnumValueCodec",
+                nameof(TValue));
+        }
+
+        _codecs.Add(typeof(TValue), new DelegateValueCodec<TValue>(tryParse, format));
         return this;
     }
 
@@ -239,16 +401,29 @@ public sealed class RouteTableBuilder
     /// templates, the earlier mapping first. Only the exact type counts, so a base type and a type derived from it
     /// can each have one.
     /// <para>-or-</para>
-    /// A format function writes a value as an enum, or the nullable form of one, that is not registered with
-    /// <see cref="AddEnumValueCodec{TEnum}"/>. The message names the enum, the route type, the template and
-    /// <see cref="AddEnumValueCodec{TEnum}"/>.
+    /// A format function writes a value as a type that is not built in and has no codec: an enum, or the nullable form
+    /// of one, that is not registered with <see cref="AddEnumValueCodec{TEnum}"/> or
+    /// <see cref="AddValueCodec{TValue}"/>, or any other type, or the nullable form of one, that is not registered with
+    /// <see cref="AddValueCodec{TValue}"/>. The message names the route type, the template, the path parameter or query
+    /// value, the type and the method that registers it: <see cref="AddEnumValueCodec{TEnum}"/> for an enum, which it
+    /// says can also be given a codec of its own, and <see cref="AddValueCodec{TValue}"/> for any other type.
     /// <para/>
-    /// The templates are checked first, then that no route type has two format functions, then the enums the format
+    /// The templates are checked first, then that no route type has two format functions, then the types the format
     /// functions write, each in the order the routes were mapped. In every case, the builder is not changed.
     /// </exception>
     public RouteTable Build()
     {
         // The codecs themselves never change, so tables can share them; only the dictionary is copied.
         return new RouteTable(_definitions.ToArray(), _codecs.ToFrozenDictionary());
+    }
+
+    // A second codec for a type would make which one a table reads and writes it with depend on the order of the
+    // calls, so the type keeps the one it has, whichever method registered it.
+    private static ArgumentException AlreadyHasCodec(Type type, string registeredBy, string paramName)
+    {
+        return new ArgumentException(
+            $"The type '{RouteValueTypes.DisplayName(type)}' already has a codec on this builder, registered with " +
+            $"{registeredBy}, and a type has one codec.",
+            paramName);
     }
 }

@@ -1,4 +1,5 @@
 using System.Collections.Frozen;
+using System.Diagnostics;
 
 namespace AdamE.AppNav.Routing;
 
@@ -35,4 +36,16 @@ internal abstract class QueryWriter<TRoute>
     // says why, leaving what it appended before; the formatter then throws, so the query is never returned. An
     // exception that the value function, or a list it returns, throws propagates unchanged.
     public abstract QueryValueProblem Write(TRoute route, ref QueryBuilder query);
+
+    // The problem of the query for a value that could not be written, which is None only when it was.
+    protected static QueryValueProblem ProblemOf(ValueTextProblem problem)
+    {
+        return problem switch
+        {
+            ValueTextProblem.None => QueryValueProblem.None,
+            ValueTextProblem.NoText => QueryValueProblem.NoText,
+            ValueTextProblem.NotReadBack => QueryValueProblem.NotReadBack,
+            _ => throw new UnreachableException("A value writer reported a problem that the query has no name for."),
+        };
+    }
 }

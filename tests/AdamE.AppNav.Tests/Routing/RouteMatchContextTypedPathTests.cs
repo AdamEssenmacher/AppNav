@@ -4,6 +4,7 @@ using System.Numerics;
 using System.Reflection;
 using AdamE.AppNav.Routing;
 using Xunit;
+using Custom = AdamE.AppNav.Tests.Routing.CustomValueTypes;
 
 namespace AdamE.AppNav.Tests.Routing;
 
@@ -1287,6 +1288,414 @@ public sealed class RouteMatchContextTypedPathTests
         Assert.True(withBytes - withoutBytes < IntPtr.Size, $"with {withBytes} bytes, without {withoutBytes} bytes");
     }
 
+    [Fact]
+    public void ACustomTypeIsReadByItsCodec()
+    {
+        WithinCustom("/{v}", "/007", context =>
+        {
+            Assert.Equal(new Custom.ProductId(7), context.Path<Custom.ProductId>("v"));
+            Assert.True(context.TryGetPath("v", out Custom.ProductId id));
+            Assert.Equal(new Custom.ProductId(7), id);
+            Assert.Equal(new Custom.Outer<int>.Inner(7), context.Path<Custom.Outer<int>.Inner>("v"));
+            Assert.Equal(new Custom.Note("007"), context.Path<Custom.Note>("v"));
+        });
+        WithinCustom("/{v}", "/blue-42", context =>
+        {
+            Assert.Equal(new Custom.Slug("blue-42"), context.Path<Custom.Slug>("v"));
+            Assert.True(context.TryGetPath("v", out Custom.Slug? slug));
+            Assert.Equal(new Custom.Slug("blue-42"), slug);
+        });
+        WithinCustom("/{v}", "/-3x4", context =>
+        {
+            Custom.Point point = context.Path<Custom.Point>("v");
+            Assert.Equal((-3, 4), (point.X, point.Y));
+        });
+        WithinCustom("/{v}", "/in-progress", context =>
+        {
+            Assert.Equal(Custom.Stage.InProgress, context.Path<Custom.Stage>("v"));
+            Assert.Equal(Custom.Stage.InProgress, context.Path<Custom.Stage?>("v"));
+        });
+        WithinCustom("/{v}", "/circle", context =>
+        {
+            Assert.IsType<Custom.Circle>(context.Path<Custom.IShape>("v"));
+        });
+    }
+
+    // A struct registered with AddValueCodec has no codec of its own for its nullable form, which is read through the
+    // codec of the struct, to the same value.
+    [Fact]
+    public void TheNullableFormOfACustomStructIsReadByTheCodecOfTheStruct()
+    {
+        WithinCustom("/a/{v?}", "/a/42", context =>
+        {
+            Assert.Equal(new Custom.ProductId(42), context.Path<Custom.ProductId?>("v"));
+            Assert.True(context.TryGetPath("v", out Custom.ProductId? id));
+            Assert.Equal(new Custom.ProductId(42), id);
+            Assert.True(context.TryGetPath("v", out Custom.Outer<int>.Inner? inner));
+            Assert.Equal(new Custom.Outer<int>.Inner(42), inner);
+        });
+        WithinCustom("/a/{v?}", "/a/5x6", context =>
+        {
+            Assert.True(context.TryGetPath("v", out Custom.Point? point));
+            Assert.Equal((5, 6), (point!.Value.X, point.Value.Y));
+        });
+        WithinCustom("/a/{v?}", "/a/done", context =>
+        {
+            Assert.True(context.TryGetPath("v", out Custom.Stage? stage));
+            Assert.Equal(Custom.Stage.Done, stage);
+        });
+    }
+
+    // Absent gives false with null for a nullable form and a reference type, never a default value of the type.
+    [Fact]
+    public void ACustomValueThePathLeavesOutIsAbsent()
+    {
+        WithinCustom("/a/{v?}", "/a", context =>
+        {
+            Assert.False(context.TryGetPath("v", out Custom.ProductId? id));
+            Assert.Null(id);
+            Assert.False(context.TryGetPath("v", out Custom.Stage? stage));
+            Assert.Null(stage);
+            Assert.False(context.TryGetPath("v", out Custom.Point? point));
+            Assert.Null(point);
+            Assert.False(context.TryGetPath("v", out Custom.Slug? slug));
+            Assert.Null(slug);
+            Assert.False(context.TryGetPath("v", out Custom.IShape? shape));
+            Assert.Null(shape);
+            Assert.False(context.TryGetPath("v", out Custom.ProductId plain));
+            Assert.Equal(default, plain);
+            AssertAbsent(() => context.Path<Custom.ProductId?>("v"));
+            AssertAbsent(() => context.Path<Custom.Slug>("v"));
+        });
+    }
+
+    // A text the parser rejects is not valid, named by the simple name of the type, even one nested in a generic type.
+    [Theory]
+    [InlineData("ProductId", "x")]
+    [InlineData("ProductId", "-1")]
+    [InlineData("Slug", "Blue")]
+    [InlineData("Slug", "")]
+    [InlineData("Point", "3")]
+    [InlineData("Stage", "InProgress")]
+    [InlineData("IShape", "triangle")]
+    [InlineData("Inner", "x")]
+    public void ATextTheParserRejectsIsNotValid(string type, string text)
+    {
+        WithinCustom("/a/{*v}", "/a/" + Uri.EscapeDataString(text), context =>
+        {
+            Action read = type switch
+            {
+                "ProductId" => () => context.Path<Custom.ProductId>("v"),
+                "Slug" => () => context.Path<Custom.Slug>("v"),
+                "Point" => () => context.Path<Custom.Point>("v"),
+                "Stage" => () => context.Path<Custom.Stage>("v"),
+                "IShape" => () => context.Path<Custom.IShape>("v"),
+                _ => () => context.Path<Custom.Outer<int>.Inner>("v"),
+            };
+            Action nullable = type switch
+            {
+                "ProductId" => () => context.TryGetPath("v", out Custom.ProductId? _),
+                "Point" => () => context.Path<Custom.Point?>("v"),
+                "Stage" => () => context.TryGetPath("v", out Custom.Stage? _),
+                "Inner" => () => context.Path<Custom.Outer<int>.Inner?>("v"),
+                _ => read,
+            };
+
+            // The empty catch-all is left out, so it is absent rather than not valid.
+            if (text.Length == 0)
+            {
+                AssertAbsent(read);
+                return;
+            }
+
+            AssertInvalid(read, "v", type);
+            AssertInvalid(nullable, "v", type);
+            Assert.DoesNotContain(nameof(CustomValueTypes), Assert.Throws<RouteValueException>(read).Message);
+        });
+    }
+
+    [Fact]
+    public void ACustomValueThatIsNotValidFailsTheMatchWithoutQuotingItAndNoLaterTemplateIsTried()
+    {
+        var laterCalled = false;
+        RouteValueException? thrown = null;
+        RouteTable table = Custom.Builder()
+            .Map("/orders/{id}", c =>
+            {
+                try
+                {
+                    return new ProductRoute(c.Path<Custom.ProductId>("id").ToString());
+                }
+                catch (RouteValueException exception)
+                {
+                    thrown = exception;
+                    throw;
+                }
+            })
+            .Map("/{*rest}", _ =>
+            {
+                laterCalled = true;
+                return new SettingsRoute();
+            })
+            .Build();
+
+        RouteMatchResult result = table.Match(new Uri($"/orders/{Secret}", UriKind.Relative));
+
+        Assert.False(result.IsSuccess);
+        Assert.False(laterCalled);
+        RouteDiagnostic diagnostic = Assert.Single(result.Diagnostics);
+        Assert.Equal(RouteDiagnosticCodes.ValueInvalid, diagnostic.Code);
+        Assert.Equal("id", diagnostic.Data["name"]);
+        Assert.EndsWith(" ProductId.", (string?)diagnostic.Data["reason"], StringComparison.Ordinal);
+        Assert.NotNull(thrown);
+        Assert.Null(thrown.InnerException);
+        Assert.Empty(thrown.Data);
+        Assert.DoesNotContain(Secret, thrown.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(Secret, diagnostic.Message, StringComparison.Ordinal);
+        foreach ((string key, object? value) in diagnostic.Data)
+        {
+            if (key != "path")
+                Assert.DoesNotContain(Secret, (string?)value, StringComparison.Ordinal);
+        }
+    }
+
+    // A parser that accepts a text must give a value, so null from it is a mistake in the codec, not in the URI.
+    [Fact]
+    public void AParserThatAcceptsATextButGivesNullIsAMistakeThatEscapesMatch()
+    {
+        RouteTable table = new RouteTableBuilder()
+            .AddValueCodec<Custom.Slug>(
+                (string _, out Custom.Slug? slug) =>
+                {
+                    slug = null;
+                    return true;
+                },
+                slug => slug.Value)
+            .Map("/s/{v}", c => new ProductRoute(c.Path<Custom.Slug>("v").Value))
+            .Build();
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(
+            () => table.Match(new Uri("/s/" + Secret, UriKind.Relative)));
+
+        Assert.Contains("accepted a text but gave a null value", exception.Message, StringComparison.Ordinal);
+        Assert.Contains($"'{nameof(CustomValueTypes)}.Slug'", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(Secret, exception.ToString(), StringComparison.Ordinal);
+    }
+
+    // The parser's exception is the app's own, so it is neither caught nor wrapped, for the struct and its nullable
+    // form alike.
+    [Theory]
+    [InlineData("struct")]
+    [InlineData("nullable")]
+    public void AnExceptionFromTheParserPropagatesOutOfMatchUnchanged(string type)
+    {
+        var thrown = new FormatException("From the parser.");
+        RouteTable table = new RouteTableBuilder()
+            .AddValueCodec<Custom.ProductId>((string _, out Custom.ProductId _) => throw thrown, _ => "1")
+            .Map("/p/{v}", c => new ProductRoute(type == "struct"
+                ? c.Path<Custom.ProductId>("v").ToString()
+                : c.Path<Custom.ProductId?>("v").ToString()!))
+            .Build();
+
+        FormatException exception = Assert.Throws<FormatException>(
+            () => table.Match(new Uri("/p/1", UriKind.Relative)));
+
+        Assert.Same(thrown, exception);
+    }
+
+    // A codec is found by the exact type read: one for an interface does not read a class that implements it, nor one
+    // for the class the interface.
+    [Fact]
+    public void ACodecReadsOnlyItsExactType()
+    {
+        const string Circle = nameof(CustomValueTypes) + ".Circle";
+        const string Shape = nameof(CustomValueTypes) + ".IShape";
+        WithinCustom("/{v}", "/circle", context =>
+        {
+            Assert.IsType<Custom.Circle>(context.Path<Custom.IShape>("v"));
+            AssertNoCodec(() => context.Path<Custom.Circle>("v"), $"'{Circle}'", Circle);
+            AssertNoCodec(() => context.TryGetPath("v", out object? _), "'Object'", "Object");
+        });
+
+        RouteTableBuilder circles = new RouteTableBuilder().AddValueCodec<Custom.Circle>(
+            (string text, out Custom.Circle? circle) =>
+            {
+                circle = text == "circle" ? new Custom.Circle() : null;
+                return circle is not null;
+            },
+            _ => "circle");
+        Within("/{v}", "/circle", context =>
+        {
+            Assert.Equal(new Custom.Circle(), context.Path<Custom.Circle>("v"));
+            AssertNoCodec(() => context.Path<Custom.IShape>("v"), $"'{Shape}'", Shape);
+        }, circles);
+    }
+
+    // Nor does a codec for a class read a class derived from it, or one for the derived class read its base.
+    [Fact]
+    public void ACodecForAClassReadsNeitherItsBaseNorItsDerivedClasses()
+    {
+        const string Derived = nameof(RouteMatchContextTypedPathTests) + ".DerivedValue";
+        const string Base = nameof(RouteMatchContextTypedPathTests) + ".BaseValue";
+        RouteTableBuilder bases = new RouteTableBuilder().AddValueCodec<BaseValue>(
+            (string text, out BaseValue? value) =>
+            {
+                value = new DerivedValue();
+                return true;
+            },
+            _ => "b");
+        RouteTableBuilder derived = new RouteTableBuilder().AddValueCodec<DerivedValue>(
+            (string text, out DerivedValue? value) =>
+            {
+                value = new DerivedValue();
+                return true;
+            },
+            _ => "d");
+
+        Within("/{v}", "/x", context =>
+        {
+            Assert.NotNull(context.Path<BaseValue>("v"));
+            AssertNoCodec(() => context.Path<DerivedValue>("v"), $"'{Derived}'", Derived);
+        }, bases);
+        Within("/{v}", "/x", context =>
+        {
+            Assert.NotNull(context.Path<DerivedValue>("v"));
+            AssertNoCodec(() => context.Path<BaseValue>("v"), $"'{Base}'", Base);
+        }, derived);
+    }
+
+    // A type that is not built in and has no codec is told which method registers one, by the type it would register,
+    // except a collection, which cannot have one; an enum is told both methods.
+    [Fact]
+    public void AnUnsupportedTypeIsToldHowToRegisterACodec()
+    {
+        const string ProductId = nameof(CustomValueTypes) + ".ProductId";
+        Within("/{v}", "/1", context =>
+        {
+            AssertNoCodec(() => context.Path<Half>("v"), "'Half'", "Half");
+            AssertNoCodec(() => context.Path<Half?>("v"), "'Half?'", "Half");
+            AssertNoCodec(() => context.TryGetPath("v", out DateTime? _), "'DateTime?'", "DateTime");
+            AssertNoCodec(() => context.Path<Custom.ProductId>("v"), $"'{ProductId}'", ProductId);
+            AssertNoCodec(() => context.TryGetPath("v", out Custom.ProductId? _), $"'{ProductId}?'", ProductId);
+            const string Slug = nameof(CustomValueTypes) + ".Slug";
+            AssertNoCodec(() => context.Path<Custom.Slug>("v"), $"'{Slug}'", Slug);
+
+            foreach (Action read in new Action[]
+                     {
+                         () => context.Path<List<int>>("v"),
+                         () => context.Path<char>("v"),
+                         () => context.TryGetPath("v", out char? _),
+                     })
+            {
+                InvalidOperationException cannot = Assert.Throws<InvalidOperationException>(read);
+                Assert.DoesNotContain("AddValueCodec<", cannot.Message, StringComparison.Ordinal);
+                Assert.Contains("read the value as a string", cannot.Message, StringComparison.Ordinal);
+            }
+
+            InvalidOperationException unregistered = Assert.Throws<InvalidOperationException>(
+                () => context.Path<DayOfWeek>("v"));
+            Assert.Contains("AddEnumValueCodec<DayOfWeek>()", unregistered.Message, StringComparison.Ordinal);
+            Assert.Contains("AddValueCodec<DayOfWeek>", unregistered.Message, StringComparison.Ordinal);
+        });
+    }
+
+    // The message for a value that is not valid names the type simply; the one for a type without a codec names it
+    // with the types it is declared in, so that it can be found.
+    [Fact]
+    public void ACustomTypeNestedInAGenericTypeIsNamedSimplyForAValueAndFullyForARegistration()
+    {
+        const string Inner = nameof(CustomValueTypes) + ".Outer<Int32>.Inner";
+        const string LongInner = nameof(CustomValueTypes) + ".Outer<Int64>.Inner";
+        WithinCustom("/{v}", "/x", context =>
+        {
+            RouteValueException invalid = Assert.Throws<RouteValueException>(
+                () => context.Path<Custom.Outer<int>.Inner>("v"));
+            Assert.EndsWith(" Inner.", invalid.Message, StringComparison.Ordinal);
+        });
+        Within("/{v}", "/x", context =>
+        {
+            AssertNoCodec(() => context.Path<Custom.Outer<int>.Inner>("v"), $"'{Inner}'", Inner);
+            AssertNoCodec(() => context.Path<Custom.Outer<long>.Inner?>("v"), $"'{LongInner}?'", LongInner);
+        });
+    }
+
+    [Fact]
+    public void NoConstraintIsNamedAfterACustomType()
+    {
+        RouteTableBuilder builder = Custom.Builder();
+
+        ArgumentException exception = Assert.Throws<ArgumentException>(
+            () => builder.Map("/p/{id:productid}", _ => new SettingsRoute()));
+
+        Assert.Equal("template", exception.ParamName);
+        Assert.Contains("unknown constraint 'productid'", exception.Message, StringComparison.Ordinal);
+    }
+
+    // A read of a struct with a codec passes the value through the codec as the struct itself, so it costs less than
+    // one box per read more than reading the string and calling the same parse by hand; the smallest box is three
+    // pointers.
+    [Theory]
+    [InlineData("struct")]
+    [InlineData("try struct")]
+    [InlineData("record")]
+    public void ACustomStructReadAllocatesNoMoreThanReadingTheStringAndParsingIt(string type)
+    {
+        const int Reads = 16;
+        Func<RouteMatchContext, int> customRead = type switch
+        {
+            "struct" => c => c.Path<Custom.ProductId>("id").Value,
+            "try struct" => c => c.TryGetPath("id", out Custom.ProductId id) ? id.Value : 0,
+            _ => c => c.Path<Custom.Outer<int>.Inner>("id").Value,
+        };
+        Func<RouteMatchContext, int> parsedRead = type == "record"
+            ? c => int.TryParse(c.Path("id"), NumberStyles.None, Invariant, out int value)
+                ? new Custom.Outer<int>.Inner(value).Value
+                : 0
+            : c => Custom.ProductId.TryParse(c.Path("id"), out Custom.ProductId id) ? id.Value : 0;
+
+        long customBytes = AllocatedBytesPerMatch(ReadingTable(customRead, Reads, Custom.Builder()), "42");
+        long parsedBytes = AllocatedBytesPerMatch(ReadingTable(parsedRead, Reads, Custom.Builder()), "42");
+
+        Assert.True(
+            customBytes - parsedBytes < Reads * 3 * IntPtr.Size,
+            $"{type}: custom {customBytes} bytes, parsed {parsedBytes} bytes");
+    }
+
+    // The nullable form of a struct with a codec is read through the codec of the struct, boxed: one box of the struct
+    // for each read and nothing else, so fewer than two of the smallest boxes, three pointers each, per read.
+    [Theory]
+    [InlineData("nullable")]
+    [InlineData("try nullable")]
+    public void TheNullableFormOfACustomStructCostsOneBoxPerRead(string type)
+    {
+        const int Reads = 16;
+        Func<RouteMatchContext, int> nullableRead = type == "nullable"
+            ? c => c.Path<Custom.ProductId?>("id")!.Value.Value
+            : c => c.TryGetPath("id", out Custom.ProductId? id) ? id!.Value.Value : 0;
+        Func<RouteMatchContext, int> plainRead = c => c.Path<Custom.ProductId>("id").Value;
+
+        long nullableBytes = AllocatedBytesPerMatch(ReadingTable(nullableRead, Reads, Custom.Builder()), "42");
+        long plainBytes = AllocatedBytesPerMatch(ReadingTable(plainRead, Reads, Custom.Builder()), "42");
+
+        Assert.True(
+            nullableBytes - plainBytes < Reads * 2 * 3 * IntPtr.Size,
+            $"{type}: nullable {nullableBytes} bytes, plain {plainBytes} bytes");
+    }
+
+    // A built-in type is decided before the codecs are looked at, so codecs of the app's own cost its reads nothing.
+    [Fact]
+    public void ABuiltInReadAllocatesNoMoreOnATableWithCustomCodecs()
+    {
+        const int Reads = 16;
+        Func<RouteMatchContext, int> read =
+            c => c.Path<int>("id") + (c.TryGetPath("id", out long? n) ? (int)n!.Value : 0);
+
+        long withBytes = AllocatedBytesPerMatch(ReadingTable(read, Reads, Custom.Builder()), "42");
+        long withoutBytes = AllocatedBytesPerMatch(ReadingTable(read, Reads), "42");
+
+        Assert.True(withBytes - withoutBytes < IntPtr.Size, $"with {withBytes} bytes, without {withoutBytes} bytes");
+    }
+
     // The name of Status as the message for an enum that is not registered gives it.
     private const string StatusName = nameof(RouteMatchContextTypedPathTests) + ".Status";
 
@@ -1338,6 +1747,17 @@ public sealed class RouteMatchContextTypedPathTests
         Assert.Contains(Unsupported, exception.Message, StringComparison.Ordinal);
         Assert.Contains("not registered", exception.Message, StringComparison.Ordinal);
         Assert.Contains($"AddEnumValueCodec<{enumName}>", exception.Message, StringComparison.Ordinal);
+        Assert.Contains(typeName, exception.Message, StringComparison.Ordinal);
+    }
+
+    // The message for a type that is not built in and has no codec names it and the type to register a codec for.
+    private static void AssertNoCodec(Action read, string typeName, string codecType)
+    {
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(read);
+
+        Assert.Contains(PathValue, exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(Unsupported, exception.Message, StringComparison.Ordinal);
+        Assert.Contains($"AddValueCodec<{codecType}>", exception.Message, StringComparison.Ordinal);
         Assert.Contains(typeName, exception.Message, StringComparison.Ordinal);
     }
 
@@ -1733,6 +2153,11 @@ public sealed class RouteMatchContextTypedPathTests
         return result;
     }
 
+    private static void WithinCustom(string template, string uri, Action<RouteMatchContext> check)
+    {
+        Within(template, uri, check, Custom.Builder());
+    }
+
     private static void WithinEnums(string template, string uri, Action<RouteMatchContext> check)
     {
         Within(template, uri, check, EnumBuilder());
@@ -1759,6 +2184,10 @@ public sealed class RouteMatchContextTypedPathTests
         Assert.True(table.Match(new Uri(uri, UriKind.Relative)).IsSuccess);
         Assert.True(called);
     }
+
+    private class BaseValue;
+
+    private sealed class DerivedValue : BaseValue;
 
     // Types nested in a generic type, for the names of unsupported types.
     private static class Outer<TOuter>

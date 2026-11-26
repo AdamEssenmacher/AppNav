@@ -4,7 +4,7 @@ namespace AdamE.AppNav.Routing;
 
 // The query writer of a declaration made with RouteFormatBuilder.QueryValues: each element of the list is written as
 // its own pair, by exactly the rules a single value of type TValue is written by, which RouteFormatBuilder has checked
-// is a built-in type or an enum, never a nullable value type.
+// is never a nullable value type, a collection or char.
 internal sealed class ListQueryWriter<TRoute, TValue> : QueryWriter<TRoute>
     where TRoute : AppRoute
 {
@@ -50,15 +50,17 @@ internal sealed class ListQueryWriter<TRoute, TValue> : QueryWriter<TRoute>
 
         foreach (TValue value in values)
         {
-            // Possible only for a string: the element type is never a nullable value type, but the list's own nullable
-            // annotations are not enforced at run time.
+            // Possible only for a reference type, such as string: the element type is never a nullable value type, but
+            // the list's own nullable annotations are not enforced at run time.
             if (value is null)
                 return QueryValueProblem.NullElement;
 
-            if (!TypedValueWriter<TRoute, TValue>.TryFormat(value, _codec, out string? text))
-                return QueryValueProblem.NoText;
+            ValueTextProblem problem = TypedValueWriter<TRoute, TValue>.Write(value, _codec, out string? text);
+            if (problem != ValueTextProblem.None)
+                return ProblemOf(problem);
 
-            if (!query.TryAppend(EncodedName, text))
+            // A value that is not null always has a text when it can be written.
+            if (!query.TryAppend(EncodedName, text!))
                 return QueryValueProblem.LoneSurrogate;
         }
 

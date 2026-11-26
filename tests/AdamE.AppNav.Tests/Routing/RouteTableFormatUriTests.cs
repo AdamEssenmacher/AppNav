@@ -1,5 +1,6 @@
 using AdamE.AppNav.Routing;
 using Xunit;
+using Custom = AdamE.AppNav.Tests.Routing.CustomValueTypes;
 
 namespace AdamE.AppNav.Tests.Routing;
 
@@ -487,6 +488,33 @@ public sealed class RouteTableFormatUriTests
             () => table.FormatUri(new SpacedRoute("a", "b", null), new Uri("ftp://example.com")));
         Assert.Equal(["name", "q", "r"], calls);
     }
+
+    // A link to a route of custom values reads back as the route, nullable forms and lists included.
+    [Fact]
+    public void ALinkWithCustomValuesReadsBackAsTheRoute()
+    {
+        RouteTable table = Custom.Builder()
+            .Map("/p/{id}/{stage?}",
+                c => new CustomLinkRoute(
+                    c.Path<Custom.ProductId>("id"),
+                    c.TryGetPath("stage", out Custom.Stage? stage) ? stage : null,
+                    [.. c.GetQueryValues<Custom.Slug>("tag")]),
+                f => f.Path("id", r => r.Id).Path("stage", r => r.Stage).QueryValues("tag", r => r.Tags))
+            .Build();
+        var route = new CustomLinkRoute(new Custom.ProductId(42), Custom.Stage.InProgress, [new("a"), new("b-c")]);
+
+        foreach (string baseUri in new[] { "https://example.com", "myapp:///", "https://\u00E9.example" })
+        {
+            Uri link = table.FormatUri(route, new Uri(baseUri));
+
+            var read = Assert.IsType<CustomLinkRoute>(table.Match(link).Route);
+            Assert.Equal((route.Id, route.Stage), (read.Id, read.Stage));
+            Assert.Equal(route.Tags, read.Tags);
+            Assert.EndsWith("/p/42/in-progress?tag=a&tag=b-c", link.AbsoluteUri, StringComparison.Ordinal);
+        }
+    }
+
+    private sealed record CustomLinkRoute(Custom.ProductId Id, Custom.Stage? Stage, Custom.Slug[] Tags) : AppRoute;
 
     // For generated tables, routes and bases: whenever FormatUri returns, Match of the link selects the mapping that
     // wrote it and an equal route; whenever it refuses the link for a trailing space, the same text put behind the

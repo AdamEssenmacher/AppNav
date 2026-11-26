@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using AdamE.AppNav.Routing;
 using Xunit;
+using Custom = AdamE.AppNav.Tests.Routing.CustomValueTypes;
 
 namespace AdamE.AppNav.Tests.Routing;
 
@@ -11,6 +12,7 @@ public sealed class RouteFormatBuilderTests
     private const string AlreadyDeclared = "already declared";
     private const string Unsupported = "cannot be written as type";
     private const string NotRegistered = "AddEnumValueCodec";
+    private const string NoCodec = "has no codec";
     private const string BothFormat = "is mapped with a format function to both";
 
     [Fact]
@@ -171,32 +173,61 @@ public sealed class RouteFormatBuilderTests
         Assert.False(called);
     }
 
-    public static TheoryData<Action<RouteFormatBuilder<ItemRoute>>, string> UnsupportedTypes => new()
+    public static TheoryData<Action<RouteFormatBuilder<ItemRoute>>, string, string> TypesWithoutACodec => new()
     {
-        { f => f.Path("id", _ => Half.One), "Half" },
-        { f => f.Path("id", _ => (DateTime?)null), "DateTime?" },
-        { f => f.Path("id", _ => new object()), "Object" },
-        { f => f.Path("id", _ => 'c'), "Char" },
-        { f => f.Path("id", _ => Int128.One), "Int128" },
-        { f => f.Path("id", _ => new[] { 1 }), "Int32[]" },
-        { f => f.Path("id", r => (AppRoute)r), "AppRoute" },
+        { f => f.Path("id", _ => Half.One), "Half", "Half" },
+        { f => f.Path("id", _ => (DateTime?)null), "DateTime?", "DateTime" },
+        { f => f.Path("id", _ => new object()), "Object", "Object" },
+        { f => f.Path("id", _ => Int128.One), "Int128", "Int128" },
+        { f => f.Path("id", r => (AppRoute)r), "AppRoute", "AppRoute" },
     };
 
+    // Any type that is not a collection can be given a codec, after the mapping too, so one that has none is reported
+    // by Build, naming the route type, the template, the parameter, the type and the method that registers a codec.
     [Theory]
-    [MemberData(nameof(UnsupportedTypes))]
-    public void AValueOfAnUnsupportedTypeIsRejectedByPath(Action<RouteFormatBuilder<ItemRoute>> declare, string type)
+    [MemberData(nameof(TypesWithoutACodec))]
+    public void APathValueOfATypeWithoutACodecIsReportedByBuild(
+        Action<RouteFormatBuilder<ItemRoute>> declare,
+        string type,
+        string codecType)
     {
-        var builder = new RouteTableBuilder();
+        RouteTableBuilder builder = new RouteTableBuilder().Map("/{id}", c => new ItemRoute(c.Path("id")), declare);
 
-        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() => builder.Map(
-            "/{id}",
-            c => new ItemRoute(c.Path("id")),
-            declare));
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(builder.Build);
 
-        Assert.Contains(Unsupported, exception.Message, StringComparison.Ordinal);
+        Assert.Contains(NoCodec, exception.Message, StringComparison.Ordinal);
         Assert.Contains($"'{type}'", exception.Message, StringComparison.Ordinal);
-        Assert.Contains("ulong and any enum registered", exception.Message, StringComparison.Ordinal);
-        Assert.Empty(builder.Build().Definitions);
+        Assert.Contains($"AddValueCodec<{codecType}>", exception.Message, StringComparison.Ordinal);
+        Assert.Contains($"{nameof(ItemRoute)}'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("'/{id}'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("path parameter 'id'", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(NotRegistered, exception.Message, StringComparison.Ordinal);
+    }
+
+    // A char cannot have a codec, so Build reports it as unsupported rather than advise registering one.
+    [Fact]
+    public void ACharIsReportedByBuildWithoutAdviceToRegisterACodec()
+    {
+        var declarations = new Action<RouteFormatBuilder<ItemRoute>>[]
+        {
+            f => f.Path("id", _ => 'c'),
+            f => f.Path("id", r => r.Id).Query("q", _ => (char?)'c'),
+        };
+
+        foreach (Action<RouteFormatBuilder<ItemRoute>> declare in declarations)
+        {
+            RouteTableBuilder builder = new RouteTableBuilder().Map("/{id}", c => new ItemRoute(c.Path("id")), declare);
+
+            InvalidOperationException exception = Assert.Throws<InvalidOperationException>(builder.Build);
+
+            Assert.Contains("a char is one character of a string", exception.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("AddValueCodec", exception.Message, StringComparison.Ordinal);
+        }
+
+        InvalidOperationException list = Assert.Throws<InvalidOperationException>(() => new RouteTableBuilder().Map(
+            "/a", _ => new ItemRoute("a"), f => f.QueryValues("q", _ => new char?[] { 'c' })));
+        Assert.Contains("a char is one character of a string", list.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("AddValueCodec", list.Message, StringComparison.Ordinal);
     }
 
     // The type is checked first, so a type that can never be written fails even with a name that is not a parameter.
@@ -206,7 +237,7 @@ public sealed class RouteFormatBuilderTests
         Assert.Throws<InvalidOperationException>(() => new RouteTableBuilder().Map(
             "/{id}",
             c => new ItemRoute(c.Path("id")),
-            f => f.Path("other", _ => Half.One)));
+            f => f.Path("other", _ => new[] { 1 })));
     }
 
     // AddEnumValueCodec may come after Map, so an enum that is not registered is reported by Build, naming the enum,
@@ -373,7 +404,10 @@ public sealed class RouteFormatBuilderTests
                 c => new ItemRoute(c.Path("id")),
                 f => f.Path("id", r => r.Id).Path("Id", r => r.Id))
         },
-        { "unsupported", b => b.Map("/items/{id}", c => new ItemRoute(c.Path("id")), f => f.Path("id", _ => 'c')) },
+        {
+            "unsupported",
+            b => b.Map("/items/{id}", c => new ItemRoute(c.Path("id")), f => f.Path("id", _ => new[] { 'c' }))
+        },
         {
             "repeated query",
             b => b.Map(
@@ -386,7 +420,7 @@ public sealed class RouteFormatBuilderTests
             b => b.Map(
                 "/items/{id}",
                 c => new ItemRoute(c.Path("id")),
-                f => f.Path("id", r => r.Id).Query("q", _ => 'c'))
+                f => f.Path("id", r => r.Id).Query("q", _ => new[] { 'c' }))
         },
         {
             "throwing action",
@@ -554,32 +588,31 @@ public sealed class RouteFormatBuilderTests
         }
     }
 
-    public static TheoryData<Action<RouteFormatBuilder<ItemRoute>>, string> UnsupportedQueryTypes => new()
+    public static TheoryData<Action<RouteFormatBuilder<ItemRoute>>, string, string> QueryTypesWithoutACodec => new()
     {
-        { f => f.Query("q", _ => Half.One), "Half" },
-        { f => f.Query("q", _ => (DateTime?)null), "DateTime?" },
-        { f => f.Query("q", _ => new object()), "Object" },
-        { f => f.Query("q", _ => 'c'), "Char" },
-        { f => f.Query("q", r => (AppRoute)r), "AppRoute" },
-        { f => f.Query("q", _ => new Uri("/", UriKind.Relative)), "Uri" },
+        { f => f.Query("q", _ => Half.One), "Half", "Half" },
+        { f => f.Query("q", _ => (DateTime?)null), "DateTime?", "DateTime" },
+        { f => f.Query("q", _ => new object()), "Object", "Object" },
+        { f => f.Query("q", r => (AppRoute)r), "AppRoute", "AppRoute" },
+        { f => f.Query("q", _ => new Uri("/", UriKind.Relative)), "Uri", "Uri" },
     };
 
     [Theory]
-    [MemberData(nameof(UnsupportedQueryTypes))]
-    public void AValueOfAnUnsupportedTypeIsRejectedByQuery(Action<RouteFormatBuilder<ItemRoute>> declare, string type)
+    [MemberData(nameof(QueryTypesWithoutACodec))]
+    public void AQueryValueOfATypeWithoutACodecIsReportedByBuild(
+        Action<RouteFormatBuilder<ItemRoute>> declare,
+        string type,
+        string codecType)
     {
-        var builder = new RouteTableBuilder();
+        RouteTableBuilder builder = new RouteTableBuilder().Map("/a", _ => new ItemRoute("a"), declare);
 
-        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() => builder.Map(
-            "/a",
-            _ => new ItemRoute("a"),
-            declare));
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(builder.Build);
 
-        Assert.Contains("A query value cannot be written as type", exception.Message, StringComparison.Ordinal);
+        Assert.Contains(NoCodec, exception.Message, StringComparison.Ordinal);
         Assert.Contains($"'{type}'", exception.Message, StringComparison.Ordinal);
-        Assert.Contains("ulong and any enum registered", exception.Message, StringComparison.Ordinal);
-        Assert.Contains("convert the value to a string", exception.Message, StringComparison.Ordinal);
-        Assert.Empty(builder.Build().Definitions);
+        Assert.Contains($"AddValueCodec<{codecType}>", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("query value 'q'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("'/a'", exception.Message, StringComparison.Ordinal);
     }
 
     public static TheoryData<Action<RouteFormatBuilder<ItemRoute>>, string> CollectionQueryTypes => new()
@@ -637,7 +670,7 @@ public sealed class RouteFormatBuilderTests
         Assert.Throws<InvalidOperationException>(() => new RouteTableBuilder().Map(
             "/a",
             _ => new ItemRoute("a"),
-            f => f.Query("q", r => r.Id).Query("q", _ => Half.One)));
+            f => f.Query("q", r => r.Id).Query("q", _ => new[] { 1 })));
     }
 
     [Fact]
@@ -784,37 +817,30 @@ public sealed class RouteFormatBuilderTests
             table.Format(new ItemRoute("a")));
     }
 
-    public static TheoryData<Action<RouteFormatBuilder<ItemRoute>>, string> UnsupportedListTypes => new()
+    public static TheoryData<Action<RouteFormatBuilder<ItemRoute>>, string> ListTypesWithoutACodec => new()
     {
         { f => f.QueryValues("q", _ => new[] { Half.One }), "Half" },
         { f => f.QueryValues("q", _ => new[] { DateTime.MinValue }), "DateTime" },
-        { f => f.QueryValues("q", _ => new DateTime?[] { null }), "DateTime?" },
         { f => f.QueryValues("q", _ => new[] { new object() }), "Object" },
         { f => f.QueryValues("q", _ => new[] { new Uri("/", UriKind.Relative) }), "Uri" },
         { f => f.QueryValues("q", _ => new Dictionary<string, string>()), "KeyValuePair<String, String>" },
     };
 
-    // The message lists the supported types without nullable forms, which a list does not have.
     [Theory]
-    [MemberData(nameof(UnsupportedListTypes))]
-    public void AnElementOfAnUnsupportedTypeIsRejectedByQueryValues(
+    [MemberData(nameof(ListTypesWithoutACodec))]
+    public void AnElementOfATypeWithoutACodecIsReportedByBuild(
         Action<RouteFormatBuilder<ItemRoute>> declare,
         string type)
     {
-        var builder = new RouteTableBuilder();
+        RouteTableBuilder builder = new RouteTableBuilder().Map("/a", _ => new ItemRoute("a"), declare);
 
-        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() => builder.Map(
-            "/a",
-            _ => new ItemRoute("a"),
-            declare));
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(builder.Build);
 
-        Assert.Contains("A list of query values cannot be written as type", exception.Message,
-            StringComparison.Ordinal);
+        Assert.Contains(NoCodec, exception.Message, StringComparison.Ordinal);
         Assert.Contains($"'{type}'", exception.Message, StringComparison.Ordinal);
-        Assert.Contains("ulong and any enum registered", exception.Message, StringComparison.Ordinal);
-        Assert.Contains("convert the values to strings", exception.Message, StringComparison.Ordinal);
+        Assert.Contains($"AddValueCodec<{type}>", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("query value 'q'", exception.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("nullable", exception.Message, StringComparison.Ordinal);
-        Assert.Empty(builder.Build().Definitions);
     }
 
     public static TheoryData<Action<RouteFormatBuilder<ItemRoute>>, string> NestedListTypes => new()
@@ -858,6 +884,8 @@ public sealed class RouteFormatBuilderTests
         f => f.QueryValues("q", _ => new List<Guid?>()),
         f => f.QueryValues("q", _ => (IEnumerable<bool?>)[]),
         f => f.QueryValues("q", _ => new Status?[] { Status.Open }),
+        f => f.QueryValues("q", _ => new DateTime?[] { null }),
+        f => f.QueryValues("q", _ => new List<Half?>()),
     };
 
     // An element of a list is never absent, so a nullable element type is rejected, as the read of a list rejects it,
@@ -957,7 +985,7 @@ public sealed class RouteFormatBuilderTests
         Assert.Throws<InvalidOperationException>(() => new RouteTableBuilder().Map(
             "/a",
             _ => new ItemRoute("a"),
-            f => f.Query("q", r => r.Id).QueryValues("q", _ => new[] { Half.One })));
+            f => f.Query("q", r => r.Id).QueryValues("q", _ => new[] { new[] { 1 } })));
         Assert.Throws<InvalidOperationException>(() => new RouteTableBuilder().Map(
             "/a",
             _ => new ItemRoute("a"),
@@ -1046,6 +1074,99 @@ public sealed class RouteFormatBuilderTests
             yield return 6;
         }
     }
+
+    // The declaration cannot know what will be registered, so a codec registered after Map serves the format
+    // function, and Build reports a type that still has none, in the path, a query value or a list alike.
+    [Fact]
+    public void ACodecRegisteredAfterMapServesTheFormatFunction()
+    {
+        const string ProductId = nameof(CustomValueTypes) + ".ProductId";
+        Func<RouteTableBuilder, string, Action<RouteFormatBuilder<IdRoute>>, RouteTableBuilder> map =
+            (b, template, declare) => b.Map(template, c => new IdRoute(c.Path<Custom.ProductId>("id")), declare);
+        var declarations = new (string Subject, Action<RouteFormatBuilder<IdRoute>> Declare)[]
+        {
+            ("path parameter 'id'", f => f.Path("id", r => r.Id)),
+            ("query value 'q'", f => f.Path("id", r => r.Id.Value).Query("q", r => (Custom.ProductId?)r.Id)),
+            ("query value 'l'", f => f.Path("id", r => r.Id.Value).QueryValues("l", r => new[] { r.Id })),
+        };
+
+        foreach ((string subject, Action<RouteFormatBuilder<IdRoute>> declare) in declarations)
+        {
+            RouteTableBuilder builder = map(new RouteTableBuilder(), "/p/{id}", declare);
+
+            InvalidOperationException exception = Assert.Throws<InvalidOperationException>(builder.Build);
+
+            Assert.Contains(subject, exception.Message, StringComparison.Ordinal);
+            Assert.Contains($"AddValueCodec<{ProductId}>", exception.Message, StringComparison.Ordinal);
+            Assert.Contains($"{nameof(IdRoute)}'", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("'/p/{id}'", exception.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain(NotRegistered, exception.Message, StringComparison.Ordinal);
+            Assert.NotEmpty(Custom.Register(builder).Build().Format(new IdRoute(new Custom.ProductId(7))));
+        }
+    }
+
+    // An enum without a codec is told both methods that can give it one.
+    [Fact]
+    public void AnEnumWithoutACodecIsToldBothWaysToRegisterOne()
+    {
+        RouteTableBuilder builder = new RouteTableBuilder()
+            .Map("/s/{status}", c => new StatusRoute(c.Path<Status>("status")), f => f.Path("status", r => r.Status));
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(builder.Build);
+
+        string status = nameof(RouteFormatBuilderTests) + "." + nameof(Status);
+        Assert.Contains($"AddEnumValueCodec<{status}>()", exception.Message, StringComparison.Ordinal);
+        Assert.Contains($"AddValueCodec<{status}>", exception.Message, StringComparison.Ordinal);
+    }
+
+    // What can never be written is still rejected at once, whatever the builder has registered: a collection given
+    // to Query, and the nullable form of a custom struct as the element of a list.
+    [Fact]
+    public void WhatACodecCannotHelpIsStillRejectedByTheDeclaration()
+    {
+        const string ProductId = nameof(CustomValueTypes) + ".ProductId";
+        foreach (RouteTableBuilder builder in new[] { new RouteTableBuilder(), Custom.Builder() })
+        {
+            InvalidOperationException collection = Assert.Throws<InvalidOperationException>(() => builder.Map(
+                "/a",
+                _ => new IdRoute(default),
+                f => f.Query("q", r => new[] { r.Id })));
+            InvalidOperationException nullable = Assert.Throws<InvalidOperationException>(() => builder.Map(
+                "/a",
+                _ => new IdRoute(default),
+                f => f.QueryValues("q", r => new Custom.ProductId?[] { r.Id })));
+
+            Assert.Contains("A collection is not one of them", collection.Message, StringComparison.Ordinal);
+            Assert.Contains("never absent", nullable.Message, StringComparison.Ordinal);
+            Assert.Contains($"as type '{ProductId}' instead", nullable.Message, StringComparison.Ordinal);
+            Assert.Contains($"AddValueCodec<{ProductId}>", nullable.Message, StringComparison.Ordinal);
+            Assert.Empty(builder.Build().Definitions);
+        }
+    }
+
+    // A format function writes a value by the codec of the exact type its value function returns, not of a type it
+    // implements.
+    [Fact]
+    public void AValueIsWrittenByTheCodecOfItsExactType()
+    {
+        RouteTableBuilder concrete = Custom.Builder()
+            .Map("/s/{shape}", _ => new CircleHolderRoute(new Custom.Circle()), f => f.Path("shape", r => r.Circle));
+        RouteTable widened = Custom.Builder()
+            .Map("/s/{shape}", _ => new CircleHolderRoute(new Custom.Circle()),
+                f => f.Path("shape", r => (Custom.IShape)r.Circle))
+            .Build();
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(concrete.Build);
+        Assert.Contains(
+            $"AddValueCodec<{nameof(CustomValueTypes)}.Circle>",
+            exception.Message,
+            StringComparison.Ordinal);
+        Assert.Equal("/s/circle", widened.Format(new CircleHolderRoute(new Custom.Circle())));
+    }
+
+    private sealed record IdRoute(Custom.ProductId Id) : AppRoute;
+
+    private sealed record CircleHolderRoute(Custom.Circle Circle) : AppRoute;
 
     public sealed record ItemRoute(string Id) : AppRoute;
 

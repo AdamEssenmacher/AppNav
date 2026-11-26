@@ -39,5 +39,15 @@ internal sealed class NullableValueCodec<T> : ValueCodec<T?>
         return false;
     }
 
+    // Forwards to the Write of the wrapped codec, so that Write is the one write entry point whatever is wrapped.
+    public override ValueTextProblem Write(T? value, out string? text)
+    {
+        if (value.HasValue)
+            return _codec.Write(value.GetValueOrDefault(), out text);
+
+        text = null;
+        return ValueTextProblem.NoText;
+    }
+
     public override string NoTextReason => _codec.NoTextReason;
 }

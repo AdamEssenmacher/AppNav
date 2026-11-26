@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Numerics;
 using AdamE.AppNav.Routing;
 using Xunit;
+using Custom = AdamE.AppNav.Tests.Routing.CustomValueTypes;
 
 namespace AdamE.AppNav.Tests.Routing;
 
@@ -516,6 +517,76 @@ public sealed class RouteTableFormatValueTests
         }
     }
 
+    // A value of each custom type, its nullable form and a list of it, written and matched again from a relative URI
+    // and an absolute one, reads back equal by the type's own equality, the struct with none of its own included.
+    [Fact]
+    public void ValuesOfCustomTypesReadBackEqual()
+    {
+        RouteTable table = CustomTypesTable();
+        CustomTypesRoute[] routes =
+        [
+            new(new(42), new("a-b"), new Custom.Point { X = -1, Y = 2 }, Custom.Stage.InProgress, new Custom.Square(),
+                new("a b&=+\u00E9"), new Custom.Outer<int>.Inner(9), [new(3), new(1), new(3)],
+                [Custom.Stage.Done, Custom.Stage.NotStarted]),
+            new(new(0), new("z"), null, null, null, null, null, [], []),
+            new(new(int.MaxValue), new("0"), new Custom.Point(), Custom.Stage.NotStarted, new Custom.Circle(),
+                new(""), new Custom.Outer<int>.Inner(0), [new(0)], [Custom.Stage.InProgress]),
+        ];
+
+        foreach (CustomTypesRoute route in routes)
+        {
+            string text = table.Format(route);
+            foreach (string prefix in Prefixes)
+            {
+                var read = Assert.IsType<CustomTypesRoute>(MatchText(table, prefix + text).Route);
+                Assert.Equal(route with { Ids = read.Ids, Stages = read.Stages }, read);
+                Assert.Equal(route.Ids, read.Ids);
+                Assert.Equal(route.Stages, read.Stages);
+            }
+        }
+    }
+
+    // Text that a codec accepts is written back as the text the codec writes for the value, which writing again does
+    // not change: for a custom type, what is canonical is the codec's choice.
+    [Fact]
+    public void AcceptedTextOfACustomTypeIsWrittenBackAsItsCodecWritesIt()
+    {
+        RouteTable table = CustomTypesTable();
+        var read = Assert.IsType<CustomTypesRoute>(Match(table, "/c/007/a-b/+1x-0?ids=01&ids=2").Route);
+
+        string text = table.Format(read);
+
+        Assert.Equal("/c/7/a-b/1x0?ids=1&ids=2", text);
+        Assert.Equal(text, table.Format(Assert.IsType<CustomTypesRoute>(Match(table, text).Route)));
+    }
+
+    private static RouteTable CustomTypesTable()
+    {
+        return Custom.Builder()
+            .Map("/c/{id}/{slug}/{point?}",
+                c => new CustomTypesRoute(
+                    c.Path<Custom.ProductId>("id"),
+                    c.Path<Custom.Slug>("slug"),
+                    c.TryGetPath("point", out Custom.Point? point) ? point : null,
+                    c.TryGetQuery("stage", out Custom.Stage? stage) ? stage : null,
+                    c.TryGetQuery("shape", out Custom.IShape? shape) ? shape : null,
+                    c.TryGetQuery("note", out Custom.Note? note) ? note : null,
+                    c.TryGetQuery("inner", out Custom.Outer<int>.Inner? inner) ? inner : null,
+                    c.GetQueryValues<Custom.ProductId>("ids"),
+                    c.GetQueryValues<Custom.Stage>("stages")),
+                f => f
+                    .Path("id", r => r.Id)
+                    .Path("slug", r => r.Slug)
+                    .Path("point", r => r.Point)
+                    .Query("stage", r => r.Stage)
+                    .Query("shape", r => r.Shape)
+                    .Query("note", r => r.Note)
+                    .Query("inner", r => r.Inner)
+                    .QueryValues("ids", r => r.Ids)
+                    .QueryValues("stages", r => r.Stages))
+            .Build();
+    }
+
     private static void AssertIntegerEdges<T>()
         where T : struct, IBinaryInteger<T>, IMinMaxValue<T>
     {
@@ -859,6 +930,17 @@ public sealed class RouteTableFormatValueTests
         // The values as strings, as the untyped read gives them, which the format function does not write.
         public IReadOnlyList<string> Texts { get; init; } = [];
     }
+
+    private sealed record CustomTypesRoute(
+        Custom.ProductId Id,
+        Custom.Slug Slug,
+        Custom.Point? Point,
+        Custom.Stage? Stage,
+        Custom.IShape? Shape,
+        Custom.Note? Note,
+        Custom.Outer<int>.Inner? Inner,
+        IReadOnlyList<Custom.ProductId> Ids,
+        IReadOnlyList<Custom.Stage> Stages) : AppRoute;
 
     private sealed record TwoListsRoute(IReadOnlyList<int> A, string? X, IReadOnlyList<string> B) : AppRoute;
 

@@ -260,7 +260,7 @@ A create function reads the query of the URI with `TryGetQuery(name, out value)`
 - Names are compared ordinally without regard to case, as path parameter names are.
 - `TryGetQuery` gives the first value when a name repeats, so `?tab=a&tab=b` gives `a`. That is what a browser's `URLSearchParams.get` and most web frameworks return, so the app and a web page handling the same link agree on which value they read; code that needs every value uses `GetQueryValues`. Names that differ only by case are one name here, unlike in a browser, so `?Tab=x&tab=y` gives `x`. `TryGetQuery` gives the empty string for a name with no value, as in `?flag` or `?flag=`. It returns `false` with `null` when the query does not have the name, and never throws for a missing value.
 - `GetQueryValues` gives every value of a name in order, including repeated and empty values, and an empty list when there are none. The list cannot be changed.
-- `TryGetQuery<T>` and `GetQueryValues<T>` read values as numbers, `bool`, `Guid` or a registered enum, as described in [Typed query values](#typed-query-values).
+- `TryGetQuery<T>` and `GetQueryValues<T>` read values as numbers, `bool`, `Guid`, a registered enum or a type with a codec, as described in [Typed query values](#typed-query-values).
 
 The query is read and parsed only when a create function first asks for a value, at most once per match, so a URI that matches nothing, and a route that reads no query values, pay nothing for the query. Nothing limits the size of a query, and the cost of reading it grows linearly with its length. `System.Uri` itself accepts a query of a million characters, absolute or relative, so an app that receives links from outside should bound their length before calling `Match`; nothing else does. Like the path, the query can carry a secret, so it never appears in a diagnostic.
 
@@ -337,7 +337,7 @@ When a template matches, its create function is called once with a `RouteMatchCo
 
 - `Path(name)` returns a captured value, decoded, and throws `KeyNotFoundException` when the template has no such parameter or it is an [optional](#optional-parameters) or [catch-all](#catch-all-parameters) parameter that the path left out. Use it for a required parameter.
 - `TryGetPath(name, out value)` returns `true` with the value when the path has one, and `false` with `null` in the cases where `Path` throws. Use it for an optional or catch-all parameter, as in `c.TryGetPath("tab", out string? tab) ? tab : null`.
-- `Path<T>(name)` and `TryGetPath<T>(name, out value)` read a value as a number, `bool`, `Guid` or a registered enum, as described in [Typed values](#typed-values).
+- `Path<T>(name)` and `TryGetPath<T>(name, out value)` read a value as a number, `bool`, `Guid`, a registered enum or a type with a codec, as described in [Typed values](#typed-values).
 - Names are compared without regard to case.
 - `PathValues` is the dictionary `RouteTemplate.Match` returned. Treat it as read-only.
 - `TryGetQuery(name, out value)` and `GetQueryValues(name)` read the query, as described in [Query values](#query-values), and `TryGetQuery<T>(name, out value)` and `GetQueryValues<T>(name)` read query values as typed values, as described in [Typed query values](#typed-query-values).
@@ -347,7 +347,7 @@ An exception the create function throws propagates out of `Match` unchanged, and
 
 ### Typed values
 
-`Path<T>(name)` and `TryGetPath<T>(name, out value)` read a captured value as one of these types: `string`, `bool`, `Guid`, `decimal`, `double`, `float`, the integer types `sbyte`, `byte`, `short`, `ushort`, `int`, `uint`, `long` and `ulong`, any enum registered on the builder as described in [Enum values](#enum-values), and the nullable form of each of them but `string`, such as `int?`. A `string` is the captured text unchanged. The others, apart from enums, follow these rules, which are the same in every culture and apply to the text exactly as captured, without trimming:
+`Path<T>(name)` and `TryGetPath<T>(name, out value)` read a captured value as one of these types: `string`, `bool`, `Guid`, `decimal`, `double`, `float`, the integer types `sbyte`, `byte`, `short`, `ushort`, `int`, `uint`, `long` and `ulong`, any enum registered on the builder as described in [Enum values](#enum-values), any type of the app's own with a codec registered on the builder as described in [Custom value types](#custom-value-types), and the nullable form of each of them that is a value type, such as `int?`. A `string` is the captured text unchanged. The others, apart from enums and types with a codec, follow these rules, which are the same in every culture and apply to the text exactly as captured, without trimming:
 
 - `int`, `long`, `decimal`, `bool` and `Guid`: a value converts exactly when it satisfies the [built-in constraint](#constraints) of the same name, by the same rule, so `Path<int>` accepts exactly the text that `{id:int}` accepts, and `Path<Guid>` only the hyphenated form that `{id:guid}` accepts.
 - The other integer types follow the rule of `int` within their own range: an optional `+` or `-` followed by one or more ASCII digits, leading zeros allowed, whose value the type can hold. `300` is not a `byte` and `-1` is not a `uint`, but `-0` and `+5` are, as they are for `int`.
@@ -386,7 +386,7 @@ public sealed record ListRoute(int? Page) : AppRoute;
 
 With the constraint of the same name in the template, such as `{id:int}` read with `Path<int>`, the conversion cannot fail, because a value that does not satisfy the constraint never reaches the create function. A different constraint does not give that guarantee: `{id:long}` read with `Path<int>` lets `/3000000000` through, and `{id:int}` read with `Path<bool>` lets `/1` through, and each then fails the match. No constraint is named after the other number types: a template with `{n:byte}` or `{n:double}` is not valid. Use `{n:int}`, `{n:long}` or `{n:decimal}`, or no constraint, and let the typed read check the range: `{n:long}` read with `Path<byte>` lets `/300` through, which then fails the match. Choose a constraint at least as wide as the type, or none: `{n:long}` with `Path<ulong>` makes a URI with a value above 9223372036854775807 fail to match the template at all rather than reach the read, so for `ulong` use `{n:decimal}` or no constraint. A wider constraint only widens the range, it does not check the type: `{n:decimal}` read with `Path<ulong>` also lets `/1.5` and `/-1` through, and each then fails the match, with no other template tried. Every value that `{n:decimal}` accepts converts to `float` and `double`, rounded, since their range is larger. Without a constraint, a value that does not convert fails the match for that URI, and no other template is tried, even one that would also match the path. The exception's `ValueName` is the name the create function passed, and its message names the parameter and the type, as in `The path value of 'id' is not a valid int.`, but never quotes the value, which can carry a secret from the URI.
 
-Other types, such as `Int128`, `Half`, `char` and `DateTime`, and their nullable forms, are not supported in this version, and neither is an enum that is not registered. Using one throws `InvalidOperationException` whether or not the path has the value, and it propagates out of `Match`, since it is a mistake in the app rather than in the URI.
+Any other type, such as `Int128`, `Half` or `DateTime`, or its nullable form, is read only once it has a codec, as described in [Custom value types](#custom-value-types), and an enum only once it is registered. A `char` cannot have a codec: it is one character of a string, so read it as a string. Using a type that has none throws `InvalidOperationException` whether or not the path has the value, and it propagates out of `Match`, since it is a mistake in the app rather than in the URI. The message names the method that registers a codec for the type, `AddValueCodec`, or for an enum both `AddEnumValueCodec` and `AddValueCodec`. A collection, such as `List<int>`, and a `char` cannot have a codec, and their message says to read the value as a string instead.
 
 #### Enum values
 
@@ -420,27 +420,151 @@ Once registered, `Path<T>`, `TryGetPath<T>` and `TryGetQuery<T>` read the enum a
 
 The names of a registered enum are part of the links of the app: renaming a member changes which links work, so rename one only as you would change a route template.
 
-Registering applies to the whole table, so it can come before or after the `Map` calls whose create functions read the enum. Registering the same enum again does nothing. A table that is already built does not change; call `Build` again for a table that includes a later registration. `AddEnumValueCodec` throws `ArgumentException` for an enum with two members whose names differ only by case, such as `A` and `a`, since a text that named one would name both. Reading an enum that is not registered throws `InvalidOperationException` whose message names `AddEnumValueCodec`, whether or not the value is present, and it propagates out of `Match`.
+Registering applies to the whole table, so it can come before or after the `Map` calls whose create functions read the enum. Registering the same enum again does nothing. A table that is already built does not change; call `Build` again for a table that includes a later registration. `AddEnumValueCodec` throws `ArgumentException` for an enum with two members whose names differ only by case, such as `A` and `a`, since a text that named one would name both, and for an enum that already has a codec from `AddValueCodec`, since a type has one codec. Reading an enum that is not registered throws `InvalidOperationException` whose message names `AddEnumValueCodec`, whether or not the value is present, and it propagates out of `Match`.
 
-There is no constraint named after enums, so a template with `{status:enum}` is not valid, and a template cannot keep a name that is not a member away from its create function; that name fails the match instead. For another spelling, such as `in-progress`, read the string and map it yourself:
+There is no constraint named after enums, so a template with `{status:enum}` is not valid, and a template cannot keep a name that is not a member away from its create function; that name fails the match instead. For other spellings, such as `in-progress`, give the enum a codec of its own, as [Custom value types](#custom-value-types) shows.
+
+#### Custom value types
+
+A type of the app's own, such as an id, is read and written once it has a codec, registered on the builder with `AddValueCodec<TValue>(tryParse, format)`: a parser that reads a text as a value, and a writer that writes a value as its text.
 
 ```csharp
+using System.Globalization;
+using AdamE.AppNav;
+using AdamE.AppNav.Routing;
+
 RouteTable table = new RouteTableBuilder()
-    .Map("/orders/{status}", c => new OrdersRoute(c.Path("status") switch
-    {
-        "pending" => OrderStatus.Pending,
-        "in-progress" => OrderStatus.InProgress,
-        "shipped" => OrderStatus.Shipped,
-        _ => throw new RouteValueException("status", "The status is not one of the known spellings."),
-    }))
+    .AddValueCodec<ProductId>(
+        (string text, out ProductId id) => ProductId.TryParse(text, out id),
+        id => id.ToString())
+    .Map("/products/{id}",
+        c => new ProductRoute(c.Path<ProductId>("id")),
+        format => format.Path("id", r => r.Id))
     .Build();
 
-// /orders/in-progress gives OrdersRoute { Status = InProgress }, and /orders/InProgress fails the match.
+Console.WriteLine(table.Format(new ProductRoute(new ProductId(42))));            // /products/p42
+Console.WriteLine(table.Match(new Uri("/products/p42", UriKind.Relative)).Route); // ProductRoute { Id = p42 }
+Console.WriteLine(table.Match(new Uri("/products/p042", UriKind.Relative)).Route); // ProductRoute { Id = p42 }
+
+RouteMatchResult result = table.Match(new Uri("/products/42", UriKind.Relative));
+Console.WriteLine(result.Diagnostics[0].Data["reason"]); // The path value of 'id' is not a valid ProductId.
+
+public readonly record struct ProductId(int Value)
+{
+    public static bool TryParse(string text, out ProductId id)
+    {
+        int value = 0;
+        bool parsed = text.StartsWith('p')
+            && int.TryParse(text.AsSpan(1), NumberStyles.None, CultureInfo.InvariantCulture, out value);
+        id = new ProductId(value);
+        return parsed;
+    }
+
+    public override string ToString() => "p" + Value.ToString(CultureInfo.InvariantCulture);
+}
+
+public sealed record ProductRoute(ProductId Id) : AppRoute;
 ```
+
+Once registered, `Path<T>`, `TryGetPath<T>`, `TryGetQuery<T>` and `GetQueryValues<T>` read the type, and a format function writes it with `Path`, `Query` and `QueryValues`, as [Formatting a route](#formatting-a-route) describes. The two functions are a contract that the table relies on but can check only in part:
+
+- `tryParse` returns `true` with the value for a text that is a valid value, and `false` for one that is not. It must accept every text that `format` writes. It may accept several spellings of one value, as the parser of `ProductId` accepts `p042` for `p42`: each spelling matches, and `Format` writes the one that `format` gives.
+- `format` returns the text of a value, and should give equal values the same text, so that one value has one link. It returns `null` for a value that has no text, and `Format` then throws `ArgumentException`, as it does for a `double` that is NaN.
+- Both must be safe to call from several threads at once, since a built table is, and should have no side effects. Either can be called more than once for one value: `Format` reads back each text that `format` writes with `tryParse`, as [What a round trip promises](#what-a-round-trip-promises) describes.
+- That check only asks whether `tryParse` accepts the text. It does not catch a `format` that gives two different values the same text, nor a `tryParse` that reads a written text back as a different value: those round trips are the codec's responsibility.
+- A path value must also satisfy the constraint of its parameter, if the template gives one, as for any type.
+- Returning `false` and throwing are different. `false` means the text is not a valid value: the read throws `RouteValueException`, which fails the match as it does for a built-in type, and no later template is tried. The message names the type by its simple name, as in `The path value of 'id' is not a valid ProductId.`, and never quotes the value. An exception that either function throws is a mistake in the app, and propagates unchanged, out of `Match` or `Format`, with one exception: a `RouteValueException` that `tryParse` throws during a read fails the match as a value that is not valid, with that exception's own `ValueName`, as one thrown by a create function does; out of `Format` and `FormatUri`, it propagates like any other. Returning `true` with a `null` value is a mistake in the codec too: the read, or the check of a written text, throws `InvalidOperationException`, whose message names the type.
+- The text given to `tryParse` is decoded and never `null`. It can be empty, for a query value written as `?id=` or `?id`, and the parser decides whether that is valid. A text that `format` writes can be empty too: as a query value it is written as `id=`, and as a path value it is rejected, as an empty path value always is. A text with a lone surrogate is rejected, as it is for a `string`.
+
+The parser's value is declared `out TValue?`, which for a struct is the struct itself, so the usual shapes convert without a warning. A method with the usual `TryParse` shape can be passed as it is, as in `AddValueCodec<ProductId>(ProductId.TryParse, id => id.ToString())`, whether its parameter is `out T`, `out T?`, `[NotNullWhen(true)] out T?` or `[MaybeNullWhen(false)] out T`, and so can a method of the base class library such as `Version.TryParse`. The parameter types of a lambda can be left out, as in `(text, out id) => ProductId.TryParse(text, out id)`. If you give them for a reference type, write the value as nullable, as in `(string text, out Slug? slug) => Slug.TryParse(text, out slug)`: a lambda that declares `out Slug` instead makes the compiler warn that its nullability does not match the delegate, and that it may assign `null` to it when it calls a `TryParse` whose parameter is `out Slug?`. Write `out Slug?`, or leave the types out. A method with another argument, such as the `TryParse(string, IFormatProvider, out T)` of `IParsable<T>`, needs a lambda. Do not pass a method of the base class library that reads by the current culture, such as `DateOnly.TryParse(string, out DateOnly)` or `TimeSpan.TryParse(string, out TimeSpan)`, which would make a link mean different things on different devices: write a lambda that passes `CultureInfo.InvariantCulture` and an exact format, as in `(string text, out DateOnly date) => DateOnly.TryParseExact(text, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out date)`, and write the value by the same format, as in `date => date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)`. A reference type is read and written in the same way:
+
+```csharp
+using System.Diagnostics.CodeAnalysis;
+using AdamE.AppNav;
+using AdamE.AppNav.Routing;
+
+RouteTable table = new RouteTableBuilder()
+    .AddValueCodec<Slug>(Slug.TryParse, slug => slug.Value)
+    .Map("/articles/{slug}",
+        c => new ArticleRoute(c.Path<Slug>("slug")),
+        format => format.Path("slug", r => r.Slug))
+    .Build();
+
+Console.WriteLine(table.Match(new Uri("/articles/hello-world", UriKind.Relative)).Route);
+// ArticleRoute { Slug = Slug { Value = hello-world } }
+Console.WriteLine(table.Match(new Uri("/articles/Hello", UriKind.Relative)).IsSuccess); // False
+
+public sealed record Slug(string Value)
+{
+    public static bool TryParse(string text, [NotNullWhen(true)] out Slug? slug)
+    {
+        bool valid = text.Length > 0 && text.All(c => char.IsAsciiLetterLower(c) || char.IsAsciiDigit(c) || c == '-');
+        slug = valid ? new Slug(text) : null;
+        return valid;
+    }
+}
+
+public sealed record ArticleRoute(Slug Slug) : AppRoute;
+```
+
+`AddValueCodec` throws `ArgumentNullException` for a `null` function, and `ArgumentException`, whose `ParamName` is `TValue`, for a type that cannot have a codec. In both cases the builder is not changed.
+
+- The built-in types, `string`, `bool`, `Guid`, `decimal`, `double`, `float` and the eight integer types, and their nullable forms, cannot be given a codec. Their text is fixed by the library so that it always agrees with [constraints](#constraints) such as `{id:int}`; a codec that changed it would make `{id:int}` and `Path<int>` disagree. For another text, use a type of your own, as `ProductId` above does for an `int`.
+- A nullable type, such as `ProductId?`, cannot be given a codec: register `ProductId`, and its nullable form is then read and written by the same codec.
+- A collection, any type that implements `IEnumerable` other than `string`, cannot be given a codec, because a codec reads and writes one value, and neither can its nullable form. Write a list of values for one name with `QueryValues` and read it with `GetQueryValues<T>`, or wrap the collection in a type of your own.
+- A `char`, or its nullable form, cannot be given a codec: it is one character of a string, and `QueryValues` rejects it, since a string given to it by mistake makes `char` the element type. Read and write it as a string, or use a type of your own.
+- A type has one codec. Registering a second one for the same type throws, whether the first came from `AddValueCodec` or from `AddEnumValueCodec`, and so does `AddEnumValueCodec` for an enum that already has a codec from `AddValueCodec`. Registering the same enum twice with `AddEnumValueCodec` still does nothing.
+- Any other type can have one: a class, a struct, a record, an interface, an abstract class or an enum.
+
+A codec is found by exactly the type that is read or written, never by a base type or an interface. A codec for an interface `IShape` reads `Path<IShape>`, but not `Path<Circle>` for a class `Circle` that implements it, and a format function whose value function returns a `Circle` needs a codec for `Circle`, or a cast to `IShape`. No template constraint is named after a type with a codec, so a template with `{id:productid}` is not valid, and a text that the parser rejects fails the match instead. Registering applies to the whole table, before or after the `Map` calls, as for enums, and a table that is already built does not change.
+
+A codec of its own is how an enum gets spellings that are not the names of its members:
+
+```csharp
+using AdamE.AppNav;
+using AdamE.AppNav.Routing;
+
+RouteTable table = new RouteTableBuilder()
+    .AddValueCodec<OrderStatus>(
+        (string text, out OrderStatus status) =>
+        {
+            (bool known, status) = text switch
+            {
+                "pending" => (true, OrderStatus.Pending),
+                "in-progress" => (true, OrderStatus.InProgress),
+                "shipped" => (true, OrderStatus.Shipped),
+                _ => (false, default(OrderStatus)),
+            };
+            return known;
+        },
+        status => status switch
+        {
+            OrderStatus.Pending => "pending",
+            OrderStatus.InProgress => "in-progress",
+            OrderStatus.Shipped => "shipped",
+            _ => null,
+        })
+    .Map("/orders/{status}",
+        c => new OrdersRoute(c.Path<OrderStatus>("status")),
+        format => format.Path("status", r => r.Status))
+    .Build();
+
+Console.WriteLine(table.Format(new OrdersRoute(OrderStatus.InProgress)));                 // /orders/in-progress
+Console.WriteLine(table.Match(new Uri("/orders/in-progress", UriKind.Relative)).Route);   // OrdersRoute { Status = InProgress }
+Console.WriteLine(table.Match(new Uri("/orders/InProgress", UriKind.Relative)).IsSuccess); // False
+
+public enum OrderStatus { Pending, InProgress, Shipped }
+
+public sealed record OrdersRoute(OrderStatus Status) : AppRoute;
+```
+
+The enum is then read and written by that codec alone: the names of its members are not read, a value it gives no text for cannot be written, and it cannot also be registered with `AddEnumValueCodec`.
+
+A struct with a codec, such as `ProductId`, can also be read and written in its nullable form, `ProductId?`, wherever the nullable form of a built-in type can be: by `TryGetPath<T>`, `TryGetQuery<T>` and `Path<T>`, and by `Path` and `Query` in a format function, but not as the element of a list. `TryGetPath("id", out ProductId? id)` returns `false` with `null` when the path has no value. The nullable form is read and written by the codec of the struct, so the same text gives the same value. Each value read or written in that form costs one allocation, a box around the value, which the struct itself does not: a typed read or write of `ProductId` allocates nothing beyond what the codec's own functions allocate.
 
 #### Typed query values
 
-`TryGetQuery<T>(name, out value)` and `GetQueryValues<T>(name)` read query values as the same types, registered enums included, by the same rules, so `TryGetQuery<int>` accepts exactly the text that `Path<int>` accepts and gives the same value. The query is read, decoded and compared by name as described in [Query values](#query-values).
+`TryGetQuery<T>(name, out value)` and `GetQueryValues<T>(name)` read query values as the same types, registered enums and types with a codec included, by the same rules, so `TryGetQuery<int>` accepts exactly the text that `Path<int>` accepts and gives the same value. The query is read, decoded and compared by name as described in [Query values](#query-values).
 
 ```csharp
 RouteTable table = new RouteTableBuilder()
@@ -459,10 +583,10 @@ public sealed record ProductsRoute(int Page, string Tags) : AppRoute;
 ```
 
 - `TryGetQuery<T>` returns `false` with the default value of `T`, which is `null` for a nullable type, only when the query does not have the name or there is no query.
-- A value that is present but does not convert rejects the match with a `RouteValueException`, as a path value does. An empty value is present: `?page=` and `?page` give the empty string, which is not a valid number, `bool`, `Guid` or enum, so `TryGetQuery<int>` rejects both. `TryGetQuery<string>` gives the empty string, as `TryGetQuery` does.
+- A value that is present but does not convert rejects the match with a `RouteValueException`, as a path value does. An empty value is present: `?page=` and `?page` give the empty string, which is not a valid number, `bool`, `Guid` or enum, so `TryGetQuery<int>` rejects both. `TryGetQuery<string>` gives the empty string, as `TryGetQuery` does, and the parser of a codec receives it and decides.
 - The first value decides, as for `TryGetQuery`: `?page=x&page=2` read as `int` fails the match, although the second value is valid, and `?page=2&page=x` gives 2.
 - `GetQueryValues<T>` gives every value in order, converted, or fails: one value that does not convert, an empty one included, rejects the match, so `?id=3&id=5` read as `int` gives 3 and 5, and `?id=3&id=x` fails. A name the query does not have gives an empty list. The list cannot be changed, and `GetQueryValues<string>` gives the same values as `GetQueryValues`.
-- `GetQueryValues<T>` does not support a nullable type, such as `int?`, since an element of the list is never absent; read the list as `int`. It throws `InvalidOperationException`, as an unsupported type does, whether or not the query has the name.
+- `GetQueryValues<T>` does not support a nullable type, such as `int?` or `ProductId?`, since an element of the list is never absent; read the list as `int`. It throws `InvalidOperationException`, as an unsupported type does, whether or not the query has the name, and its message names the type to read the list as, and the registration it needs when it has none.
 - `+` is a space in a query, so `?n=+5` gives a space followed by `5`, which is not a valid `int`, while `?n=%2B5` gives `+5`, which is 5.
 - The message of the exception says that it is a query value, as in `The query value of 'page' is not a valid int.`, where a path value gives `The path value of 'page' is not a valid int.`, so a path parameter and a query value of the same name are told apart. Neither message quotes the value, which can carry a secret such as a sign-in token.
 
@@ -518,7 +642,7 @@ public sealed record OrderRoute(int Id) : AppRoute;
 - The result has one diagnostic whose `Code` is `RouteDiagnosticCodes.ValueInvalid` (`route.value.invalid`). Its `Data` holds the exception's `ValueName` under `name`, the template as written under `template`, the exception's message under `reason`, and the path as it was matched under `path`, all strings. Its `Message` holds none of them, and the text of the query itself is not included. The exception itself, with its inner exception, is not kept.
 - `Route` is `null`, and `Definition` is the definition whose template matched.
 - No later template is tried, even one that also matches the path: the template that matched owns the URI.
-- Only a `RouteValueException` thrown by the create function of the definition that matched, while `Match` is calling it, is turned into a result. Every other exception propagates unchanged, and a `RouteValueException` thrown anywhere else is an ordinary exception. A create function that calls `Match` itself gets a result from the inner call, not the exception.
+- Only a `RouteValueException` thrown by the create function of the definition that matched, while `Match` is calling it, is turned into a result. That includes one thrown by the parser of a [codec](#custom-value-types) that a typed read in the create function calls. Every other exception propagates unchanged, and a `RouteValueException` thrown anywhere else is an ordinary exception. A create function that calls `Match` itself gets a result from the inner call, not the exception.
 - `reason` is whatever text the app gives as the message. The default message names the value but does not quote it; a message that quotes the value can carry a secret from the URI. Do not pass another exception's `Message`, as in `new RouteValueException("id", e.Message, e)`: many .NET parse methods quote their input, so `int.Parse` on `tok-123` says `The input string 'tok-123' was not in a correct format.` Pass the parse exception as the inner exception if you like; the table does not keep it.
 - If the fallback needs the other captured values, such as the user in `/users/{u}/orders/{id}`, return a fallback route from the create function instead of rejecting, because a failed result carries only the definition and the name of the value.
 
@@ -560,7 +684,7 @@ public sealed record OrderRoute(int Id) : AppRoute;
 - It must declare every parameter of the template, required, optional and catch-all alike, with `Path(name, value)`. `Map` throws `ArgumentException` for one that is missing, naming the template and the first parameter in template order that is not declared, and for a name that is not a parameter of the template or is declared twice. Names are compared without regard to case, as the typed reads compare them.
 - It declares each query value with `Query(name, value)`, and each list of values for one name with `QueryValues(name, values)`, before or after the path values, as [Writing query values](#writing-query-values) describes. A mapping may declare none.
 - A template with no parameters is made writable with a format function that declares nothing, as in `.Map("/settings", _ => new SettingsRoute(), _ => { })`. A mapping made without a format function cannot write its route.
-- The type of a value is one the [typed reads](#typed-values) support: `string`, `bool`, `Guid`, `decimal`, `double`, `float`, the eight integer types, a registered enum, or the nullable form of any of them but `string`. `Path` throws `InvalidOperationException` for any other type, such as `DateTime`; convert such a value to a string and declare that instead. An enum must be registered with `AddEnumValueCodec`, before or after the `Map` call, so `Build`, not `Path`, throws `InvalidOperationException` for one that is not.
+- The type of a value is one the [typed reads](#typed-values) support: `string`, `bool`, `Guid`, `decimal`, `double`, `float`, the eight integer types, a registered enum, a type with a codec, or the nullable form of any of them that is a value type. Any other type, such as `DateTime`, needs a codec, registered with `AddValueCodec` as [Custom value types](#custom-value-types) describes, and an enum needs one from `AddEnumValueCodec` or `AddValueCodec`. Registering can come before or after the `Map` call, so `Build`, not `Path`, throws `InvalidOperationException` for a type that has none, naming the route type, the template, the parameter or query value, the type and the method that registers it. Only what no codec can help is rejected by `Path` itself: a collection, such as `int[]`, for which it throws `InvalidOperationException`; convert such a value to a string and declare that instead.
 - The type argument of `Map` must be a type that can be instantiated. A route is written by the mapping of its exact type, so `Map` throws `ArgumentException` for an abstract route type given a format function, which happens when the type is inferred from a create function whose result is a base type. Give the type argument explicitly, as in `Map<OrderRoute>(...)`, or map each concrete type.
 - When `Map` throws, it adds no mapping.
 
@@ -581,7 +705,7 @@ public sealed record HomeRoute : AppRoute;
 
 #### How values are written
 
-Each value is written as one canonical text, which the typed read of the same type reads back to an equal value. Equal values always give the same path, and nothing depends on the culture.
+Each value of a built-in type or a registered enum is written as one canonical text, which the typed read of the same type reads back to an equal value. Equal values always give the same path, and nothing depends on the culture. A value of a type with a codec is written as the text its codec writes, as its row below says.
 
 | Type | Text |
 | --- | --- |
@@ -592,6 +716,7 @@ Each value is written as one canonical text, which the typed read of the same ty
 | `double`, `float` | The shortest digits that read back as the same value of the type, written without an exponent, which the read does not accept: `1E+21` is `1000000000000000000000` and `1E-07` is `0.0000001`. A `float` is written by its own digits, so `0.1f` is `0.1`. A negative zero is `0`. Because no exponent is used, an extreme value is written in full: the largest and the smallest positive `double` take more than 300 characters each. NaN and the infinities cannot be written, because no text reads as them. |
 | `Guid` | The hyphenated form in lower case, as `Guid.ToString()` writes it: `6f9619ff-8b86-d011-b42d-00cf4fc964ff`. |
 | Registered enum | The name of the member with that value, as declared, such as `Shipped`. When several members have the value, the name that sorts first ordinally is written, so for `enum Level { Primary = 1, Alpha = 1 }` it is `Alpha`. Ordinally, every upper-case ASCII letter sorts before every lower-case one, so of `Zulu` and `alpha` it is `Zulu`. A value that no member has, such as an undefined number or a combination of flags with no name of its own, cannot be written. |
+| Type with a codec | The text that the codec's `format` returns, which `Format` then reads back with the codec's `tryParse`; a text that the parser does not accept is not written, as [When a route cannot be written](#when-a-route-cannot-be-written) says. What is canonical is the codec's choice. A value for which `format` returns `null` cannot be written. |
 | Nullable form | The text of the underlying type. `null` leaves the parameter out. |
 
 A `null` value, a null reference or a nullable value type without a value, leaves an optional or catch-all parameter out, with its segment, and is an error for a required one:
@@ -635,7 +760,7 @@ public sealed record ProductsRoute(int? Page, string? Sort) : AppRoute;
 ```
 
 - The values are written in the order they were declared, as `name=value` pairs joined by `&`, after a `?`. There is no `?` when no value is written.
-- The type of a value is one that `Path` accepts, and the value is written as the same canonical text, as [How values are written](#how-values-are-written) describes. `Query` throws `InvalidOperationException` for any other type, collections such as `string[]` and `List<int>` included, since it writes one value for the name; the message for a collection says to declare several values for one name with `QueryValues`, described below. As for `Path`, `Build` reports an enum that is not registered.
+- The type of a value is one that `Path` accepts, and the value is written as the same text, as [How values are written](#how-values-are-written) describes. `Query` throws `InvalidOperationException` for a collection, such as `string[]` or `List<int>`, since it writes one value for the name; the message says to declare several values for one name with `QueryValues`, described below. As for `Path`, `Build` reports a type that has no codec.
 - `null`, a null reference or a nullable value type without a value, leaves the value out. An empty string is a value: it is written as `name=`, which reads back as the empty string. There is no way to write a name without `=`.
 - A name is any text, the empty string included, as on the read side. `Query` throws `ArgumentException` for a name declared twice, with `Query` or `QueryValues`, compared as the reads compare names, ordinally without regard to case, because the reads take the first value of a name, so the second would never be read. It throws one too for a name that contains a lone surrogate. A query value may have the name of a path parameter: in `/items/{id}?id=x`, the two are read separately.
 - Names and values are percent-encoded with `Uri.EscapeDataString`, which leaves only ASCII letters, digits, `-`, `.`, `_` and `~` as they are. A space is written as `%20`, never `+`, because the query reader takes `+` for a space, as form encoding does, so a literal `+` is written as `%2B`. `&`, `=`, `#`, `?` and `%` are encoded too, so that they are read back as data rather than splitting or ending the query: `a b+c&d` is written as `a%20b%2Bc%26d`, and the reader gives back exactly the text written.
@@ -668,32 +793,35 @@ public sealed record ProductsRoute(int? Page, IReadOnlyList<string> Tags) : AppR
 
 The route defines its own equality because a record compares a list member by reference, and [The route table](#the-route-table) asks for routes whose members compare by value. With it, matching `/products?page=2&tag=a&tag=b` gives a route equal to `new ProductsRoute(2, ["a", "b"])`. Without it, the matched route would have the same tags and still not be equal to the route that was written, as [What a round trip promises](#what-a-round-trip-promises) explains.
 
-- The element type is one that `GetQueryValues<T>` reads: `string`, `bool`, `Guid`, `decimal`, `double`, `float`, the eight integer types or a registered enum, each written as the same canonical text as a single value. It is inferred from the function, so a function that returns `string[]`, `List<int>`, `IReadOnlyList<Guid>`, `HashSet<string>`, `ImmutableArray<int>` or `IEnumerable<long>` needs no type argument. A function that returns only `null` or `[]` has no type to infer from; give it, as in `QueryValues<string>("tag", _ => [])`. A default `ImmutableArray<T>`, which is what an unset member of that type holds, is neither `null` nor empty: enumerating it throws `InvalidOperationException`, which propagates unchanged, as any exception from the list does.
-- A nullable element type, such as `int?`, is not supported, since an element of a list is never absent, and neither is a collection, so a list of lists cannot be written. `QueryValues` throws `InvalidOperationException` for either, and for any other type. For the nullable form of a supported type or of an enum, the message names the type to declare instead; another nullable type, such as `DateTime?`, gets the message for an unsupported type. A string given to `QueryValues` is a list of `char`, and its message says to declare it with `Query`; a list of lists gets a message that says to declare each list under its own name. As for `Query`, `Build` reports an enum that is not registered.
+- The element type is one that `GetQueryValues<T>` reads: `string`, `bool`, `Guid`, `decimal`, `double`, `float`, the eight integer types, a registered enum or a type with a codec, each written as the same text as a single value, and read back by the codec's parser in the same way. It is inferred from the function, so a function that returns `string[]`, `List<int>`, `IReadOnlyList<Guid>`, `HashSet<string>`, `ImmutableArray<int>` or `IEnumerable<long>` needs no type argument. A function that returns only `null` or `[]` has no type to infer from; give it, as in `QueryValues<string>("tag", _ => [])`. A default `ImmutableArray<T>`, which is what an unset member of that type holds, is neither `null` nor empty: enumerating it throws `InvalidOperationException`, which propagates unchanged, as any exception from the list does.
+- A nullable element type, such as `int?` or `ProductId?`, is not supported, since an element of a list is never absent, and neither is a collection, so a list of lists cannot be written. `QueryValues` throws `InvalidOperationException` for either. For a nullable type, the message names the type to declare instead, and the registration that type needs when it is not built in. A string given to `QueryValues` is a list of `char`, and its message says to declare it with `Query`; a list of lists gets a message that says to declare each list under its own name. As for `Query`, `Build` reports a type that has no codec.
 - A `null` list and an empty one both write nothing. There is no `?` when no value is written, by any declaration.
-- An element that is `null`, which only a list of strings can have, cannot be written, and `Format` throws for it. An empty string is a value, written as `name=`.
+- An element that is `null`, which only a list of a reference type, such as strings, can have, cannot be written, and `Format` throws for it. An empty string is a value, written as `name=`.
 - The elements are written in the order the list gives them, repeated and empty ones included, where the list was declared among the other query values: `.QueryValues("a", ...).Query("x", ...).QueryValues("b", ...)` writes `?a=1&a=2&x=m&b=3`.
-- The function is called at most once each time a route is formatted, and the list it returns is enumerated once, so a list computed lazily is computed once. After an element that cannot be written, the elements after it are not read and the later functions are not called. An exception thrown while the list is enumerated propagates unchanged.
+- The function is called at most once each time a route is formatted, and the list it returns is enumerated once, so a list computed lazily is computed once. After an element that cannot be written, the elements after it are not read and the later functions are not called. An exception thrown while the list is enumerated, or by a codec while it writes an element, propagates unchanged.
 - A name belongs to one declaration: `QueryValues` throws `ArgumentException` for a name already declared with `Query` or `QueryValues`, and `Query` for one already declared with either, compared ordinally without regard to case. Otherwise a name follows the rules of `Query`, and each element is encoded as a single value is.
 
 `QueryValues` is a method of its own, rather than a collection given to `Query`, because `Query` writes one value for its name. A collection given to `Query` is rejected, and the message names `QueryValues`, so a list is never written by accident as one value or as several.
 
 #### When a route cannot be written
 
-`Format` throws `ArgumentNullException` for a `null` route. It throws `ArgumentException`, whose `ParamName` is `route`, when a value cannot be written. The checks are those of [`RouteTemplate.Format`](#formatting-a-path), applied to the text of each path value, one more for a path or query value that has no text, one for a query value that cannot be encoded, and one for a `null` element of a list of query values. An element of a list is checked as a single query value is:
+`Format` throws `ArgumentNullException` for a `null` route. It throws `ArgumentException`, whose `ParamName` is `route`, when a value cannot be written. The checks are those of [`RouteTemplate.Format`](#formatting-a-path), applied to the text of each path value, one more for a path or query value that has no text, one for a text that a codec writes but its own parser does not accept, one for a query value that cannot be encoded, and one for a `null` element of a list of query values. An element of a list is checked as a single query value is:
 
 - a required parameter's value is `null`;
 - a value is empty, contains a lone surrogate, or is `.` or `..`;
 - a value does not satisfy the parameter's [constraint](#constraints), which happens when the value's type is wider than the constraint, as for `{id:int}` written from a `long` above 2147483647, or when a string does not fit it, as for `{n:alpha}` written from `ab1`;
 - a catch-all value starts or ends with `/`, contains `//`, or has `.` or `..` as a part;
 - an optional parameter has a value although an earlier optional parameter is left out, as for `/a/{b?}/{c?}` with a value for `c` and none for `b`;
-- a value has no text: a `double` or `float` that is NaN or infinite, or an enum value that no member has;
+- a value has no text: a `double` or `float` that is NaN or infinite, an enum value that no member has, or a value for which its codec's `format` returns `null`;
+- a codec writes a text that its own `tryParse` does not accept, so that a link with it could not be read back;
 - a query value contains a lone surrogate, which `Uri.EscapeDataString` would write as the encoding of U+FFFD, so that it would read back changed; or
 - an element of a list of query values is `null`, which no read of the list could return.
 
+`Format` throws `InvalidOperationException` when the parser of a codec, reading back a text its writer wrote, returns `true` with a `null` value, which is a mistake in the codec; the message names the type.
+
 `Format` also throws `ArgumentException`, after all of these checks and once every value function has been called, when every value can be written but a template that ranks higher matches the path first, as [What a round trip promises](#what-a-round-trip-promises) describes.
 
-The message names the route type, the template and the parameter, and says what is wrong in fixed words, as in `The route type 'ProductRoute' cannot be written by the template '/products/{name}': path parameter 'name' is required, but its value is null.` For a query value, it names the query value where a path failure names the path parameter, as in `The route type 'ProductsRoute' cannot be written by the template '/products': query value 'sort' has a value that is not valid UTF-16: it contains a lone surrogate, which cannot be percent-encoded and read back unchanged.` For an element of a list, it names the list's query value the same way, as in `The route type 'ProductsRoute' cannot be written by the template '/products': query value 'tag' has a null element, which cannot be written, because an element of a list is never absent; leave it out of the list instead.`, and says neither which element it is nor anything about the others. It never quotes the value, because a route can carry a secret, such as a sign-in token, and messages tend to be logged, and the exception has no inner exception that could. When more than one value cannot be written, which one is reported is not specified, beyond the check of the path against other templates coming last. An exception thrown by a value function propagates unchanged.
+The message names the route type, the template and the parameter, and says what is wrong in fixed words, as in `The route type 'ProductRoute' cannot be written by the template '/products/{name}': path parameter 'name' is required, but its value is null.` For a query value, it names the query value where a path failure names the path parameter, as in `The route type 'ProductsRoute' cannot be written by the template '/products': query value 'sort' has a value that is not valid UTF-16: it contains a lone surrogate, which cannot be percent-encoded and read back unchanged.` For an element of a list, it names the list's query value the same way, as in `The route type 'ProductsRoute' cannot be written by the template '/products': query value 'tag' has a null element, which cannot be written, because an element of a list is never absent; leave it out of the list instead.`, and says neither which element it is nor anything about the others. It never quotes the value, nor the text a codec wrote for it, because a route can carry a secret, such as a sign-in token, and messages tend to be logged, and the exception has no inner exception that could. When more than one value cannot be written, which one is reported is not specified, beyond the check of the path against other templates coming last. An exception thrown by a value function, or by either function of a codec, propagates unchanged.
 
 Each value function is called at most once each time a route is formatted: the path functions in template order, then the query functions in the order they were declared. After a value that cannot be written, or an exception from a value function, the later functions are not called, so no query function is called for a route whose path cannot be written. A list of query values is enumerated once, and stops at its first element that cannot be written.
 
@@ -701,7 +829,9 @@ Each value function is called at most once each time a route is formatted: the p
 
 #### What a round trip promises
 
-When `Format` returns, `Match` of the text it returns selects the mapping that wrote it, and the typed reads give back the values the format function read: each single value, read with the typed read of the type its value function returns, is equal to the one written, and each list, read with `GetQueryValues<T>`, has equal elements in the same order. The route that matches is then equal to the one written, provided the create function reads each value that way and builds the route from the values as the format function reads them, which the table cannot check, and provided the route type compares its lists by their elements. A record does not do that by default: it compares a list member by reference, as [The route table](#the-route-table) notes, so a record with a list member reads back with equal values but is not equal to the route written unless it defines its own equality. In the other direction, text that a typed read accepts is written back as its canonical text, and writing the route again changes nothing: `/orders/+007` matches as `OrderRoute { Id = 7 }`, which is written as `/orders/7`. The mapping that writes a route is the one of its exact type, so a mapping whose create function returns routes of several types derived from its route type creates routes that it does not write.
+When `Format` returns, `Match` of the text it returns selects the mapping that wrote it, and the typed reads give back the values the format function read, for a type with a codec as far as the codec keeps its contract, as described below: each single value, read with the typed read of the type its value function returns, is equal to the one written, and each list, read with `GetQueryValues<T>`, has equal elements in the same order. The route that matches is then equal to the one written, provided the create function reads each value that way and builds the route from the values as the format function reads them, which the table cannot check, and provided the route type compares its lists by their elements. A record does not do that by default: it compares a list member by reference, as [The route table](#the-route-table) notes, so a record with a list member reads back with equal values but is not equal to the route written unless it defines its own equality. In the other direction, text that a typed read accepts is written back as its canonical text, and writing the route again changes nothing: `/orders/+007` matches as `OrderRoute { Id = 7 }`, which is written as `/orders/7`. The mapping that writes a route is the one of its exact type, so a mapping whose create function returns routes of several types derived from its route type creates routes that it does not write.
+
+For a type with a codec, the promise is the codec's. `Format` reads back each text the codec writes with the codec's own parser, and throws `ArgumentException` rather than write a text that the parser does not accept, so every link it returns can be read. It does not compare the value read back with the one written: equality is the type's own, and a type without value equality would fail any such comparison. A value reads back equal exactly when the codec makes it so, by giving back from `tryParse` a value equal to the one `format` was given, and the route then matches equal to the one written as for any other type. Text that the parser accepts is written back as the text `format` writes for the value it gives, so for `ProductId` above, `/products/p007` is written back as `/products/p7`.
 
 The same holds for a query value read with the typed read of its type, `TryGetQuery<T>`, which reads the first value of a name. `Format` writes one value for each name declared with `Query`, so that first value is the one written; a link with the name repeated reads its first value, and is written back with that value alone. A list declared with `QueryValues` reads back through `GetQueryValues<T>`, or `GetQueryValues` for strings, as a list with the same elements in the same order. That is exact because those reads return every value of a name in the order the query gives them, repeated and empty values included, and `Format` writes the elements in the order of the list, under the one name that only that declaration writes. The one difference is `null`: a `null` list writes nothing, as an empty list does, and a name the query does not have reads back as an empty list, not as `null`. A query value never affects which template matches: `Match` chooses by the path alone, and so does the check below.
 
@@ -823,4 +953,4 @@ The other way is a scheme under which `System.Uri` changes the path or the query
 
 ### Threads
 
-A built table is immutable and safe to use from several threads at once, for `Match`, `Format` and `FormatUri` alike. Mapping more routes or registering more enums on the builder does not change a table it has already built; call `Build` again for a table that includes them. A builder itself is not thread-safe, and a create function or a value function of a format function that runs on several threads must be safe to call that way.
+A built table is immutable and safe to use from several threads at once, for `Match`, `Format` and `FormatUri` alike. Mapping more routes or registering more codecs on the builder does not change a table it has already built; call `Build` again for a table that includes them. A builder itself is not thread-safe, and a create function, a value function of a format function, or a function of a codec registered with `AddValueCodec`, that runs on several threads must be safe to call that way.

@@ -8,10 +8,12 @@ internal static class RouteValueTypes
     // Written once, so that every message that lists the supported types lists the same ones; only the tail that
     // follows it differs, since a list has no nullable forms and a read and a write advise differently.
     public const string SupportedTypes =
-        "string, bool, Guid, decimal, double, float, sbyte, byte, short, ushort, int, uint, long, ulong and any enum " +
-        "registered with RouteTableBuilder.AddEnumValueCodec";
+        "string, bool, Guid, decimal, double, float, sbyte, byte, short, ushort, int, uint, long, ulong, any enum " +
+        "registered with RouteTableBuilder.AddEnumValueCodec and any type registered with " +
+        "RouteTableBuilder.AddValueCodec";
 
-    public const string NullableForms = ", and the nullable forms of all but string";
+    // A type of the application's own can be a class, which has no nullable form, so only the value types have one.
+    public const string NullableForms = ", and the nullable forms of the value types among them";
 
     // The tests of typeof(T) are constants once the method is compiled for a value type, so each instantiation keeps
     // only its own branch, and no type is looked up by reflection, which trimming and AOT would not allow. A nullable
@@ -57,6 +59,27 @@ internal static class RouteValueTypes
         return enumType is { IsEnum: true } ? enumType : null;
     }
 
+    // Whether T, or the type T is the nullable form of, is a collection. A string is a collection of chars but one
+    // value. A collection can never be given a codec, so a declaration of one can be rejected at once.
+    public static bool IsCollection<T>()
+    {
+        Type type = Nullable.GetUnderlyingType(typeof(T)) ?? typeof(T);
+        return type != typeof(string) && typeof(System.Collections.IEnumerable).IsAssignableFrom(type);
+    }
+
+    // Whether a codec could be registered for T, or for the type T is the nullable form of: not a collection, which a
+    // codec cannot read as one value, and not char, which a list rejects. Only then does a message advise one.
+    public static bool CanHaveCodec<T>()
+    {
+        return !IsCollection<T>() && (Nullable.GetUnderlyingType(typeof(T)) ?? typeof(T)) != typeof(char);
+    }
+
+    // The type to give a codec so that T can be read and written: T itself, or the type T is the nullable form of.
+    public static string CodecTypeName<T>()
+    {
+        return DisplayName(Nullable.GetUnderlyingType(typeof(T)) ?? typeof(T));
+    }
+
     // The subject says what cannot be done, as in "A path value cannot be read", and the tail what else is supported
     // and what to do instead. An enum, or its nullable form, is supported once registered, so for one the message says
     // only that, which is the fix.
@@ -65,13 +88,33 @@ internal static class RouteValueTypes
         Type? enumType = EnumType<T>();
         if (enumType is not null)
         {
+            string name = DisplayName(enumType);
             return new InvalidOperationException(
                 $"{subject} as type '{DisplayName(typeof(T))}', because the enum is not registered. Register it " +
-                $"with RouteTableBuilder.AddEnumValueCodec<{DisplayName(enumType)}>() when building the table.");
+                $"with RouteTableBuilder.AddEnumValueCodec<{name}>() when building the table, or give it a codec " +
+                $"of its own with RouteTableBuilder.AddValueCodec<{name}>.");
         }
 
         return new InvalidOperationException(
             $"{subject} as type '{DisplayName(typeof(T))}'. The supported types are {SupportedTypes}{tail}");
+    }
+
+    // Ends the message for a type that is not supported with what to do instead: register a codec for it, unless it
+    // cannot have one, or do what the caller advises. The forms are what follow the list.
+    public static string RegisterOr<T>(string forms, string instead)
+    {
+        return CanHaveCodec<T>()
+            ? $"{forms}. Register a codec with RouteTableBuilder.AddValueCodec<{CodecTypeName<T>()}> when building " +
+              $"the table, or {instead}"
+            : $"{forms}; {instead}";
+    }
+
+    // The type's own name without the types it is declared in, as in Status for an enum nested in another type, and
+    // with its own generic arguments, as in Inner<String>.
+    public static string SimpleName(Type type)
+    {
+        Type[] arguments = type.IsConstructedGenericType ? type.GenericTypeArguments : [];
+        return OwnName(type, arguments, arguments.Length);
     }
 
     // A short name for a message, as Int32? for a nullable type, List<Int32> for another generic one and Int32?[] for
@@ -98,12 +141,25 @@ internal static class RouteValueTypes
     private static string NestedName(Type type, Type[] arguments, int count)
     {
         Type? outer = type.DeclaringType;
-        int start = outer is null ? 0 : Math.Min(outer.GetGenericArguments().Length, count);
+        string name = OwnName(type, arguments, count);
+        return outer is null ? name : NestedName(outer, arguments, OuterArity(type, count)) + "." + name;
+    }
+
+    // The name of one level, with the generic arguments that are its own: those after the ones of the type outside it.
+    private static string OwnName(Type type, Type[] arguments, int count)
+    {
+        int start = OuterArity(type, count);
         int arity = type.Name.IndexOf('`', StringComparison.Ordinal);
         string name = arity < 0 ? type.Name : type.Name[..arity];
         if (count > start)
             name += $"<{string.Join(", ", Array.ConvertAll(arguments[start..count], DisplayName))}>";
 
-        return outer is null ? name : NestedName(outer, arguments, start) + "." + name;
+        return name;
+    }
+
+    private static int OuterArity(Type type, int count)
+    {
+        Type? outer = type.DeclaringType;
+        return outer is null ? 0 : Math.Min(outer.GetGenericArguments().Length, count);
     }
 }

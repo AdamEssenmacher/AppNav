@@ -76,8 +76,9 @@ public sealed class RouteMatchContext
     /// <see cref="double"/>, <see cref="float"/>, one of the integer types <see cref="sbyte"/>, <see cref="byte"/>,
     /// <see cref="short"/>, <see cref="ushort"/>, <see cref="int"/>, <see cref="uint"/>, <see cref="long"/> and
     /// <see cref="ulong"/>, an enum registered with <see cref="RouteTableBuilder.AddEnumValueCodec{TEnum}"/> on the
-    /// builder of the table, or the nullable form of any of them but <see cref="string"/>, such as <c>int?</c>. A
-    /// value converts to a type a constraint is named after, such as <see cref="int"/>, exactly when it satisfies that
+    /// builder of the table, a type registered with <see cref="RouteTableBuilder.AddValueCodec{TValue}"/> on it, or
+    /// the nullable form of any of them that is a value type, such as <c>int?</c>. A value converts to a type a
+    /// constraint is named after, such as <see cref="int"/>, exactly when it satisfies that
     /// constraint, such as <c>{id:int}</c>, so a value that the constraint of the same name accepted in the template
     /// always converts. A different constraint can let through a value that does not convert, such as
     /// <c>3000000000</c> for <c>{id:long}</c> read as <see cref="int"/>. The other integer types follow the rule of
@@ -86,8 +87,12 @@ public sealed class RouteMatchContext
     /// value of the type; a value that, after rounding, is beyond the largest finite value of the type does not
     /// convert, rather than being read as infinity. No constraint is named after those types. An enum converts from
     /// the name of one of its members only, compared ordinally without regard to case, as
-    /// <see cref="RouteTableBuilder.AddEnumValueCodec{TEnum}"/> describes. A nullable type converts by the rule of
-    /// its underlying type, to the same value. A <see cref="string"/> is the captured value unchanged.
+    /// <see cref="RouteTableBuilder.AddEnumValueCodec{TEnum}"/> describes. A type registered with
+    /// <see cref="RouteTableBuilder.AddValueCodec{TValue}"/> converts exactly when the parser of its codec accepts the
+    /// text, to the value it gives, and is found by exactly that type, not by a type it derives from or implements. A
+    /// nullable type converts by the rule of its underlying type, to the same value; for a type registered with
+    /// <see cref="RouteTableBuilder.AddValueCodec{TValue}"/>, each such read allocates a box around the value. A
+    /// <see cref="string"/> is the captured value unchanged.
     /// </typeparam>
     /// <param name="name">The parameter name, compared without regard to case.</param>
     /// <returns>
@@ -95,9 +100,14 @@ public sealed class RouteMatchContext
     /// <typeparamref name="T"/>, which reads a value that must be present, as its underlying type does.
     /// </returns>
     /// <exception cref="InvalidOperationException">
-    /// <typeparamref name="T"/> is not one of the supported types, such as <see cref="Half"/>, <c>DateTime?</c> or
-    /// an enum that is not registered. This is thrown whether or not the path has a value, before the name is checked,
-    /// and propagates out of <see cref="RouteTable.Match(Uri)"/>.
+    /// <typeparamref name="T"/> is not one of the supported types: a type that is not built in and has no codec on the
+    /// builder of the table, such as <see cref="Half"/> or <c>DateTime?</c>, or an enum that is not registered. The
+    /// message names the method that registers a codec for it, unless it is a collection, which cannot have one. This
+    /// is thrown whether or not the path has a value, before the name is checked, and propagates out of
+    /// <see cref="RouteTable.Match(Uri)"/>.
+    /// <para>-or-</para>
+    /// The parser of a codec registered with <see cref="RouteTableBuilder.AddValueCodec{TValue}"/> accepted the value
+    /// but gave <see langword="null"/>. The message names the type, but not the value.
     /// </exception>
     /// <exception cref="ArgumentNullException"><paramref name="name"/> is <see langword="null"/>.</exception>
     /// <exception cref="KeyNotFoundException">
@@ -110,6 +120,12 @@ public sealed class RouteMatchContext
     /// it makes <see cref="RouteTable.Match(Uri)"/> return a failed result with one
     /// <see cref="RouteDiagnosticCodes.ValueInvalid"/> diagnostic, and no later template is tried. Its message
     /// names the parameter and the type but never quotes the value.
+    /// </exception>
+    /// <exception cref="Exception">
+    /// Any exception that the parser of a codec registered with <see cref="RouteTableBuilder.AddValueCodec{TValue}"/>
+    /// throws, unchanged. It propagates out of <see cref="RouteTable.Match(Uri)"/> too, except a
+    /// <see cref="RouteValueException"/>, which <see cref="RouteTable.Match(Uri)"/> takes as a value that is not
+    /// valid, as it takes one thrown by the create function.
     /// </exception>
     public T Path<T>(string name)
     {
@@ -165,9 +181,10 @@ public sealed class RouteMatchContext
     /// convert the text yourself.
     /// </remarks>
     /// <exception cref="InvalidOperationException">
-    /// <typeparamref name="T"/> is not one of the supported types, such as an enum that is not registered. This is
-    /// thrown whether or not the path has a value, before the name is checked, and propagates out of
-    /// <see cref="RouteTable.Match(Uri)"/>.
+    /// <typeparamref name="T"/> is not one of the supported types, such as a type with no codec or an enum that is not
+    /// registered, or the parser of a codec gave <see langword="null"/> for a value it accepted, as for
+    /// <see cref="Path{T}(string)"/>. A type that is not supported is reported whether or not the path has a value,
+    /// before the name is checked. Either propagates out of <see cref="RouteTable.Match(Uri)"/>.
     /// </exception>
     /// <exception cref="ArgumentNullException"><paramref name="name"/> is <see langword="null"/>.</exception>
     /// <exception cref="RouteValueException">
@@ -176,11 +193,22 @@ public sealed class RouteMatchContext
     /// <see cref="RouteDiagnosticCodes.ValueInvalid"/> diagnostic, and no later template is tried. Its message
     /// names the parameter and the type but never quotes the value.
     /// </exception>
+    /// <exception cref="Exception">
+    /// Any exception that the parser of a codec registered with <see cref="RouteTableBuilder.AddValueCodec{TValue}"/>
+    /// throws, unchanged. It propagates out of <see cref="RouteTable.Match(Uri)"/> too, except a
+    /// <see cref="RouteValueException"/>, which <see cref="RouteTable.Match(Uri)"/> takes as a value that is not
+    /// valid, as it takes one thrown by the create function.
+    /// </exception>
     public bool TryGetPath<T>(string name, [MaybeNullWhen(false)] out T value)
     {
         // Checked before the name and the value, so that using a type that can never work fails on every path, not
         // only on one that has the value.
-        ValueCodec<T>? codec = FindCodec<T>("A path value cannot be read", ValueTypesTail, out string typeName);
+        ValueCodec<T>? codec = FindCodec<T>(
+            "A path value cannot be read",
+            NullableForms,
+            ValueInstead,
+            out IBoxedValueCodec? boxed,
+            out string typeName);
 
         if (!TryGetPath(name, out string? text))
         {
@@ -188,7 +216,7 @@ public sealed class RouteMatchContext
             return false;
         }
 
-        return TryConvert(text, codec, out value) ? true : throw NotValid(name, "The path value of", typeName);
+        return TryConvert(text, codec, boxed, out value) ? true : throw NotValid(name, "The path value of", typeName);
     }
 
     /// <summary>
@@ -263,7 +291,9 @@ public sealed class RouteMatchContext
     /// converts to a type a constraint is named after, such as <see cref="int"/>, exactly when it satisfies that
     /// constraint, and a <see cref="string"/> is the value unchanged. A nullable type, such as <c>int?</c>, reads a
     /// value that may be absent into a nullable variable, as in <c>TryGetQuery("page", out int? page)</c>. An enum
-    /// must be registered with <see cref="RouteTableBuilder.AddEnumValueCodec{TEnum}"/>, as for a path value.
+    /// must be registered with <see cref="RouteTableBuilder.AddEnumValueCodec{TEnum}"/>, and any other type that is
+    /// not built in with <see cref="RouteTableBuilder.AddValueCodec{TValue}"/>, as for a path value. The parser of a
+    /// codec receives the empty value too, as for <c>?page=</c>, and decides whether it is valid.
     /// </typeparam>
     /// <param name="name">The name, compared ordinally without regard to case; the empty name is a valid name.</param>
     /// <param name="value">
@@ -284,9 +314,10 @@ public sealed class RouteMatchContext
     /// be. For a lenient read, use <see cref="TryGetQuery(string, out string)"/> and convert the text yourself.
     /// </remarks>
     /// <exception cref="InvalidOperationException">
-    /// <typeparamref name="T"/> is not one of the supported types, such as an enum that is not registered. This is
-    /// thrown whether or not the query has the name, before the name is checked, and propagates out of
-    /// <see cref="RouteTable.Match(Uri)"/>.
+    /// <typeparamref name="T"/> is not one of the supported types, such as a type with no codec or an enum that is not
+    /// registered, or the parser of a codec gave <see langword="null"/> for a value it accepted, as for
+    /// <see cref="Path{T}(string)"/>. A type that is not supported is reported whether or not the query has the name,
+    /// before the name is checked. Either propagates out of <see cref="RouteTable.Match(Uri)"/>.
     /// </exception>
     /// <exception cref="ArgumentNullException"><paramref name="name"/> is <see langword="null"/>.</exception>
     /// <exception cref="RouteValueException">
@@ -295,10 +326,21 @@ public sealed class RouteMatchContext
     /// <see cref="RouteDiagnosticCodes.ValueInvalid"/> diagnostic, and no later template is tried. Its message names
     /// the query value and the type but never quotes the value.
     /// </exception>
+    /// <exception cref="Exception">
+    /// Any exception that the parser of a codec registered with <see cref="RouteTableBuilder.AddValueCodec{TValue}"/>
+    /// throws, unchanged. It propagates out of <see cref="RouteTable.Match(Uri)"/> too, except a
+    /// <see cref="RouteValueException"/>, which <see cref="RouteTable.Match(Uri)"/> takes as a value that is not
+    /// valid, as it takes one thrown by the create function.
+    /// </exception>
     public bool TryGetQuery<T>(string name, [MaybeNullWhen(false)] out T value)
     {
         // Checked first, as for a path value, so that a type that can never work fails on every URI.
-        ValueCodec<T>? codec = FindCodec<T>("A query value cannot be read", ValueTypesTail, out string typeName);
+        ValueCodec<T>? codec = FindCodec<T>(
+            "A query value cannot be read",
+            NullableForms,
+            ValueInstead,
+            out IBoxedValueCodec? boxed,
+            out string typeName);
 
         if (!TryGetQuery(name, out string? text))
         {
@@ -306,7 +348,7 @@ public sealed class RouteMatchContext
             return false;
         }
 
-        return TryConvert(text, codec, out value) ? true : throw NotValid(name, "The query value of", typeName);
+        return TryConvert(text, codec, boxed, out value) ? true : throw NotValid(name, "The query value of", typeName);
     }
 
     /// <summary>
@@ -317,11 +359,12 @@ public sealed class RouteMatchContext
     /// The type to convert to: <see cref="string"/>, <see cref="bool"/>, <see cref="Guid"/>, <see cref="decimal"/>,
     /// <see cref="double"/>, <see cref="float"/>, one of the integer types <see cref="sbyte"/>, <see cref="byte"/>,
     /// <see cref="short"/>, <see cref="ushort"/>, <see cref="int"/>, <see cref="uint"/>, <see cref="long"/> and
-    /// <see cref="ulong"/>, or an enum registered with <see cref="RouteTableBuilder.AddEnumValueCodec{TEnum}"/>, by
-    /// the rules described for <see cref="Path{T}(string)"/>, so a value converts to a type a constraint is named
-    /// after, such as <see cref="int"/>, exactly when it satisfies that constraint, and a <see cref="string"/> is the
-    /// value unchanged. A nullable type is not supported, since an element of the list is never absent, and that
-    /// includes the nullable form of an enum, registered or not.
+    /// <see cref="ulong"/>, an enum registered with <see cref="RouteTableBuilder.AddEnumValueCodec{TEnum}"/>, or a
+    /// type registered with <see cref="RouteTableBuilder.AddValueCodec{TValue}"/>, by the rules described for
+    /// <see cref="Path{T}(string)"/>, so a value converts to a type a constraint is named after, such as
+    /// <see cref="int"/>, exactly when it satisfies that constraint, and a <see cref="string"/> is the value
+    /// unchanged. A nullable type is not supported, since an element of the list is never absent, and that includes
+    /// the nullable form of an enum or of a struct with a codec, registered or not.
     /// </typeparam>
     /// <param name="name">The name, compared ordinally without regard to case; the empty name is a valid name.</param>
     /// <returns>
@@ -335,9 +378,14 @@ public sealed class RouteMatchContext
     /// <see cref="string"/>, so <c>?tag=1&amp;tag</c> read as <see cref="int"/> is not valid.
     /// </remarks>
     /// <exception cref="InvalidOperationException">
-    /// <typeparamref name="T"/> is not one of the supported types, such as an enum that is not registered, or is a
-    /// nullable type. This is thrown whether or not the query has the name, before the name is checked, and propagates
-    /// out of <see cref="RouteTable.Match(Uri)"/>.
+    /// <typeparamref name="T"/> is not one of the supported types, such as a type with no codec or an enum that is not
+    /// registered, or is a nullable type, whose message names the type to read the list as instead. This is thrown
+    /// whether or not the query has the name, before the name is checked.
+    /// <para>-or-</para>
+    /// The parser of a codec gave <see langword="null"/> for a value it accepted, as for
+    /// <see cref="Path{T}(string)"/>.
+    /// <para/>
+    /// Either propagates out of <see cref="RouteTable.Match(Uri)"/>.
     /// </exception>
     /// <exception cref="ArgumentNullException"><paramref name="name"/> is <see langword="null"/>.</exception>
     /// <exception cref="RouteValueException">
@@ -346,28 +394,32 @@ public sealed class RouteMatchContext
     /// <see cref="RouteDiagnosticCodes.ValueInvalid"/> diagnostic, and no later template is tried. Its message names
     /// the query value and the type but never quotes the value.
     /// </exception>
+    /// <exception cref="Exception">
+    /// Any exception that the parser of a codec registered with <see cref="RouteTableBuilder.AddValueCodec{TValue}"/>
+    /// throws, unchanged. It propagates out of <see cref="RouteTable.Match(Uri)"/> too, except a
+    /// <see cref="RouteValueException"/>, which <see cref="RouteTable.Match(Uri)"/> takes as a value that is not
+    /// valid, as it takes one thrown by the create function.
+    /// </exception>
     public IReadOnlyList<T> GetQueryValues<T>(string name)
     {
-        // Of the supported types, only string and the nullable ones have a null default, and the test is a constant
-        // once the method is compiled for a value type, so a read of a value type never reaches the rest of it. The
-        // nullable form of an enum is rejected for being nullable whether or not the enum is registered, since
-        // registering it would not help. When it is not registered, the message says that too, so that following
-        // its advice does not lead straight to a second failure.
+        // Only a reference type and a nullable one have a null default, and the test is a constant once the method is
+        // compiled for a value type, so a read of a value type never reaches the rest of it. A nullable type is
+        // rejected for being nullable whether or not its underlying type can be read, since a codec for that would
+        // not help. When it cannot be read, the message says what to register too, so that following its advice does
+        // not lead straight to a second failure. The nullable form of a type that can never have a codec, such as a
+        // collection, gets the message for a type that is not supported, which says what to do instead.
         if (default(T) is null && typeof(T) != typeof(string)
-            && (SupportedTypeName<T>() is not null || Nullable.GetUnderlyingType(typeof(T)) is { IsEnum: true }))
+            && Nullable.GetUnderlyingType(typeof(T)) is { } underlying && CanHaveCodec<T>())
         {
-            Type underlying = Nullable.GetUnderlyingType(typeof(T))!;
-            string register = underlying.IsEnum && !_codecs.ContainsKey(underlying)
-                ? ", after registering the enum with " +
-                  $"RouteTableBuilder.AddEnumValueCodec<{DisplayName(underlying)}>() when building the table"
-                : "";
-            throw new InvalidOperationException(
-                $"A list of query values cannot be read as type '{DisplayName(typeof(T))}': an element of the list " +
-                $"is never absent, so read it as type '{DisplayName(underlying)}' instead{register}.");
+            throw NullableList<T>(underlying);
         }
 
-        ValueCodec<T>? codec =
-            FindCodec<T>("A list of query values cannot be read", ListTypesTail, out string typeName);
+        ValueCodec<T>? codec = FindCodec<T>(
+            "A list of query values cannot be read",
+            "",
+            ListInstead,
+            out IBoxedValueCodec? boxed,
+            out string typeName);
 
         // A string needs no conversion, and the reference cast keeps its values and wrapping exactly those of the
         // string member.
@@ -383,17 +435,18 @@ public sealed class RouteMatchContext
         var converted = new T[values.Count];
         for (var i = 0; i < converted.Length; i++)
         {
-            if (!TryConvert(values[i], codec, out converted[i]!))
+            if (!TryConvert(values[i], codec, boxed, out converted[i]!))
                 throw NotValid(name, "The query value of", typeName);
         }
 
         return Array.AsReadOnly(converted);
     }
 
-    // What follows the list of supported types in the message for an unsupported type; a list has no nullable forms.
-    private const string ValueTypesTail = NullableForms + "; read the value as a string and convert it instead.";
+    // What ends the message for an unsupported type, after the advice to register a codec; a list has no nullable
+    // forms, so its message lists none.
+    private const string ValueInstead = "read the value as a string and convert it instead.";
 
-    private const string ListTypesTail = "; read the values as strings and convert them instead.";
+    private const string ListInstead = "read the values as strings and convert them instead.";
 
     private static KeyNotFoundException NoPathValue(string name)
     {
@@ -413,16 +466,59 @@ public sealed class RouteMatchContext
             $"{subject} '{RouteText.EscapeForMessage(name)}' is not a valid {typeName}.");
     }
 
-    private static bool TryConvert<T>(string text, ValueCodec<T>? codec, [MaybeNullWhen(false)] out T value)
+    // The message names the type to read the list as and, when that type cannot be read either, what registers it.
+    private InvalidOperationException NullableList<T>(Type underlying)
     {
-        return codec is null ? TryConvert(text, out value) : codec.TryParse(text, out value);
+        string register = SupportedTypeName<T>() is not null || _codecs.ContainsKey(underlying) ? ""
+            : underlying.IsEnum
+                ? ", after registering the enum with " +
+                  $"RouteTableBuilder.AddEnumValueCodec<{DisplayName(underlying)}>() when building the table"
+                : ", after registering a codec with " +
+                  $"RouteTableBuilder.AddValueCodec<{DisplayName(underlying)}> when building the table";
+        return new InvalidOperationException(
+            $"A list of query values cannot be read as type '{DisplayName(typeof(T))}': an element of the list is " +
+            $"never absent, so read it as type '{DisplayName(underlying)}' instead{register}.");
+    }
+
+    // A codec of T reads without a box. Without one, a built-in type converts by its own rule, and the nullable form of
+    // a type with a codec registered by AddValueCodec reads through that codec, boxed.
+    private static bool TryConvert<T>(
+        string text,
+        ValueCodec<T>? codec,
+        IBoxedValueCodec? boxed,
+        [MaybeNullWhen(false)] out T value)
+    {
+        if (codec is not null)
+            return codec.TryParse(text, out value);
+
+        if (boxed is null)
+            return TryConvert(text, out value);
+
+        // A box of the underlying type unboxes as its nullable form, which T is here.
+        if (boxed.TryParseBoxed(text, out object? parsed))
+        {
+            value = (T)parsed!;
+            return true;
+        }
+
+        value = default;
+        return false;
     }
 
     // Null for a built-in type, whose name SupportedTypeName gives, so that a read of one is decided by its typeof
     // tests alone and never looks in the codecs. Any other type needs a codec registered on the builder, or the read
-    // fails as for an unsupported type. The cast cannot fail, since each codec is kept under the type it reads.
-    private ValueCodec<T>? FindCodec<T>(string subject, string tail, out string typeName)
+    // fails as for an unsupported type. The cast cannot fail, since each codec is kept under the type it reads. The
+    // nullable form of a value type that AddValueCodec registered has no codec of its own, since naming that form
+    // would need reflection, so it is found by the codec of its underlying type, as the boxed codec; only a read of
+    // that form looks a second time.
+    private ValueCodec<T>? FindCodec<T>(
+        string subject,
+        string forms,
+        string instead,
+        out IBoxedValueCodec? boxed,
+        out string typeName)
     {
+        boxed = null;
         string? builtIn = SupportedTypeName<T>();
         if (builtIn is not null)
         {
@@ -430,12 +526,20 @@ public sealed class RouteMatchContext
             return null;
         }
 
-        if (!_codecs.TryGetValue(typeof(T), out object? found))
-            throw UnsupportedType<T>(subject, tail);
+        if (_codecs.TryGetValue(typeof(T), out object? found))
+        {
+            var codec = (ValueCodec<T>)found;
+            typeName = codec.TypeName;
+            return codec;
+        }
 
-        var codec = (ValueCodec<T>)found;
-        typeName = codec.TypeName;
-        return codec;
+        Type? underlying = Nullable.GetUnderlyingType(typeof(T));
+        if (underlying is null || !_codecs.TryGetValue(underlying, out found))
+            throw UnsupportedType<T>(subject, RegisterOr<T>(forms, instead));
+
+        boxed = (IBoxedValueCodec)found;
+        typeName = boxed.TypeName;
+        return null;
     }
 
     // Each type uses the parse method of the constraint of the same name, so that conversion and constraint cannot
