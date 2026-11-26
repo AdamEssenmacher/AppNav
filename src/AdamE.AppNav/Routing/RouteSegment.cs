@@ -20,7 +20,8 @@ internal readonly struct RouteSegment
 
     public RouteSegmentKind Kind { get; }
 
-    // A parameter's constraint; null for a literal, a catch-all parameter or a parameter without one.
+    // A parameter's constraint, built in or added on a builder; null for a literal, a catch-all parameter or a
+    // parameter without one.
     public RouteConstraint? Constraint { get; }
 
     public bool IsParameter => Kind != RouteSegmentKind.Literal;
@@ -53,7 +54,9 @@ internal readonly struct RouteSegment
     }
 
     // Whether a decoded path segment can stand in this segment's position. A parameter never takes a dot segment, so
-    // that every value a match returns can be formatted; a literal is never one, because the parser rejects it.
+    // that every value a match returns can be formatted; a literal is never one, because the parser rejects it. The
+    // dot segment is checked first, so that a constraint is never asked about one here, which matters only for an
+    // added constraint, since no built-in one accepts a dot segment.
     public bool Accepts(string decoded)
     {
         return IsParameter

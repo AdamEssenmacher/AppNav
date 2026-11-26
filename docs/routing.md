@@ -106,6 +106,56 @@ The built-in constraints are:
 - Several texts can denote one value, such as `7`, `007` and `+7`, `true` and `TRUE`, or a guid in upper and lower case. Each satisfies the constraint and is captured as written, and `RouteTemplate.Format` writes whatever text it is given. `RouteTable.Format` writes one canonical text for each typed value, as described in [Formatting a route](#formatting-a-route).
 - To accept a guid with or without hyphens, use a parameter without a constraint and parse the value in the create function, reading it as a string: `Path<Guid>` follows the rule of `guid` and accepts only the hyphenated form. Three things follow. A value that is not a guid still matches the template, so the create function must [reject it](#rejecting-a-value), which fails the match for that URI rather than letting another template try it. A position holds only one parameter without a constraint among templates of one shape, unless another required position keeps the templates apart. And beside `{id:int}` or `{x:alpha}`, a value without hyphens that is also a valid number, such as 32 zeros, or is made only of letters still goes to the constrained route, which ranks higher.
 
+## Custom constraints
+
+A route table can also use constraints of the application's own. Add one to the builder with `AddConstraint(name, isSatisfiedBy)`, and the templates mapped on that builder can name it as they name a built-in constraint, as in `{slug:slug}` or `{slug:slug?}`:
+
+```csharp
+using AdamE.AppNav.Routing;
+
+RouteTable routes = new RouteTableBuilder()
+    .AddConstraint("slug", IsSlug)
+    .Map("/articles/{slug:slug}", c => new ArticleRoute(c.Path("slug")))
+    .Map("/articles/{id:int}/edit", c => new EditArticleRoute(c.Path<int>("id")))
+    .Build();
+
+static bool IsSlug(string text)
+{
+    if (text.Length == 0)
+        return false;
+
+    foreach (char c in text)
+    {
+        if (!(char.IsAsciiLetterLower(c) || char.IsAsciiDigit(c) || c == '-'))
+            return false;
+    }
+
+    return true;
+}
+
+public sealed record ArticleRoute(string Slug) : AppRoute;
+
+public sealed record EditArticleRoute(int Id) : AppRoute;
+```
+
+- A name is an ASCII letter followed by ASCII letters, digits, `-` or `_`, such as `slug` or `order-code`. Names are compared without regard to ASCII case, so `{x:Slug}` names `slug`, and messages write the name in lower case. A template that names the same constraint in another case is the same template, as `/a/{x:slug}` and `/a/{y:SLUG}` are.
+- `AddConstraint` throws `ArgumentNullException` for a `null` name or function, and `ArgumentException`, whose `ParamName` is `name`, for a name not of that form, the name of a built-in constraint, a reserved name, or a name already added on the builder. The reserved names are `string`, `char`, `sbyte`, `byte`, `short`, `ushort`, `uint`, `ulong`, `float` and `double`, the C# keywords of the other built-in value types, kept free so that a built-in constraint can be given one of them later. When it throws, the builder is not changed. A reserved name can never be added, so `Map` rejects a template that names one, as in `{x:double}`, with `ArgumentException`, rather than leaving it for `Build`.
+- Adding applies to the whole table, so `AddConstraint` can come before or after the `Map` calls that name the constraint. `Map` accepts a template that names a constraint that is not built in, provided the name has the form above and is not reserved; it is `Build` that throws `InvalidOperationException` when a template names one that has not been added by then. The message names the template, the route type and the constraint, and lists the built-in constraints. Constraint text not of that form, such as `{n:range(1,5)}`, is still rejected by `Map`, as by `Parse`. A table that is already built does not change; call `Build` again for one that includes a later constraint.
+- A constraint belongs to the builder it was added to. `RouteTemplate.Parse` knows only the built-in constraints, and rejects any other name at once, so the `Value` of a template that names an added constraint, read from `RouteTable.Definitions`, cannot be given to it. The template itself keeps the constraint: its own `Match` and `Format` use it.
+
+The function receives the decoded segment text exactly as a built-in constraint does, without trimming, and returns whether the text satisfies the constraint. It must return the same answer for the same text, and must be safe to call from several threads at once, as a built table is. It is called:
+
+- by `Match`, for the segment in the parameter's position, unless the segment is a [dot segment](#dot-segments), which never matches;
+- by `Format` and `FormatUri`, to check the value written for the parameter, unless it is `.` or `..`, which is rejected first, and when they check whether a template that ranks higher would match the path written, as [What a round trip promises](#what-a-round-trip-promises) describes;
+- by `RouteTemplate.Match` and `RouteTemplate.Format` of a template mapped on the builder, such as one read from `RouteTable.Definitions`, as the table's own methods call it; and
+- by `Build`, with sample texts, when it compares two templates of one shape, as described below.
+
+An exception the function throws propagates unchanged from each of these, a `RouteValueException` included: the function runs while the table chooses a template, before any create function is called, so it cannot fail a match the way a create function [rejects a value](#rejecting-a-value). Return `false` instead.
+
+Which text a function accepts cannot be known, so `Build` treats an added constraint as overlapping every constraint, itself included. It cannot keep two templates apart that otherwise rank equally: `/articles/{slug:slug}` and `/articles/{id:int}` are rejected as [templates that cannot be told apart](#templates-that-cannot-be-told-apart), and would be even for a function that accepted no number. Keep such templates apart with a literal, as `/articles/{id:int}/edit` above does. A parameter with an added constraint ranks as one with a built-in constraint, so beside `/articles/{name}`, `/articles/{slug:slug}` is tried first.
+
+A constraint only decides whether a segment matches. The captured value is the decoded text, unchanged, as for the built-in constraints, and no typed read is named after an added constraint. To read the value as a type of the application's own, pair the constraint with a [codec](#custom-value-types) for that type and read it with `Path<T>`, or parse the string in the create function; a value the codec's parser rejects then fails the match for that URI.
+
 ## Optional parameters
 
 A parameter written `{name?}` or `{name:constraint?}` is optional: a path can leave it out. The `?` must be the last character inside the braces.
@@ -172,7 +222,7 @@ Console.WriteLine(file.Match(path)?["name"]); // notes/2026.txt
 - A catch-all value is split at each `/` instead, and each part is percent-encoded and written as its own segment, so `a/b c` is written as `a/b%20c`.
 - The path never has a [dot segment](#dot-segments): no literal is one, and a value that is `.` or `..`, or a catch-all value with such a part, as in `a/../b`, is rejected. Any other value that contains dots, such as `...`, is written as it is.
 - Values are keyed by parameter name without regard to case, as everywhere else in a template. Each name is looked up as written in the template first, and only if that finds nothing is the dictionary searched for a key that equals the name ignoring case. Entries for names the template does not use are ignored.
-- `Format` throws `ArgumentNullException` for a `null` dictionary. It throws `ArgumentException` when a parameter that is not optional and not a catch-all has no entry, when a parameter has no entry under its name as written and more than one whose key equals it ignoring case, or when its value is `null`, empty, contains a lone surrogate, which cannot be encoded and read back, does not satisfy the parameter's [constraint](#constraints), because the path would not match, or is `.` or `..`. For a parameter without a constraint, any other value is allowed, including white space and control characters.
+- `Format` throws `ArgumentNullException` for a `null` dictionary. It throws `ArgumentException` when a parameter that is not optional and not a catch-all has no entry, when a parameter has no entry under its name as written and more than one whose key equals it ignoring case, or when its value is `null`, empty, contains a lone surrogate, which cannot be encoded and read back, is `.` or `..`, or does not satisfy the parameter's [constraint](#constraints), because the path would not match. A value that is `.` or `..` is reported as such before the constraint is checked, so a constraint is never asked about one, as in `Match`. For a parameter without a constraint, any other value is allowed, including white space and control characters.
 - A catch-all value also cannot have an empty part: `Format` throws `ArgumentException` for one that starts or ends with `/` or contains `//`, because the empty segment would be dropped when the path is matched, and the match would not return the same value. It throws the same for a catch-all value with `.` or `..` as a part.
 - An optional or catch-all parameter that has an entry is checked the same way. A `null` or empty value does not leave it out; leave its entry out of the dictionary instead.
 - `Format` also throws `ArgumentException` when an optional parameter has a value but an earlier optional parameter was left out, because its segment cannot be written without the earlier one. For `/a/{b?}/{c?}`, a value for `c` without one for `b` is rejected.
@@ -192,7 +242,7 @@ Console.WriteLine(file.Match(path)?["name"]); // notes/2026.txt
 - a parameter that repeats the name of an earlier parameter, ignoring case, as in `/{id}/{ID}` or `/{id:int}/{ID}`,
 - a parameter that contains more than one `:`, as in `{id:int:long}`, `{id::int}` or `{id:int:}`,
 - a parameter with `:` but no constraint after it, as in `{id:}`,
-- a parameter whose constraint is not one of the [built-in constraints](#constraints), such as `{id:slug}` or `{id: int}`; the message lists the supported names,
+- a parameter whose constraint is not one of the [built-in constraints](#constraints), such as `{id:slug}` or `{id: int}`; the message lists the supported names. A template mapped on a builder can also name a [custom constraint](#custom-constraints) added to that builder, and `Map` leaves a name of the form a custom constraint can have, such as `slug`, for `Build` to check, unless it is [reserved](#custom-constraints), such as `double`, which `Map` and `Parse` both reject with a message that says so,
 - a [catch-all parameter](#catch-all-parameters) that is optional, as in `{*rest?}`, or has a constraint, as in `{*rest:int}`,
 - a literal segment that starts or ends with white space, as in `/ {id}` (spaces inside a segment, as in `/my files`, are allowed),
 - `{` or `}` anywhere except around a whole-segment parameter, as in `item{id}` or `{a}{b}`,
@@ -317,13 +367,13 @@ This applies even when both mappings are for the same route type.
 
 - two literals have the same decoded text, compared [ordinally and case-sensitively](#how-text-is-compared);
 - two parameters both have no constraint; or
-- two parameters have constraints that some text satisfies both. A constraint overlaps itself. Of the [built-in constraints](#constraints), `int`, `long` and `decimal` all accept `0`, and `bool` accepts `true`, which is also letters for `alpha`. No other pair overlaps: `alpha` accepts no number, `bool` accepts no number, and `guid` overlaps only itself.
+- two parameters have constraints that some text satisfies both. A constraint overlaps itself. Of the [built-in constraints](#constraints), `int`, `long` and `decimal` all accept `0`, and `bool` accepts `true`, which is also letters for `alpha`. No other pair overlaps: `alpha` accepts no number, `bool` accepts no number, and `guid` overlaps only itself. A [custom constraint](#custom-constraints) is taken to overlap every constraint, itself included, because which text it accepts cannot be known.
 
 Because a guid has hyphens between its hex digits, which no number or letters can have, `guid` overlaps no other built-in constraint, so `{id:int}` and `{key:guid}` can share a position: `/orders/{id:int}` and `/orders/{key:guid}` send `/orders/42` and `/orders/6f9619ff-8b86-d011-b42d-00cf4fc964ff` to different routes.
 
 Optional parameters and a catch-all never keep two templates apart, whatever their constraints, because a path that leaves them out matches both: `/a/{x:int?}` and `/a/{y:alpha?}` both match `/a`. To have `/a`, a number and a word go to different routes, map `/a`, `/a/{x:int}` and `/a/{y:alpha}`. Keeping one of them optional also works, as in `/a/{x:int?}` and `/a/{y:alpha}`, because the two templates then rank differently and precedence decides.
 
-The message names both templates and both route types, the earlier mapping first, and one path that both match, such as `/products/0` for the example above. The path has only the required segments, with each literal as `Format` writes it, `x` for a parameter without a constraint, and a value both constraints accept. The message then says what to do. In general: keep the templates apart at a required position, with a different literal or with constraints there that no text satisfies together, make them rank differently, or remove one. When the templates have the same literals and constraints at every required position, so that only optional parameters tell them apart, it says instead to map the shorter path and each alternative as its own template with a required parameter, giving the alternatives constraints that no text satisfies together, or to remove one. When there are several such pairs, the first mapping, in the order the routes were mapped, that conflicts with an earlier one is reported, with the earliest mapping it conflicts with. The same template twice is looked for first, across the whole table, so it is reported even when two mappings that conflict in this way come earlier: with `/p/{a:int}`, `/p/{b:long}` and `/p/{c:int}` mapped in that order, `Build` reports the first and third as the same template.
+The message names both templates and both route types, the earlier mapping first, and one path that both match, such as `/products/0` for the example above. The path has only the required segments, with each literal as `Format` writes it, `x` for a parameter without a constraint, and a value both constraints accept. For a custom constraint, that value is looked for among the texts `0`, `a`, `true` and `00000000-0000-0000-0000-000000000000`, which `Build` passes to its function. When the constraints at some required position accept none of them together, no path is known, and the message names none: it says that the templates could both match a path, names the constraints at the first such position, as in "the constraints 'slug' and 'int' at segment 2 are not known to accept no text in common", and says that a custom constraint is treated as overlapping every constraint. The message then says what to do. In general: keep the templates apart at a required position, with a different literal or with constraints there that no text satisfies together, make them rank differently, or remove one. When a custom constraint is involved at the positions the advice is about, the required positions or, when only optional parameters tell the templates apart, the alternatives' positions, the advice does not suggest constraints there, since a custom constraint keeps no templates apart, and the message says that a custom constraint is treated as overlapping every constraint, whether or not a path is known. With built-in constraints alone, the message is as described here. When the templates have the same literals and constraints at every required position, so that only optional parameters tell them apart, it says instead to map the shorter path and each alternative as its own template with a required parameter, giving the alternatives constraints that no text satisfies together, or to remove one. When there are several such pairs, the first mapping, in the order the routes were mapped, that conflicts with an earlier one is reported, with the earliest mapping it conflicts with. The same template twice is looked for first, across the whole table, so it is reported even when two mappings that conflict in this way come earlier: with `/p/{a:int}`, `/p/{b:long}` and `/p/{c:int}` mapped in that order, `Build` reports the first and third as the same template.
 
 Still allowed:
 
@@ -422,7 +472,7 @@ The names of a registered enum are part of the links of the app: renaming a memb
 
 Registering applies to the whole table, so it can come before or after the `Map` calls whose create functions read the enum. Registering the same enum again does nothing. A table that is already built does not change; call `Build` again for a table that includes a later registration. `AddEnumValueCodec` throws `ArgumentException` for an enum with two members whose names differ only by case, such as `A` and `a`, since a text that named one would name both, and for an enum that already has a codec from `AddValueCodec`, since a type has one codec. Reading an enum that is not registered throws `InvalidOperationException` whose message names `AddEnumValueCodec`, whether or not the value is present, and it propagates out of `Match`.
 
-There is no constraint named after enums, so a template with `{status:enum}` is not valid, and a template cannot keep a name that is not a member away from its create function; that name fails the match instead. For other spellings, such as `in-progress`, give the enum a codec of its own, as [Custom value types](#custom-value-types) shows.
+There is no constraint named after enums, so a template with `{status:enum}` is not valid unless the builder adds a [custom constraint](#custom-constraints) of that name, and `Build` throws without one, and a template cannot keep a name that is not a member away from its create function; that name fails the match instead. For other spellings, such as `in-progress`, give the enum a codec of its own, as [Custom value types](#custom-value-types) shows.
 
 #### Custom value types
 
@@ -516,7 +566,7 @@ public sealed record ArticleRoute(Slug Slug) : AppRoute;
 - A type has one codec. Registering a second one for the same type throws, whether the first came from `AddValueCodec` or from `AddEnumValueCodec`, and so does `AddEnumValueCodec` for an enum that already has a codec from `AddValueCodec`. Registering the same enum twice with `AddEnumValueCodec` still does nothing.
 - Any other type can have one: a class, a struct, a record, an interface, an abstract class or an enum.
 
-A codec is found by exactly the type that is read or written, never by a base type or an interface. A codec for an interface `IShape` reads `Path<IShape>`, but not `Path<Circle>` for a class `Circle` that implements it, and a format function whose value function returns a `Circle` needs a codec for `Circle`, or a cast to `IShape`. No template constraint is named after a type with a codec, so a template with `{id:productid}` is not valid, and a text that the parser rejects fails the match instead. Registering applies to the whole table, before or after the `Map` calls, as for enums, and a table that is already built does not change.
+A codec is found by exactly the type that is read or written, never by a base type or an interface. A codec for an interface `IShape` reads `Path<IShape>`, but not `Path<Circle>` for a class `Circle` that implements it, and a format function whose value function returns a `Circle` needs a codec for `Circle`, or a cast to `IShape`. No template constraint is named after a type with a codec, so a template with `{id:productid}` is not valid unless the builder adds a [custom constraint](#custom-constraints) of that name, and a text that the parser rejects fails the match instead. Registering applies to the whole table, before or after the `Map` calls, as for enums, and a table that is already built does not change.
 
 A codec of its own is how an enum gets spellings that are not the names of its members:
 
