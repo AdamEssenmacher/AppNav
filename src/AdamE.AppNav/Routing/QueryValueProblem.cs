@@ -10,6 +10,10 @@ internal enum QueryValueProblem
     // A value, or an element of a list, has no text that its typed read reads back.
     NoText,
 
+    // A value, or an element of a list, was written by a codec the application registered as a text that the codec's
+    // own parser does not accept.
+    NotReadBack,
+
     // A value, or an element of a list, contains a lone surrogate, which cannot be percent-encoded and read back.
     LoneSurrogate,
 

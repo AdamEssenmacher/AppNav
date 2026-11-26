@@ -37,6 +37,7 @@ AdamE.AppNav.Routing.RouteTable.FormatUri(AdamE.AppNav.AppRoute! route, System.U
 AdamE.AppNav.Routing.RouteTable.Match(System.Uri! uri) -> AdamE.AppNav.Routing.RouteMatchResult!
 AdamE.AppNav.Routing.RouteTableBuilder
 AdamE.AppNav.Routing.RouteTableBuilder.AddEnumValueCodec<TEnum>() -> AdamE.AppNav.Routing.RouteTableBuilder!
+AdamE.AppNav.Routing.RouteTableBuilder.AddValueCodec<TValue>(AdamE.AppNav.Routing.RouteValueParser<TValue>! tryParse, System.Func<TValue, string?>! format) -> AdamE.AppNav.Routing.RouteTableBuilder!
 AdamE.AppNav.Routing.RouteTableBuilder.Build() -> AdamE.AppNav.Routing.RouteTable!
 AdamE.AppNav.Routing.RouteTableBuilder.Map<TRoute>(string! template, System.Func<AdamE.AppNav.Routing.RouteMatchContext!, TRoute!>! createRoute) -> AdamE.AppNav.Routing.RouteTableBuilder!
 AdamE.AppNav.Routing.RouteTableBuilder.Map<TRoute>(string! template, System.Func<AdamE.AppNav.Routing.RouteMatchContext!, TRoute!>! createRoute, System.Action<AdamE.AppNav.Routing.RouteFormatBuilder<TRoute!>!>! format) -> AdamE.AppNav.Routing.RouteTableBuilder!
@@ -50,6 +51,7 @@ AdamE.AppNav.Routing.RouteValueException.RouteValueException(string! valueName) 
 AdamE.AppNav.Routing.RouteValueException.RouteValueException(string! valueName, string? message) -> void
 AdamE.AppNav.Routing.RouteValueException.RouteValueException(string! valueName, string? message, System.Exception? innerException) -> void
 AdamE.AppNav.Routing.RouteValueException.ValueName.get -> string!
+AdamE.AppNav.Routing.RouteValueParser<TValue>
 abstract AdamE.AppNav.AppRoute.<Clone>$() -> AdamE.AppNav.AppRoute!
 const AdamE.AppNav.Routing.RouteDiagnosticCodes.NotMatched = "route.not_matched" -> string!
 const AdamE.AppNav.Routing.RouteDiagnosticCodes.ValueInvalid = "route.value.invalid" -> string!
@@ -62,3 +64,4 @@ static AdamE.AppNav.Routing.RouteTemplate.Parse(string! value) -> AdamE.AppNav.R
 virtual AdamE.AppNav.AppRoute.EqualityContract.get -> System.Type!
 virtual AdamE.AppNav.AppRoute.Equals(AdamE.AppNav.AppRoute? other) -> bool
 virtual AdamE.AppNav.AppRoute.PrintMembers(System.Text.StringBuilder! builder) -> bool
+virtual AdamE.AppNav.Routing.RouteValueParser<TValue>.Invoke(string! text, out TValue? value) -> bool

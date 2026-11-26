@@ -6,7 +6,7 @@ namespace AdamE.AppNav.Routing;
 // functions of RouteFormatBuilder, for a type that is not built in. A table keeps its codecs by the type they read, so
 // a read or a write for an unconstrained T finds a ValueCodec<T> with a reference cast and calls it with neither
 // reflection nor a box around the value.
-internal abstract class ValueCodec<T>
+internal abstract class ValueCodec<T> : IBoxedValueCodec
 {
     protected ValueCodec(string typeName)
     {
@@ -16,14 +16,39 @@ internal abstract class ValueCodec<T>
     // The type as a message names it, as in "is not a valid OrderStatus".
     public string TypeName { get; }
 
-    // Never throws for the text: a value that is not valid returns false, and the caller decides what that means.
-    public abstract bool TryParse(string text, [MaybeNullWhen(false)] out T value);
-
-    // Writes the one text for the value that TryParse reads back to an equal value, so that equal values always give
-    // the same path. Never throws for the value: one that has no such text returns false, and NoTextReason says why.
-    public abstract bool TryFormat(T value, [NotNullWhen(true)] out string? text);
-
-    // Ends the message for a value that TryFormat cannot write. It never names or describes the value itself, which
+    // Ends the message for a value that Write finds has no text. It never names or describes the value itself, which
     // can be a secret.
     public abstract string NoTextReason { get; }
+
+    // A value that is not valid returns false, and the caller decides what that means.
+    public abstract bool TryParse(string text, [MaybeNullWhen(false)] out T value);
+
+    // Writes the text for the value. A codec of the library writes one text for each value, which TryParse reads back
+    // to an equal value; a codec the application registered promises only what its own functions do, which Write
+    // checks in part. A value that has no text returns false, and NoTextReason says why.
+    public abstract bool TryFormat(T value, [NotNullWhen(true)] out string? text);
+
+    // The one entry point that the format functions call, for a single value and for each element of a list alike,
+    // so that a codec that must check what it writes checks it in one place for both.
+    public virtual ValueTextProblem Write(T value, out string? text)
+    {
+        return TryFormat(value, out text) ? ValueTextProblem.None : ValueTextProblem.NoText;
+    }
+
+    public bool TryParseBoxed(string text, out object? value)
+    {
+        if (TryParse(text, out T? parsed))
+        {
+            value = parsed;
+            return true;
+        }
+
+        value = null;
+        return false;
+    }
+
+    public ValueTextProblem WriteBoxed(object value, out string? text)
+    {
+        return Write((T)value, out text);
+    }
 }

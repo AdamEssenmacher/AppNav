@@ -8,7 +8,7 @@ namespace AdamE.AppNav.Routing;
 internal abstract class RouteFormatter
 {
     // Returns the formatter that a table built with these codecs uses, or throws when the format function writes a
-    // value as an enum that is not registered.
+    // value of a type that is not built in and has no codec.
     public abstract RouteFormatter Bind(FrozenDictionary<Type, object> codecs);
 
     // The route is of exactly the type this formatter writes, which the table has looked it up by. Returns the path

@@ -293,18 +293,24 @@ public sealed class RouteTable
     /// <exception cref="InvalidOperationException">
     /// No mapping of exactly the type of <paramref name="route"/> has a format function. The message names the type
     /// and says whether the type is not mapped at all, or is mapped but without a format function.
+    /// <para>-or-</para>
+    /// The parser of a codec registered with <see cref="RouteTableBuilder.AddValueCodec{TValue}"/>, reading back a
+    /// text its writer wrote, accepted it but gave <see langword="null"/>. The message names the type, but neither the
+    /// value nor the text.
     /// </exception>
     /// <exception cref="ArgumentException">
     /// A value of the route cannot be written: a required parameter's value is <see langword="null"/>; a value is
     /// empty, contains a lone surrogate, does not satisfy the parameter's constraint or is a dot segment, <c>.</c> or
     /// <c>..</c>; a catch-all value starts or ends with <c>/</c>, contains <c>//</c> or has a dot segment as a part; an
     /// optional parameter has a value although an earlier one is left out; a query value contains a lone surrogate; an
-    /// element of a list of query values is <see langword="null"/>; or a value has no text, such as a
-    /// <see cref="double"/> that is NaN or an enum value that is not the value of a member. The exception's
+    /// element of a list of query values is <see langword="null"/>; a value has no text, such as a
+    /// <see cref="double"/> that is NaN, an enum value that is not the value of a member, or a value whose codec,
+    /// registered with <see cref="RouteTableBuilder.AddValueCodec{TValue}"/>, gives <see langword="null"/> for it; or
+    /// such a codec writes a text that its own parser does not accept. The exception's
     /// <see cref="ArgumentException.ParamName"/> is <c>route</c>, and its message names the route type, the template
-    /// and the path parameter or query value and says what is wrong, but never quotes the value, which can be a secret,
-    /// such as a sign-in token. It has no inner exception. When more than one value cannot be written, which one is
-    /// reported is not specified.
+    /// and the path parameter or query value and says what is wrong, but never quotes the value, or the text a codec
+    /// wrote for it, either of which can be a secret, such as a sign-in token. It has no inner exception. When more
+    /// than one value cannot be written, which one is reported is not specified.
     /// <para>-or-</para>
     /// The path written for the route is matched first by the template of another mapping, one that ranks higher, so
     /// <see cref="Match(Uri)"/> of it would select that mapping instead, whether or not that mapping has a format
@@ -314,8 +320,9 @@ public sealed class RouteTable
     /// parameter or by giving one of them a literal of its own.
     /// </exception>
     /// <exception cref="Exception">
-    /// Any exception that a value function throws, or that a list of query values throws while it is enumerated,
-    /// unchanged.
+    /// Any exception that a value function throws, that a list of query values throws while it is enumerated, or that
+    /// a codec registered with <see cref="RouteTableBuilder.AddValueCodec{TValue}"/> throws while it writes a value or
+    /// reads back the text it wrote, unchanged.
     /// </exception>
     public string Format(AppRoute route)
     {
@@ -393,8 +400,8 @@ public sealed class RouteTable
     /// <paramref name="route"/> or <paramref name="baseUri"/> is <see langword="null"/>.
     /// </exception>
     /// <exception cref="InvalidOperationException">
-    /// No mapping of exactly the type of <paramref name="route"/> has a format function, as for
-    /// <see cref="Format(AppRoute)"/>.
+    /// No mapping of exactly the type of <paramref name="route"/> has a format function, or the parser of a codec gave
+    /// <see langword="null"/> for a text its writer wrote, as for <see cref="Format(AppRoute)"/>.
     /// </exception>
     /// <exception cref="ArgumentException">
     /// <paramref name="baseUri"/> is a relative URI, or a path such as <c>/</c> that the table reads as relative; or it
@@ -419,8 +426,9 @@ public sealed class RouteTable
     /// <see cref="ArgumentException.ParamName"/> and message.
     /// </exception>
     /// <exception cref="Exception">
-    /// Any exception that a value function throws, or that a list of query values throws while it is enumerated,
-    /// unchanged.
+    /// Any exception that a value function throws, that a list of query values throws while it is enumerated, or that
+    /// a codec registered with <see cref="RouteTableBuilder.AddValueCodec{TValue}"/> throws while it writes a value or
+    /// reads back the text it wrote, unchanged.
     /// </exception>
     public Uri FormatUri(AppRoute route, Uri baseUri)
     {
@@ -624,16 +632,16 @@ public sealed class RouteTable
     }
 
     // Keys each format function by its route type, which may have only one, and binds it to the table's codecs, which
-    // reports an enum that is not registered. Each check runs in the order the routes were mapped, so the error does
-    // not change from one build to the next.
+    // reports a value of a type that has no codec. Each check runs in the order the routes were mapped, so the error
+    // does not change from one build to the next.
     private static FrozenDictionary<Type, (RouteFormatter Formatter, int Position)> BindFormatters(
         RouteDefinition[] definitions,
         int[] positions,
         FrozenDictionary<Type, object> codecs)
     {
         // Every second format function is reported before anything is bound, so that it is reported even when a
-        // format function also writes an enum that is not registered: registering the enum would not make the table
-        // valid, and fixing it would take two rounds.
+        // format function also writes a type that has no codec: registering one would not make the table valid, and
+        // fixing it would take two rounds.
         var owners = new Dictionary<Type, RouteDefinition>();
         foreach (RouteDefinition definition in definitions)
         {

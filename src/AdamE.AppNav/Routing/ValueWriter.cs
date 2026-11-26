@@ -22,16 +22,16 @@ internal abstract class ValueWriter<TRoute>
     // it cannot break the line it is printed on.
     public string Subject { get; }
 
-    // Ends the message for a value that TryWrite cannot write, without naming or describing the value.
+    // Ends the message for a value that Write finds has no text, without naming or describing the value.
     public abstract string NoTextReason { get; }
 
     // Returns the writer that a table built with these codecs uses. A writer for a type that is not built in takes its
-    // codec now, once, so that writing never looks it up; one whose codec is missing throws, so that Build reports an
-    // enum that was never registered rather than the first Format that writes it.
+    // codec now, once, so that writing never looks it up; one whose codec is missing throws, so that Build reports a
+    // type that was never registered rather than the first Format that writes it.
     public abstract ValueWriter<TRoute> Bind(FrozenDictionary<Type, object> codecs, RouteTemplate template);
 
-    // Calls the app's value function once. Returns true with the text, or with null when the value is null, which
-    // leaves the value out; returns false when the value has no text. An exception that the value function throws
-    // propagates unchanged.
-    public abstract bool TryWrite(TRoute route, out string? text);
+    // Calls the app's value function once. Returns None with the text, or with null when the value is null, which
+    // leaves the value out; otherwise says why the value cannot be written. An exception that the value function, or
+    // a codec the application registered, throws propagates unchanged.
+    public abstract ValueTextProblem Write(TRoute route, out string? text);
 }

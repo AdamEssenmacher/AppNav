@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Numerics;
 using AdamE.AppNav.Routing;
 using Xunit;
+using Custom = AdamE.AppNav.Tests.Routing.CustomValueTypes;
 
 namespace AdamE.AppNav.Tests.Routing;
 
@@ -347,10 +348,14 @@ public sealed class RouteMatchContextTypedQueryTests
     [InlineData("enum")]
     [InlineData("enum?")]
     [InlineData("list enum")]
+    [InlineData("custom")]
+    [InlineData("custom?")]
+    [InlineData("list custom")]
+    [InlineData("custom class")]
     public void AFailedConversionNeverQuotesTheValue(string type)
     {
         RouteValueException? thrown = null;
-        RouteTable table = new RouteTableBuilder()
+        RouteTable table = Custom.Builder()
             .AddEnumValueCodec<Status>()
             .Map("/orders", c =>
             {
@@ -402,6 +407,18 @@ public sealed class RouteMatchContextTypedQueryTests
                             break;
                         case "list enum":
                             _ = c.GetQueryValues<Status>("token");
+                            break;
+                        case "custom":
+                            c.TryGetQuery("token", out Custom.ProductId _);
+                            break;
+                        case "custom?":
+                            c.TryGetQuery("token", out Custom.ProductId? _);
+                            break;
+                        case "list custom":
+                            _ = c.GetQueryValues<Custom.Point>("token");
+                            break;
+                        case "custom class":
+                            c.TryGetQuery("token", out Custom.Slug? _);
                             break;
                         default:
                             _ = c.GetQueryValues<Guid>("token");
@@ -478,9 +495,14 @@ public sealed class RouteMatchContextTypedQueryTests
                     AssertUnsupported(() => context.TryGetQuery(name!, out List<int>? _), "'List<Int32>'");
                     AssertUnsupported(() => context.TryGetQuery(name!, out object? _), "'Object'");
                     AssertListUnsupported(() => context.GetQueryValues<Half>(name!), "'Half'");
-                    AssertListUnsupported(() => context.GetQueryValues<Half?>(name!), "'Half?'");
+                    AssertNullableList(() => context.GetQueryValues<Half?>(name!), "'Half?'", "'Half'");
                     AssertListUnsupported(() => context.GetQueryValues<Int128>(name!), "'Int128'");
                     AssertListUnsupported(() => context.GetQueryValues<char>(name!), "'Char'");
+                    AssertListUnsupported(() => context.GetQueryValues<char?>(name!), "'Char?'");
+                    Assert.DoesNotContain(
+                        "AddValueCodec<",
+                        Assert.Throws<InvalidOperationException>(() => context.GetQueryValues<char?>(name!)).Message,
+                        StringComparison.Ordinal);
                     AssertListUnsupported(() => context.GetQueryValues<nint>(name!), "'IntPtr'");
                     AssertListUnsupported(() => context.GetQueryValues<DateTime>(name!), "'DateTime'");
                     AssertListUnregistered(() => context.GetQueryValues<DayOfWeek>(name!), "'DayOfWeek'", "DayOfWeek");
@@ -549,7 +571,7 @@ public sealed class RouteMatchContextTypedQueryTests
                 SupportedList(() => context.Path<Half>("id"), ", and the nullable forms"),
                 SupportedList(() => context.TryGetPath("id", out Int128 _), ", and the nullable forms"),
                 SupportedList(() => context.TryGetQuery("v", out char _), ", and the nullable forms"),
-                SupportedList(() => context.GetQueryValues<Half>("v"), "; read the values"),
+                SupportedList(() => context.GetQueryValues<Half>("v"), ". Register a codec"),
             ];
 
             foreach (string list in lists)
@@ -792,6 +814,156 @@ public sealed class RouteMatchContextTypedQueryTests
     }
 
     // The name of Status as the message for an enum that is not registered gives it.
+    [Fact]
+    public void ACustomStructFollowsEveryRule()
+    {
+        AssertRules("7", new Custom.ProductId(7), "042", new Custom.ProductId(42), "ProductId", Custom.Builder);
+        AssertRules("1x2", new Custom.Point { X = 1, Y = 2 }, "-3x4", new Custom.Point { X = -3, Y = 4 }, "Point",
+            Custom.Builder);
+        AssertRules("done", Custom.Stage.Done, "in-progress", Custom.Stage.InProgress, "Stage", Custom.Builder);
+        AssertRules("7", new Custom.Outer<int>.Inner(7), "8", new Custom.Outer<int>.Inner(8), "Inner",
+            Custom.Builder);
+    }
+
+    // A reference type is read as a struct is, and is null rather than a default when the query does not have it.
+    [Fact]
+    public void ACustomClassIsReadByItsCodec()
+    {
+        Within(Custom.Builder, "/q?s=red&s=blue&shape=square&s=green&bad=Bad", context =>
+        {
+            Assert.True(context.TryGetQuery("s", out Custom.Slug? slug));
+            Assert.Equal(new Custom.Slug("red"), slug);
+            Assert.Equal(
+                [new Custom.Slug("red"), new Custom.Slug("blue"), new Custom.Slug("green")],
+                context.GetQueryValues<Custom.Slug>("s"));
+            Assert.True(context.TryGetQuery("shape", out Custom.IShape? shape));
+            Assert.IsType<Custom.Square>(shape);
+            Assert.False(context.TryGetQuery("missing", out Custom.Slug? missing));
+            Assert.Null(missing);
+            Assert.Empty(context.GetQueryValues<Custom.Slug>("missing"));
+            AssertInvalid(() => context.TryGetQuery("bad", out Custom.Slug? _), "bad", "Slug");
+            AssertInvalid(() => context.TryGetQuery("bad", out Custom.IShape? _), "bad", "IShape");
+        });
+        Within(Custom.Builder, "/q?s=red&s=Blue", context =>
+        {
+            AssertInvalid(() => context.GetQueryValues<Custom.Slug>("s"), "s", "Slug");
+        });
+    }
+
+    // The empty value of a name is given to the parser like any other, which decides whether it is valid.
+    [Fact]
+    public void AnEmptyQueryValueIsGivenToTheParser()
+    {
+        Within(Custom.Builder, "/q?n=&m&p=", context =>
+        {
+            Assert.True(context.TryGetQuery("n", out Custom.Note? note));
+            Assert.Equal(new Custom.Note(""), note);
+            Assert.Equal([new Custom.Note("")], context.GetQueryValues<Custom.Note>("m"));
+            AssertInvalid(() => context.TryGetQuery("p", out Custom.Slug? _), "p", "Slug");
+            AssertInvalid(() => context.TryGetQuery("p", out Custom.ProductId? _), "p", "ProductId");
+        });
+    }
+
+    // A list never has the nullable form of a custom struct as its element, registered or not; when the struct has no
+    // codec, the message says to register one too.
+    [Fact]
+    public void AListOfTheNullableFormOfACustomStructIsNotSupported()
+    {
+        const string ProductId = nameof(CustomValueTypes) + ".ProductId";
+        foreach (string uri in new[] { "/q?v=1", "/q" })
+        {
+            Within(Custom.Builder, uri, context =>
+            {
+                AssertNullableList(() => context.GetQueryValues<Custom.ProductId?>("v"), $"'{ProductId}?'",
+                    $"'{ProductId}'");
+                Assert.DoesNotContain(
+                    "AddValueCodec",
+                    Assert.Throws<InvalidOperationException>(() => context.GetQueryValues<Custom.Stage?>("v")).Message,
+                    StringComparison.Ordinal);
+            });
+            Within(uri, context =>
+            {
+                InvalidOperationException exception = Assert.Throws<InvalidOperationException>(
+                    () => context.GetQueryValues<Custom.ProductId?>("v"));
+                Assert.Contains(NeverAbsent, exception.Message, StringComparison.Ordinal);
+                Assert.Contains($"AddValueCodec<{ProductId}>", exception.Message, StringComparison.Ordinal);
+            });
+        }
+    }
+
+    // A type without a codec is told to register one, by a single read and by a list, and the list's message offers
+    // no nullable forms.
+    [Fact]
+    public void AQueryTypeWithoutACodecIsToldHowToRegisterOne()
+    {
+        const string ProductId = nameof(CustomValueTypes) + ".ProductId";
+        Within("/q?v=1", context =>
+        {
+            AssertUnsupported(() => context.TryGetQuery("v", out Custom.ProductId _), $"'{ProductId}'");
+            AssertUnsupported(() => context.TryGetQuery("v", out Custom.ProductId? _), $"'{ProductId}?'");
+            AssertListUnsupported(() => context.GetQueryValues<Custom.Slug>("v"), $"'{nameof(CustomValueTypes)}.Slug'");
+            foreach (Action read in new Action[]
+                     {
+                         () => context.TryGetQuery("v", out Custom.ProductId? _),
+                         () => context.GetQueryValues<Custom.ProductId>("v"),
+                     })
+            {
+                Assert.Contains(
+                    $"AddValueCodec<{ProductId}>",
+                    Assert.Throws<InvalidOperationException>(read).Message,
+                    StringComparison.Ordinal);
+            }
+        });
+    }
+
+    // A custom struct is read without a box, and a list of them without a box for each value, so either costs less
+    // than one of the smallest boxes, three pointers, per read more than the string read and a parse by hand.
+    [Theory]
+    [InlineData("struct")]
+    [InlineData("list struct")]
+    public void ACustomStructQueryReadAllocatesNoMoreThanTheStringReadAndAParse(string type)
+    {
+        const int Reads = 16;
+        Func<RouteMatchContext, int> customRead = type == "struct"
+            ? c => c.TryGetQuery("id", out Custom.ProductId id) ? id.Value : 0
+            : c => c.GetQueryValues<Custom.ProductId>("id")[1].Value;
+        Func<RouteMatchContext, int> parsedRead = type == "struct"
+            ? c => c.TryGetQuery("id", out string? text) && Custom.ProductId.TryParse(text, out Custom.ProductId id)
+                ? id.Value
+                : 0
+            : c => ParsedList(c, text => Custom.ProductId.TryParse(text, out Custom.ProductId id) ? id : default)[1]
+                .Value;
+
+        var uri = new Uri("/orders?id=42&id=42&id=42", UriKind.Relative);
+        long customBytes = AllocatedBytesPerMatch(ReadingTable(customRead, Reads, Custom.Builder()), uri);
+        long parsedBytes = AllocatedBytesPerMatch(ReadingTable(parsedRead, Reads, Custom.Builder()), uri);
+
+        Assert.True(
+            customBytes - parsedBytes < Reads * 3 * IntPtr.Size,
+            $"{type}: custom {customBytes} bytes, parsed {parsedBytes} bytes");
+    }
+
+    // The nullable form is read through the codec of the struct, with one box of the struct for each read, so fewer
+    // than two of the smallest boxes per read.
+    [Fact]
+    public void TheNullableFormOfACustomStructCostsOneBoxPerQueryRead()
+    {
+        const int Reads = 16;
+        var uri = new Uri("/orders?id=42", UriKind.Relative);
+
+        long nullableBytes = AllocatedBytesPerMatch(
+            ReadingTable(c => c.TryGetQuery("id", out Custom.ProductId? id) ? id!.Value.Value : 0, Reads,
+                Custom.Builder()),
+            uri);
+        long plainBytes = AllocatedBytesPerMatch(
+            ReadingTable(c => c.TryGetQuery("id", out Custom.ProductId id) ? id.Value : 0, Reads, Custom.Builder()),
+            uri);
+
+        Assert.True(
+            nullableBytes - plainBytes < Reads * 2 * 3 * IntPtr.Size,
+            $"nullable {nullableBytes} bytes, plain {plainBytes} bytes");
+    }
+
     private const string StatusName = nameof(RouteMatchContextTypedQueryTests) + ".Status";
 
     private static CultureInfo Invariant => CultureInfo.InvariantCulture;

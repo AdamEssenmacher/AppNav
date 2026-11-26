@@ -13,6 +13,12 @@ internal sealed class TypedRouteFormatter<TRoute> : RouteFormatter
         "has a value that is not valid UTF-16: it contains a lone surrogate, which cannot be percent-encoded and " +
         "read back unchanged";
 
+    // Ends the message for a value whose codec wrote a text that its own parser rejects, in the path or the query
+    // alike. Neither the value nor the text is named, since either can be a secret.
+    private const string NotReadBack =
+        "has a value that cannot be written: its codec writes a text that its own parser does not accept, so the " +
+        "link could not be read back";
+
     private readonly RouteTemplate _template;
     private readonly ValueWriter<TRoute>[] _pathWriters;
     private readonly QueryWriter<TRoute>[] _queryWriters;
@@ -52,8 +58,9 @@ internal sealed class TypedRouteFormatter<TRoute> : RouteFormatter
         var texts = new Dictionary<string, string>(_pathWriters.Length, StringComparer.OrdinalIgnoreCase);
         foreach (ValueWriter<TRoute> writer in _pathWriters)
         {
-            if (!writer.TryWrite(typed, out string? text))
-                throw NotWritten(writer.Subject, $"has a value that cannot be written: {writer.NoTextReason}");
+            ValueTextProblem problem = writer.Write(typed, out string? text);
+            if (problem != ValueTextProblem.None)
+                throw NotWritten(writer.Subject, Describe(problem, writer.NoTextReason));
 
             if (text is not null)
                 texts.Add(writer.Name, text);
@@ -92,6 +99,16 @@ internal sealed class TypedRouteFormatter<TRoute> : RouteFormatter
             "route");
     }
 
+    private static string Describe(ValueTextProblem problem, string noTextReason)
+    {
+        return problem switch
+        {
+            ValueTextProblem.NoText => $"has a value that cannot be written: {noTextReason}",
+            ValueTextProblem.NotReadBack => NotReadBack,
+            _ => throw new UnreachableException("A value writer reported a problem that has no message."),
+        };
+    }
+
     // Which element of a list failed goes unsaid: the kind of failure tells the developer what to look for, and the
     // position would say how many values come before it, which is something about the route's data.
     private static string Describe(QueryValueProblem problem, string noTextReason)
@@ -99,6 +116,7 @@ internal sealed class TypedRouteFormatter<TRoute> : RouteFormatter
         return problem switch
         {
             QueryValueProblem.NoText => $"has a value that cannot be written: {noTextReason}",
+            QueryValueProblem.NotReadBack => NotReadBack,
             QueryValueProblem.LoneSurrogate => LoneSurrogate,
             QueryValueProblem.NullElement =>
                 "has a null element, which cannot be written, because an element of a list is never absent; leave " +

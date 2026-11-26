@@ -3,6 +3,7 @@ using System.Collections.Immutable;
 using System.Globalization;
 using AdamE.AppNav.Routing;
 using Xunit;
+using Custom = AdamE.AppNav.Tests.Routing.CustomValueTypes;
 
 namespace AdamE.AppNav.Tests.Routing;
 
@@ -20,6 +21,8 @@ public sealed class RouteTableFormatTests
     private const string NoFormat = "none of its mappings has a format function";
     private const string CapturedFirst = "is matched first by the template";
     private const string NullElement = "has a null element";
+    private const string CodecNoText = "its codec gives no text for the value";
+    private const string NotReadBack = "its codec writes a text that its own parser does not accept";
 
     // Text that stands for a secret a route can carry, distinctive enough that finding it in a message is not a
     // coincidence.
@@ -1411,6 +1414,310 @@ public sealed class RouteTableFormatTests
         Assert.False(string.IsNullOrEmpty(category));
     }
 
+    // A null from a codec's writer is a value without text, in the path, a single query value and a list alike.
+    [Fact]
+    public void AValueWhoseCodecGivesNoTextIsRejected()
+    {
+        RouteTable table = CustomTable();
+        var negative = new Custom.ProductId(-1);
+
+        AssertNotWritten(table, new CustomRoute(negative, null, null), "/c/{id}", "id", CodecNoText);
+        AssertQueryNotWritten(table, new CustomRoute(new Custom.ProductId(1), negative, null), "/c/{id}", "q",
+            CodecNoText);
+        AssertQueryNotWritten(table, new CustomRoute(new Custom.ProductId(1), null, [new(2), negative]), "/c/{id}",
+            "list", CodecNoText);
+    }
+
+    // An empty text is a text: a query value writes it as name=, and the template rejects it as a path value, as it
+    // rejects every empty path value. A lone surrogate is rejected as it is for a string.
+    [Fact]
+    public void AnEmptyOrUnencodableTextIsTreatedAsTheSameTextOfAString()
+    {
+        RouteTable table = NoteTable();
+
+        Assert.Equal("/n/a?q=", table.Format(new NoteRoute(new Custom.Note("a"), new Custom.Note(""))));
+        Assert.Equal(
+            new NoteRoute(new Custom.Note("a"), new Custom.Note("")),
+            Match(table, "/n/a?q=").Route);
+        AssertNotWritten(table, new NoteRoute(new Custom.Note(""), null), "/n/{p}", "p", Empty);
+        AssertNotWritten(table, new NoteRoute(new Custom.Note("a\ud800"), null), "/n/{p}", "p", LoneSurrogate);
+        AssertQueryNotWritten(table, new NoteRoute(new Custom.Note("a"), new Custom.Note("\udc00")), "/n/{p}", "q",
+            LoneSurrogate);
+    }
+
+    // The writer's exception and the parser's, during the check of what was written, are the app's own, so they are
+    // neither caught nor wrapped.
+    [Fact]
+    public void AnExceptionFromACodecWhileWritingPropagatesUnchanged()
+    {
+        var fromWriter = new CodecTestException();
+        var fromParser = new CodecTestException();
+        RouteTable writing = new RouteTableBuilder()
+            .AddValueCodec<Custom.ProductId>(Custom.ProductId.TryParse, _ => throw fromWriter)
+            .Map("/w/{id}", c => new IdRoute(c.Path<Custom.ProductId>("id")), f => f.Path("id", r => r.Id))
+            .Build();
+        RouteTable reading = new RouteTableBuilder()
+            .AddValueCodec<Custom.ProductId>((string _, out Custom.ProductId _) => throw fromParser, _ => "1")
+            .Map("/w/{id}", c => new IdRoute(c.Path<Custom.ProductId>("id")), f => f.Path("id", r => r.Id))
+            .Build();
+
+        Assert.Same(fromWriter, Assert.Throws<CodecTestException>(() => writing.Format(new IdRoute(new(1)))));
+        Assert.Same(fromParser, Assert.Throws<CodecTestException>(() => reading.Format(new IdRoute(new(1)))));
+    }
+
+    // A RouteValueException from the parser is the one exception Match does not let through: it fails the match as a
+    // value that is not valid, under its own value name, as one from a create function does. Format lets it through
+    // like any other exception, since no URI is being matched.
+    [Fact]
+    public void ARouteValueExceptionFromTheParserFailsTheMatchButPropagatesOutOfFormat()
+    {
+        var thrown = new RouteValueException("own-name", "Rejected by the parser.");
+        RouteTable table = new RouteTableBuilder()
+            .AddValueCodec<Custom.ProductId>((string _, out Custom.ProductId _) => throw thrown, _ => "1")
+            .Map("/w/{id}", c => new IdRoute(c.Path<Custom.ProductId>("id")), f => f.Path("id", r => r.Id))
+            .Build();
+
+        RouteMatchResult result = Match(table, "/w/1");
+
+        Assert.False(result.IsSuccess);
+        RouteDiagnostic diagnostic = Assert.Single(result.Diagnostics);
+        Assert.Equal(RouteDiagnosticCodes.ValueInvalid, diagnostic.Code);
+        Assert.Equal("own-name", diagnostic.Data["name"]);
+        Assert.Same(thrown, Assert.Throws<RouteValueException>(() => table.Format(new IdRoute(new(1)))));
+        Assert.Same(
+            thrown,
+            Assert.Throws<RouteValueException>(() => table.FormatUri(new IdRoute(new(1)), new Uri("https://h"))));
+    }
+
+    // Only that the parser accepts the written text is checked, not that it reads back an equal value: a class with
+    // reference equality only, and a codec whose parser is not the inverse of its writer, are written all the same.
+    [Fact]
+    public void TheCheckOfAWrittenTextDoesNotCompareTheValueReadBack()
+    {
+        var opaque = new Opaque();
+        RouteTable table = new RouteTableBuilder()
+            .AddValueCodec<Opaque>(
+                (string text, out Opaque? value) =>
+                {
+                    value = text == "opaque" ? new Opaque() : null;
+                    return value is not null;
+                },
+                _ => "opaque")
+            .AddValueCodec<Parity>(
+                (string text, out Parity parity) =>
+                {
+                    parity = new Parity(0);
+                    return text is "even" or "odd";
+                },
+                parity => parity.Value % 2 == 0 ? "even" : "odd")
+            .Map("/o/{v}",
+                c => new OpaqueRoute(c.Path<Opaque>("v"), c.TryGetQuery("p", out Parity? p) ? p : null),
+                f => f.Path("v", r => r.Opaque).Query("p", r => r.Parity))
+            .Build();
+
+        string text = table.Format(new OpaqueRoute(opaque, new Parity(4)));
+
+        Assert.Equal("/o/opaque?p=even", text);
+        var read = Assert.IsType<OpaqueRoute>(Match(table, text).Route);
+        Assert.NotEqual(opaque, read.Opaque);
+        Assert.Equal(new Parity(0), read.Parity);
+        Assert.Equal(text, table.Format(read));
+    }
+
+    // A text the codec's own parser rejects could not be read back from the link, so it is not written: a path value,
+    // a single query value and an element of a list alike, and no later value function is called.
+    [Fact]
+    public void ATextThatTheCodecsParserDoesNotAcceptIsNotWritten()
+    {
+        var calls = new List<string>();
+        RouteTable table = Custom.Builder()
+            .Map<SlugsRoute>("/s/{slug}", _ => throw new InvalidOperationException(), f => f
+                .Path("slug", r => Log(calls, "slug", r.Slug))
+                .Query("q", r => Log(calls, "q", r.Query))
+                .QueryValues("list", r => Log(calls, "list", r.List))
+                .Query("after", r => Log(calls, "after", "x")))
+            .Build();
+        var good = new Custom.Slug("good");
+        var bad = new Custom.Slug("Not Valid");
+
+        AssertNotWritten(table, new SlugsRoute(bad, null, null), "/s/{slug}", "slug", NotReadBack);
+        Assert.Equal(["slug"], calls);
+        calls.Clear();
+        AssertQueryNotWritten(table, new SlugsRoute(good, bad, null), "/s/{slug}", "q", NotReadBack);
+        Assert.Equal(["slug", "q"], calls);
+        calls.Clear();
+        AssertQueryNotWritten(table, new SlugsRoute(good, null, [good, bad, good]), "/s/{slug}", "list", NotReadBack);
+        Assert.Equal(["slug", "q", "list"], calls);
+        Assert.Equal("/s/good?list=good&after=x", table.Format(new SlugsRoute(good, null, [good])));
+    }
+
+    // The check reads each text back once, with the parser of the codec that wrote it: once for each written value,
+    // and not at all for a value left out, for a built-in type or for an enum registered with AddEnumValueCodec.
+    [Fact]
+    public void EachTextACodecWritesIsReadBackOnceByItsParser()
+    {
+        var parses = 0;
+        var formats = 0;
+        RouteTable table = new RouteTableBuilder()
+            .AddEnumValueCodec<Access>()
+            .AddValueCodec<Custom.ProductId>(
+                (string text, out Custom.ProductId id) =>
+                {
+                    parses++;
+                    return Custom.ProductId.TryParse(text, out id);
+                },
+                id =>
+                {
+                    formats++;
+                    return Custom.Format(id.Value);
+                })
+            .Map<MixedRoute>("/c/{id}/{n:int}", _ => throw new InvalidOperationException(), f => f
+                .Path("id", r => r.Id)
+                .Path("n", r => r.Number)
+                .Query("access", r => r.Access)
+                .Query("other", r => r.Other)
+                .QueryValues("list", r => r.List))
+            .Build();
+
+        Assert.Equal(
+            "/c/1/5?access=Read&list=2&list=3&list=2",
+            table.Format(new MixedRoute(new(1), 5, Access.Read, null, [new(2), new(3), new(2)])));
+        Assert.Equal((4, 4), (formats, parses));
+
+        parses = formats = 0;
+        Assert.Equal("/c/1/5?access=Write&other=4", table.Format(new MixedRoute(new(1), 5, Access.Write, new(4), [])));
+        Assert.Equal((2, 2), (formats, parses));
+    }
+
+    // A path a higher-ranking template matches is not written, whatever type the value has.
+    [Fact]
+    public void ACustomValueWhosePathAHigherRankingTemplateMatchesIsNotWritten()
+    {
+        RouteTable table = Custom.Builder()
+            .Map("/products/new", _ => new SettingsRoute())
+            .Map("/products/{slug}", c => new SlugRoute(c.Path<Custom.Slug>("slug")), f => f.Path("slug", r => r.Slug))
+            .Build();
+
+        AssertRoundTrip(table, new SlugRoute(new Custom.Slug("widget")));
+        ArgumentException exception = Assert.Throws<ArgumentException>(
+            () => table.Format(new SlugRoute(new Custom.Slug("new"))));
+        Assert.Equal("route", exception.ParamName);
+        Assert.Contains(CapturedFirst, exception.Message, StringComparison.Ordinal);
+    }
+
+    public static TheoryData<string, string, AppRoute> SecretCodecFailures => new()
+    {
+        { "no text, path", CodecNoText, new TokenRoute(new Token("none-" + Secret), null) },
+        { "no text, query", CodecNoText, new TokenRoute(new Token("a"), new Token("none-" + Secret)) },
+        { "not read back, path", NotReadBack, new TokenRoute(new Token("bad-" + Secret), null) },
+        { "not read back, query", NotReadBack, new TokenRoute(new Token("a"), new Token("bad-" + Secret)) },
+    };
+
+    // Neither the value nor the text its codec wrote for it is quoted, by any failure of a codec of the app's own.
+    [Theory]
+    [MemberData(nameof(SecretCodecFailures))]
+    public void AValueACodecCannotWriteIsNeverQuoted(string category, string reason, AppRoute route)
+    {
+        RouteTable table = new RouteTableBuilder()
+            .AddValueCodec<Token>(
+                (string text, out Token? token) =>
+                {
+                    token = text.StartsWith("bad-", StringComparison.Ordinal) ? null : new Token(text);
+                    return token is not null;
+                },
+                token => token.Text.StartsWith("none-", StringComparison.Ordinal) ? null : token.Text)
+            .Map<TokenRoute>("/t/{v}", _ => throw new InvalidOperationException(), f => f
+                .Path("v", r => r.Path)
+                .Query("q", r => r.Query))
+            .Build();
+
+        ArgumentException exception = Assert.Throws<ArgumentException>(() => table.Format(route));
+
+        Assert.Equal("route", exception.ParamName);
+        Assert.Contains(reason, exception.Message, StringComparison.Ordinal);
+        Assert.Null(exception.InnerException);
+        Assert.Empty(exception.Data);
+        Assert.DoesNotContain(Secret, exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(Secret, exception.ToString(), StringComparison.Ordinal);
+        Assert.False(string.IsNullOrEmpty(category));
+    }
+
+    // A struct is passed to its codec as itself, so writing one value costs less than one box more than writing its
+    // text; the check of the text allocates nothing for a parser that allocates nothing. The smallest box is three
+    // pointers.
+    [Fact]
+    public void ACustomStructIsWrittenWithoutABox()
+    {
+        var route = new IdRoute(new Custom.ProductId(12345));
+        RouteTable typed = Custom.Builder()
+            .Map("/p/{id}", _ => route, f => f.Path("id", r => r.Id))
+            .Build();
+        RouteTable text = Custom.Builder()
+            .Map("/p/{id}", _ => route, f => f.Path("id", r => r.Id.Value.ToString(Invariant)))
+            .Build();
+
+        Assert.Equal(text.Format(route), typed.Format(route));
+        long difference = AllocatedBytesPerFormat(typed, route) - AllocatedBytesPerFormat(text, route);
+
+        Assert.True(difference < 3 * IntPtr.Size, $"{difference} bytes");
+    }
+
+    // The nullable form of a struct with a codec is written through the codec of the struct, boxed: one box of the
+    // struct for each value written and nothing else, so fewer than two of the smallest boxes for the one value.
+    [Fact]
+    public void TheNullableFormOfACustomStructCostsOneBoxPerValueWritten()
+    {
+        var route = new IdRoute(new Custom.ProductId(12345));
+        RouteTable nullable = Custom.Builder()
+            .Map("/p/{id}", _ => route, f => f.Path("id", r => (Custom.ProductId?)r.Id).Query("q", r => r.Id))
+            .Build();
+        RouteTable plain = Custom.Builder()
+            .Map("/p/{id}", _ => route, f => f.Path("id", r => r.Id).Query("q", r => r.Id))
+            .Build();
+
+        Assert.Equal(plain.Format(route), nullable.Format(route));
+        long difference = AllocatedBytesPerFormat(nullable, route) - AllocatedBytesPerFormat(plain, route);
+
+        Assert.True(difference < 2 * 3 * IntPtr.Size, $"{difference} bytes");
+    }
+
+    // A built-in type is written without looking at the codecs, so codecs of the app's own cost it nothing.
+    [Fact]
+    public void ABuiltInValueAllocatesNoMoreOnATableWithCustomCodecs()
+    {
+        var route = new OrderRoute(12345);
+        RouteTable with = Custom.Builder()
+            .Map("/o/{id}", _ => route, f => f.Path("id", r => r.Id).Query("q", r => (long?)r.Id))
+            .Build();
+        RouteTable without = new RouteTableBuilder()
+            .Map("/o/{id}", _ => route, f => f.Path("id", r => r.Id).Query("q", r => (long?)r.Id))
+            .Build();
+
+        long difference = AllocatedBytesPerFormat(with, route) - AllocatedBytesPerFormat(without, route);
+
+        Assert.True(difference < IntPtr.Size, $"{difference} bytes");
+    }
+
+    // The codecs of a built table are shared by every thread that formats and matches with it.
+    [Fact]
+    public void FormatAndMatchWithCustomCodecsCanRunOnSeveralThreadsAtOnce()
+    {
+        RouteTable table = CustomTable();
+
+        Parallel.For(0, 20_000, i =>
+        {
+            var route = new CustomRoute(
+                new Custom.ProductId(i),
+                i % 2 == 0 ? null : new Custom.ProductId(i + 1),
+                [new Custom.ProductId(i % 7), new Custom.ProductId(i % 11)]);
+
+            string text = table.Format(route);
+            var matched = (CustomRoute)Match(table, text).Route!;
+            Assert.Equal((route.Id, route.Query), (matched.Id, matched.Query));
+            Assert.Equal(route.List, matched.List);
+        });
+    }
+
     // The families of capture, each a writer and a template ranked above it that matches what the writer writes for
     // one value but not for the value next to it.
     private static readonly Dictionary<string, CaptureCase> CaptureCases = new()
@@ -1662,6 +1969,27 @@ public sealed class RouteTableFormatTests
         return value;
     }
 
+    private static RouteTable CustomTable()
+    {
+        return Custom.Builder()
+            .Map("/c/{id}",
+                c => new CustomRoute(
+                    c.Path<Custom.ProductId>("id"),
+                    c.TryGetQuery("q", out Custom.ProductId? q) ? q : null,
+                    [.. c.GetQueryValues<Custom.ProductId>("list")]),
+                f => f.Path("id", r => r.Id).Query("q", r => r.Query).QueryValues("list", r => r.List))
+            .Build();
+    }
+
+    private static RouteTable NoteTable()
+    {
+        return Custom.Builder()
+            .Map("/n/{p}",
+                c => new NoteRoute(c.Path<Custom.Note>("p"), c.TryGetQuery("q", out Custom.Note? q) ? q : null),
+                f => f.Path("p", r => r.Path).Query("q", r => r.Query))
+            .Build();
+    }
+
     private static RouteTable OptionalTable()
     {
         return new RouteTableBuilder()
@@ -1796,6 +2124,37 @@ public sealed class RouteTableFormatTests
     }
 
     private sealed record OrderRoute(int Id) : AppRoute;
+
+    private sealed record IdRoute(Custom.ProductId Id) : AppRoute;
+
+    private sealed record CustomRoute(Custom.ProductId Id, Custom.ProductId? Query, Custom.ProductId[]? List)
+        : AppRoute;
+
+    private sealed record NoteRoute(Custom.Note? Path, Custom.Note? Query) : AppRoute;
+
+    private sealed record SlugRoute(Custom.Slug Slug) : AppRoute;
+
+    private sealed record SlugsRoute(Custom.Slug Slug, Custom.Slug? Query, Custom.Slug[]? List) : AppRoute;
+
+    private sealed record MixedRoute(
+        Custom.ProductId Id,
+        int Number,
+        Access Access,
+        Custom.ProductId? Other,
+        Custom.ProductId[] List) : AppRoute;
+
+    private sealed record Token(string Text);
+
+    private sealed record TokenRoute(Token Path, Token? Query) : AppRoute;
+
+    // Compares by reference, as a class does by default.
+    private sealed class Opaque;
+
+    private readonly record struct Parity(int Value);
+
+    private sealed record OpaqueRoute(Opaque Opaque, Parity? Parity) : AppRoute;
+
+    private sealed class CodecTestException : Exception;
 
     private sealed record LongRoute(long Value) : AppRoute;
 

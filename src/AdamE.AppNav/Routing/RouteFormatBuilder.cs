@@ -50,9 +50,6 @@ public sealed class RouteFormatBuilder<TRoute>
 
     private const string UnsupportedList = "A list of query values cannot be written";
 
-    // A list has no nullable forms, since its elements are never absent, as for the read of a list.
-    private const string UnsupportedListTail = "; convert the values to strings and write those instead.";
-
     // Converting an element that is a collection to a string would hide a second list inside each value, so a nested
     // collection is told what to do instead.
     private const string NestedCollectionTail =
@@ -83,17 +80,24 @@ public sealed class RouteFormatBuilder<TRoute>
     /// <see cref="bool"/>, <see cref="Guid"/>, <see cref="decimal"/>, <see cref="double"/>, <see cref="float"/>, one
     /// of the integer types <see cref="sbyte"/>, <see cref="byte"/>, <see cref="short"/>, <see cref="ushort"/>,
     /// <see cref="int"/>, <see cref="uint"/>, <see cref="long"/> and <see cref="ulong"/>, an enum registered with
-    /// <see cref="RouteTableBuilder.AddEnumValueCodec{TEnum}"/>, or the nullable form of any of them but
-    /// <see cref="string"/>. A <see cref="string"/> is written as it is; <see cref="bool"/> as <c>true</c> or
+    /// <see cref="RouteTableBuilder.AddEnumValueCodec{TEnum}"/>, a type registered with
+    /// <see cref="RouteTableBuilder.AddValueCodec{TValue}"/>, or the nullable form of any of them that is a value
+    /// type. A <see cref="string"/> is written as it is; <see cref="bool"/> as <c>true</c> or
     /// <c>false</c>; an integer as invariant digits with <c>-</c> for a negative value and no <c>+</c> or leading
     /// zeros; a <see cref="decimal"/> without trailing zeros after the point, without a point when it has no
     /// fraction, and as <c>0</c> for every zero; a <see cref="double"/> or <see cref="float"/> as the shortest digits
     /// that read back as the same value of its own type, never with an exponent, and as <c>0</c> for either zero; a
     /// <see cref="Guid"/> in lower case with hyphens, as <c>Guid.ToString()</c> writes it; and an enum as the name
     /// of the member with that value, as declared, or, when several members have it, the name that sorts first
-    /// ordinally. A <see cref="double"/> or <see cref="float"/> that is NaN or infinite, and an enum value that is not
-    /// the value of a member, such as an undefined number or a combination of flags with no name of its own, have no
-    /// text, and <see cref="RouteTable.Format(AppRoute)"/> throws for them.
+    /// ordinally. A type registered with <see cref="RouteTableBuilder.AddValueCodec{TValue}"/> is written as the text
+    /// its codec writes, which <see cref="RouteTable.Format(AppRoute)"/> reads back with the parser of the codec, and
+    /// throws for one that the parser does not accept; it does not check that the value read back is equal, which is
+    /// the codec's promise. Its nullable form is written by the same codec, with one allocation, a box around the
+    /// value, for each value written. A codec is found by exactly the type the value function returns, not by a type
+    /// it derives from or implements. A <see cref="double"/> or <see cref="float"/> that is NaN or infinite, an enum
+    /// value that is not the value of a member, such as an undefined number or a combination of flags with no name of
+    /// its own, and a value for which a codec gives <see langword="null"/> have no text, and
+    /// <see cref="RouteTable.Format(AppRoute)"/> throws for them.
     /// </typeparam>
     /// <param name="name">
     /// The name of a parameter of the template, compared without regard to case, as the typed reads compare it.
@@ -111,9 +115,11 @@ public sealed class RouteFormatBuilder<TRoute>
     /// <paramref name="name"/> or <paramref name="value"/> is <see langword="null"/>.
     /// </exception>
     /// <exception cref="InvalidOperationException">
-    /// <typeparamref name="TValue"/> is not one of the supported types, such as <see cref="Half"/> or
-    /// <c>DateTime?</c>; the message lists the supported types. An enum that is not registered is not reported here,
-    /// since it can be registered after the mapping, but by <see cref="RouteTableBuilder.Build"/>.
+    /// <typeparamref name="TValue"/> is a collection, such as <c>int[]</c>, which no codec can write; the message lists
+    /// the supported types. Any other type that is not built in, an enum included, can be given a codec after the
+    /// mapping, so one that has none is not reported here, but by <see cref="RouteTableBuilder.Build"/>. So is
+    /// <see cref="char"/> or <c>char?</c>, which cannot have a codec: <see cref="RouteTableBuilder.Build"/> reports
+    /// it with a message that says to write the value as a string.
     /// <para>-or-</para>
     /// The call that maps the route has returned, so the builder can no longer be used.
     /// </exception>
@@ -128,8 +134,9 @@ public sealed class RouteFormatBuilder<TRoute>
         ThrowIfCompleted();
 
         // Checked before the name, as the typed reads check the type first, so that a type that can never be written
-        // fails whatever the name.
-        if (RouteValueTypes.SupportedTypeName<TValue>() is null && RouteValueTypes.EnumType<TValue>() is null)
+        // fails whatever the name. Only a collection is rejected here: any other type can be given a codec, before or
+        // after this mapping, so Build reports one that has none, as it reports char, which can never have one.
+        if (RouteValueTypes.IsCollection<TValue>())
             throw RouteValueTypes.UnsupportedType<TValue>(Unsupported, UnsupportedTail);
 
         string parameter = FindParameter(name) ?? throw new ArgumentException(
@@ -157,7 +164,7 @@ public sealed class RouteFormatBuilder<TRoute>
     /// </summary>
     /// <typeparam name="TValue">
     /// The type of the value, one of those listed for <see cref="Path{TValue}(string, Func{TRoute, TValue})"/>, and
-    /// written as the same canonical text, which the typed read of the same type, such as
+    /// written as the same text, which the typed read of the same type, such as
     /// <see cref="RouteMatchContext.TryGetQuery{T}(string, out T)"/>, reads back to an equal value. A collection, such
     /// as <c>string[]</c> or <c>List&lt;int&gt;</c>, is not one of them: this method writes one value for the name.
     /// Declare several values for one name with
@@ -180,11 +187,11 @@ public sealed class RouteFormatBuilder<TRoute>
     /// <paramref name="name"/> or <paramref name="value"/> is <see langword="null"/>.
     /// </exception>
     /// <exception cref="InvalidOperationException">
-    /// <typeparamref name="TValue"/> is not one of the supported types, such as <see cref="Half"/>,
-    /// <c>DateTime?</c> or <c>string[]</c>; the message lists the supported types, and for a collection names
-    /// <see cref="QueryValues{TValue}(string, Func{TRoute, IEnumerable{TValue}})"/>. An enum that is not registered
-    /// is not reported here, since it can be registered after the mapping, but by
-    /// <see cref="RouteTableBuilder.Build"/>.
+    /// <typeparamref name="TValue"/> is a collection, such as <c>string[]</c>; the message names
+    /// <see cref="QueryValues{TValue}(string, Func{TRoute, IEnumerable{TValue}})"/>. Any other type that is not built
+    /// in, an enum included, can be given a codec after the mapping, so one that has none is not reported here, but by
+    /// <see cref="RouteTableBuilder.Build"/>. So is <see cref="char"/> or <c>char?</c>, which cannot have a codec:
+    /// <see cref="RouteTableBuilder.Build"/> reports it with a message that says to write the value as a string.
     /// <para>-or-</para>
     /// The call that maps the route has returned, so the builder can no longer be used.
     /// </exception>
@@ -201,17 +208,9 @@ public sealed class RouteFormatBuilder<TRoute>
         ArgumentNullException.ThrowIfNull(value);
         ThrowIfCompleted();
 
-        // Checked before the name, as for a path value. String is a collection of chars but one value, and is
-        // supported, so only another type can be reported as a collection.
-        if (RouteValueTypes.SupportedTypeName<TValue>() is null && RouteValueTypes.EnumType<TValue>() is null)
-        {
-            throw RouteValueTypes.UnsupportedType<TValue>(
-                UnsupportedQuery,
-                typeof(System.Collections.IEnumerable).IsAssignableFrom(
-                    Nullable.GetUnderlyingType(typeof(TValue)) ?? typeof(TValue))
-                    ? UnsupportedCollectionTail
-                    : UnsupportedTail);
-        }
+        // Checked before the name, as for a path value, and for the same reason only a collection is rejected here.
+        if (RouteValueTypes.IsCollection<TValue>())
+            throw RouteValueTypes.UnsupportedType<TValue>(UnsupportedQuery, UnsupportedCollectionTail);
 
         string subject = QuerySubject(name);
         _queryWriters.Add(
@@ -229,13 +228,15 @@ public sealed class RouteFormatBuilder<TRoute>
     /// The type of the elements, one of those that <see cref="RouteMatchContext.GetQueryValues{T}(string)"/> reads:
     /// <see cref="string"/>, <see cref="bool"/>, <see cref="Guid"/>, <see cref="decimal"/>, <see cref="double"/>,
     /// <see cref="float"/>, one of the integer types <see cref="sbyte"/>, <see cref="byte"/>, <see cref="short"/>,
-    /// <see cref="ushort"/>, <see cref="int"/>, <see cref="uint"/>, <see cref="long"/> and <see cref="ulong"/>, or an
-    /// enum registered with <see cref="RouteTableBuilder.AddEnumValueCodec{TEnum}"/>. Each element is written as the
-    /// canonical text described for <see cref="Path{TValue}(string, Func{TRoute, TValue})"/>. A nullable type, such as
-    /// <c>int?</c>, is not one of them, since an element of a list is never absent, and neither is a collection, so
-    /// a list of lists cannot be written, nor is <see cref="char"/>, which a function that returns a string gives,
-    /// since a string is one value. It is inferred from the function, as <see cref="int"/> for a function that
-    /// returns <c>int[]</c>, <c>List&lt;int&gt;</c> or <c>ImmutableArray&lt;int&gt;</c>.
+    /// <see cref="ushort"/>, <see cref="int"/>, <see cref="uint"/>, <see cref="long"/> and <see cref="ulong"/>, an
+    /// enum registered with <see cref="RouteTableBuilder.AddEnumValueCodec{TEnum}"/>, or a type registered with
+    /// <see cref="RouteTableBuilder.AddValueCodec{TValue}"/>. Each element is written as the text described for
+    /// <see cref="Path{TValue}(string, Func{TRoute, TValue})"/>, and an element of a type with a codec is read back by
+    /// its parser in the same way. A nullable type, such as <c>int?</c>, is not one of them, since an element of a
+    /// list is never absent, and neither is a collection, so a list of lists cannot be written, nor is
+    /// <see cref="char"/>, which a function that returns a string gives, since a string is one value. It is inferred
+    /// from the function, as <see cref="int"/> for a function that returns <c>int[]</c>, <c>List&lt;int&gt;</c> or
+    /// <c>ImmutableArray&lt;int&gt;</c>.
     /// </typeparam>
     /// <param name="name">
     /// The name of the query values, by the rules of <see cref="Query{TValue}(string, Func{TRoute, TValue})"/>: any
@@ -253,11 +254,11 @@ public sealed class RouteFormatBuilder<TRoute>
     /// <paramref name="name"/> or <paramref name="values"/> is <see langword="null"/>.
     /// </exception>
     /// <exception cref="InvalidOperationException">
-    /// <typeparamref name="TValue"/> is not one of the supported types, such as <see cref="Half"/>, <c>DateTime?</c> or
-    /// <c>string[]</c>, and the message lists the supported types, or, for <see cref="char"/>, which a function that
-    /// returns a string gives, says to declare the string with Query; or it is the nullable form of a supported type or
-    /// of an enum, such as <c>int?</c>, and the message names the type to declare instead. An enum that is not
-    /// registered is not reported here, since it can be registered after the mapping, but by
+    /// <typeparamref name="TValue"/> is a type that can never be the element of a list: a collection, such as
+    /// <c>string[]</c>, and the message lists the supported types; <see cref="char"/>, which a function that returns a
+    /// string gives, and the message says to declare the string with Query; or a nullable type, such as <c>int?</c>,
+    /// and the message names the type to declare instead. Any other type that is not built in, an enum included, can
+    /// be given a codec after the mapping, so one that has none is not reported here, but by
     /// <see cref="RouteTableBuilder.Build"/>.
     /// <para>-or-</para>
     /// The call that maps the route has returned, so the builder can no longer be used.
@@ -281,10 +282,12 @@ public sealed class RouteFormatBuilder<TRoute>
     /// </para>
     /// <para>
     /// An element that cannot be written makes <see cref="RouteTable.Format(AppRoute)"/> throw: a
-    /// <see langword="null"/> element, which only a list of strings can have, since nullable element types are not
-    /// supported; an element with no text, such as a <see cref="double"/> that is NaN or an enum value that is not the
-    /// value of a member; and a string that contains a lone surrogate. The elements after it are not read, and the
-    /// later value functions are not called. An exception thrown while the list is enumerated propagates unchanged.
+    /// <see langword="null"/> element, which only a list of a reference type can have, since nullable element types
+    /// are not supported; an element with no text, such as a <see cref="double"/> that is NaN, an enum value that is
+    /// not the value of a member or a value for which its codec gives <see langword="null"/>; an element whose codec
+    /// writes a text that the codec's parser does not accept; and a text that contains a lone surrogate. The elements
+    /// after it are not read, and the later value functions are not called. An exception thrown while the list is
+    /// enumerated, or by a codec while it writes an element, propagates unchanged.
     /// </para>
     /// <para>
     /// This is a separate method because <see cref="Query{TValue}(string, Func{TRoute, TValue})"/> writes one value
@@ -297,36 +300,39 @@ public sealed class RouteFormatBuilder<TRoute>
         ArgumentNullException.ThrowIfNull(values);
         ThrowIfCompleted();
 
-        // Checked before the name, as for a single value. The types are those of the read of a list: the nullable form
-        // of a supported type or of an enum is rejected with the type to use instead, and any other type that is
-        // neither built in nor an enum is rejected outright, with advice that depends on what it is. String is a
-        // collection of chars, but one value.
-        Type? enumType = RouteValueTypes.EnumType<TValue>();
-        Type? underlying = Nullable.GetUnderlyingType(typeof(TValue));
-        if (underlying is not null && (RouteValueTypes.SupportedTypeName<TValue>() is not null || enumType is not null))
+        // Checked before the name, as for a single value. The types are those of the read of a list, and what can
+        // never be one is rejected here: a collection, which would be a list inside each value; char, which only a
+        // string given by mistake makes the element type; and a nullable type, since an element is never absent,
+        // which is told the type to use instead. Any other type can be given a codec, before or after this mapping,
+        // so Build reports one that has none.
+        if (RouteValueTypes.IsCollection<TValue>())
+            throw RouteValueTypes.UnsupportedType<TValue>(UnsupportedList, NestedCollectionTail);
+
+        if (typeof(TValue) == typeof(char))
         {
-            string register = enumType is not null
-                ? ", with the enum registered by RouteTableBuilder.AddEnumValueCodec" +
-                  $"<{RouteValueTypes.DisplayName(enumType)}>() when building the table"
-                : "";
+            throw new InvalidOperationException(
+                $"{UnsupportedList} as type '{RouteValueTypes.DisplayName(typeof(TValue))}'{CharElement}");
+        }
+
+        Type? underlying = Nullable.GetUnderlyingType(typeof(TValue));
+        if (underlying == typeof(char))
+        {
+            throw new InvalidOperationException(
+                $"{UnsupportedList} as type '{RouteValueTypes.DisplayName(typeof(TValue))}': an element of the list " +
+                "is never absent, and a char is one character of a string; write the values as strings instead.");
+        }
+
+        if (underlying is not null)
+        {
+            string type = RouteValueTypes.DisplayName(underlying);
+            string register = RouteValueTypes.SupportedTypeName<TValue>() is not null ? ""
+                : underlying.IsEnum
+                    ? $", with the enum registered by RouteTableBuilder.AddEnumValueCodec<{type}>() or " +
+                      $"RouteTableBuilder.AddValueCodec<{type}> when building the table"
+                    : $", with a codec registered by RouteTableBuilder.AddValueCodec<{type}> when building the table";
             throw new InvalidOperationException(
                 $"{UnsupportedList} as type '{RouteValueTypes.DisplayName(typeof(TValue))}': an element of the list " +
                 $"is never absent, so write it as type '{RouteValueTypes.DisplayName(underlying)}' instead{register}.");
-        }
-
-        if (RouteValueTypes.SupportedTypeName<TValue>() is null && enumType is null)
-        {
-            if (typeof(TValue) == typeof(char))
-            {
-                throw new InvalidOperationException(
-                    $"{UnsupportedList} as type '{RouteValueTypes.DisplayName(typeof(TValue))}'{CharElement}");
-            }
-
-            throw RouteValueTypes.UnsupportedType<TValue>(
-                UnsupportedList,
-                typeof(System.Collections.IEnumerable).IsAssignableFrom(underlying ?? typeof(TValue))
-                    ? NestedCollectionTail
-                    : UnsupportedListTail);
         }
 
         _queryWriters.Add(
