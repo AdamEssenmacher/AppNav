@@ -1,3 +1,4 @@
+using System.Globalization;
 using AdamE.AppNav.Routing;
 using Xunit;
 
@@ -19,6 +20,8 @@ public sealed class RouteTableFormatTests
 
     // Text that stands for a secret a route can carry, distinctive enough that finding it in a message is not a
     // coincidence.
+    private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
+
     private const string Secret = "tok-Vn3Jq8Rw-9Wq4Lm7Tz";
 
     [Fact]
@@ -682,6 +685,357 @@ public sealed class RouteTableFormatTests
         });
     }
 
+    // Query values follow the path in the order they were declared, each left out when null, with the '?' only when
+    // one is written.
+    [Fact]
+    public void QueryValuesAreWrittenInDeclarationOrderAfterThePath()
+    {
+        RouteTable table = ProductsTable();
+
+        Assert.Equal("/products?page=2&sort=name", table.Format(new ProductsRoute(2, "name")));
+        Assert.Equal("/products?page=2", table.Format(new ProductsRoute(2, null)));
+        Assert.Equal("/products?sort=name", table.Format(new ProductsRoute(null, "name")));
+        Assert.Equal("/products", table.Format(new ProductsRoute(null, null)));
+        foreach (int? page in new int?[] { null, 0, 2, -1 })
+        {
+            foreach (string? sort in new[] { null, "", "name", "a b" })
+                AssertRoundTrip(table, new ProductsRoute(page, sort));
+        }
+
+        RouteTable reversed = new RouteTableBuilder()
+            .Map("/products", ReadProducts, f => f.Query("sort", r => r.Sort).Query("page", r => r.Page))
+            .Build();
+        Assert.Equal("/products?sort=name&page=2", reversed.Format(new ProductsRoute(2, "name")));
+    }
+
+    [Fact]
+    public void AQueryIsWrittenAfterThePathValues()
+    {
+        RouteTable table = new RouteTableBuilder()
+            .Map("/orders/{id:int}/{tab?}",
+                c => new OrderTabRoute(
+                    c.Path<int>("id"),
+                    c.TryGetPath("tab", out string? tab) ? tab : null,
+                    c.TryGetQuery("q", out string? q) ? q : null),
+                f => f.Query("q", r => r.Query).Path("tab", r => r.Tab).Path("id", r => r.Id))
+            .Build();
+
+        Assert.Equal("/orders/42/items?q=a%20b", table.Format(new OrderTabRoute(42, "items", "a b")));
+        Assert.Equal("/orders/42?q=x", table.Format(new OrderTabRoute(42, null, "x")));
+        Assert.Equal("/orders/42", table.Format(new OrderTabRoute(42, null, null)));
+        AssertRoundTrip(table, new OrderTabRoute(42, "items", "a b"));
+        AssertRoundTrip(table, new OrderTabRoute(42, null, "x"));
+    }
+
+    // The empty string is a value, written as 'name=', which the read gives back as the empty string; only null
+    // leaves a value out.
+    [Fact]
+    public void AnEmptyQueryValueIsWrittenAndReadBack()
+    {
+        RouteTable table = ProductsTable();
+
+        Assert.Equal("/products?sort=", table.Format(new ProductsRoute(null, "")));
+        Assert.Equal("/products?page=1&sort=", table.Format(new ProductsRoute(1, "")));
+        Assert.Equal(new ProductsRoute(null, ""), Match(table, "/products?sort=").Route);
+    }
+
+    // The empty name is a name, on the read side and here.
+    [Fact]
+    public void TheEmptyNameIsWrittenAndReadBack()
+    {
+        RouteTable table = new RouteTableBuilder()
+            .Map("/p", c => new TextRoute(c.TryGetQuery("", out string? v) ? v : null), f => f.Query("", r => r.Text))
+            .Build();
+
+        Assert.Equal("/p?=x", table.Format(new TextRoute("x")));
+        Assert.Equal("/p?=", table.Format(new TextRoute("")));
+        Assert.Equal("/p", table.Format(new TextRoute(null)));
+        AssertRoundTrip(table, new TextRoute("x"));
+        AssertRoundTrip(table, new TextRoute(""));
+        AssertRoundTrip(table, new TextRoute(null));
+    }
+
+    // Names and values are encoded with Uri.EscapeDataString, so a space is %20, never '+', which the query reader
+    // takes for a space, and a '+' is %2B; '&', '=', '#', '?' and '%' are encoded so that they read back as data.
+    [Theory]
+    [InlineData("a b", "a%20b")]
+    [InlineData("a+b", "a%2Bb")]
+    [InlineData("a&b", "a%26b")]
+    [InlineData("a=b", "a%3Db")]
+    [InlineData("#1", "%231")]
+    [InlineData("why?", "why%3F")]
+    [InlineData("100%", "100%25")]
+    [InlineData("%20", "%2520")]
+    [InlineData("a/b", "a%2Fb")]
+    [InlineData("-._~", "-._~")]
+    [InlineData("\u00E9t\u00E9", "%C3%A9t%C3%A9")]
+    [InlineData("\U0001F600", "%F0%9F%98%80")]
+    [InlineData("a\tb\n", "a%09b%0A")]
+    [InlineData("\u0000", "%00")]
+    [InlineData(".", ".")]
+    [InlineData(" ", "%20")]
+    public void AQueryNameAndValueAreWrittenEscaped(string text, string expected)
+    {
+        RouteTable values = new RouteTableBuilder()
+            .Map("/p", c => new TextRoute(c.TryGetQuery("v", out string? v) ? v : null), f => f.Query("v", r => r.Text))
+            .Build();
+        RouteTable names = new RouteTableBuilder()
+            .Map("/p",
+                c => new TextRoute(c.TryGetQuery(text, out string? v) ? v : null),
+                f => f.Query(text, r => r.Text))
+            .Build();
+
+        Assert.Equal("/p?v=" + expected, values.Format(new TextRoute(text)));
+        Assert.Equal("/p?" + expected + "=x", names.Format(new TextRoute("x")));
+        AssertRoundTrip(values, new TextRoute(text));
+        AssertRoundTrip(names, new TextRoute("x"));
+    }
+
+    [Fact]
+    public void AQueryValueThatHasNoTextIsRejected()
+    {
+        RouteTable table = new RouteTableBuilder()
+            .AddEnumValueCodec<Access>()
+            .Map("/q", _ => new QueryValuesRoute(null, null, null),
+                f => f.Query("text", r => r.Text).Query("number", r => r.Number).Query("access", r => r.Access))
+            .Build();
+
+        AssertQueryNotWritten(table, new QueryValuesRoute(null, double.NaN, null), "/q", "number", NoText);
+        AssertQueryNotWritten(table, new QueryValuesRoute("a", double.NegativeInfinity, null), "/q", "number", NoText);
+        AssertQueryNotWritten(table, new QueryValuesRoute(null, null, (Access)8), "/q", "access", NoText);
+        AssertQueryNotWritten(table, new QueryValuesRoute("a\uD800", null, null), "/q", "text", LoneSurrogate);
+        AssertQueryNotWritten(table, new QueryValuesRoute("\uDC00b", 1, Access.Read), "/q", "text", LoneSurrogate);
+        Assert.Equal("/q?text=a%F0%9F%98%80", table.Format(new QueryValuesRoute("a\uD83D\uDE00", null, null)));
+    }
+
+    // A route value can be a secret, so a query value that cannot be written is never quoted, nor is any other value.
+    [Fact]
+    public void AQueryValueThatCannotBeWrittenIsNeverQuoted()
+    {
+        RouteTable table = new RouteTableBuilder()
+            .AddEnumValueCodec<Access>()
+            .Map("/s/{token}", _ => new QueryValuesRoute(null, null, null),
+                f => f.Path("token", r => r.Text).Query("n", r => r.Number).Query("again", r => r.Text + "\uD800"))
+            .Build();
+
+        ArgumentException infinite = Assert.Throws<ArgumentException>(
+            () => table.Format(new QueryValuesRoute(Secret, double.PositiveInfinity, null)));
+        ArgumentException surrogate = Assert.Throws<ArgumentException>(
+            () => table.Format(new QueryValuesRoute(Secret, 1, null)));
+
+        Assert.Contains(LoneSurrogate, surrogate.Message, StringComparison.Ordinal);
+        foreach (ArgumentException exception in new[] { surrogate, infinite })
+        {
+            Assert.Equal("route", exception.ParamName);
+            Assert.Null(exception.InnerException);
+            Assert.Empty(exception.Data);
+            Assert.DoesNotContain(Secret, exception.ToString(), StringComparison.Ordinal);
+            Assert.DoesNotContain("Infinity", exception.ToString(), StringComparison.Ordinal);
+        }
+
+        Assert.Contains("query value 'n'", infinite.Message, StringComparison.Ordinal);
+        Assert.Contains("query value 'again'", surrogate.Message, StringComparison.Ordinal);
+    }
+
+    // The path functions are called first, in template order, and then the query functions in the order they were
+    // declared, whatever order the declarations were made in, each once.
+    [Fact]
+    public void PathFunctionsAreCalledBeforeQueryFunctionsEachOnce()
+    {
+        var calls = new List<string>();
+        RouteTable table = new RouteTableBuilder()
+            .Map("/{a}/{b}", _ => new TwoRoute("a", "b"), f => f
+                .Query("y", r => Log(calls, "y", r.A))
+                .Path("b", r => Log(calls, "b", r.B))
+                .Query("x", r => Log(calls, "x", r.B))
+                .Path("a", r => Log(calls, "a", r.A)))
+            .Build();
+
+        Assert.Equal("/1/2?y=1&x=2", table.Format(new TwoRoute("1", "2")));
+        Assert.Equal(["a", "b", "y", "x"], calls);
+
+        // A path the template rejects stops the calls before any query function, as a value without text does.
+        calls.Clear();
+        Assert.Throws<ArgumentException>(() => table.Format(new TwoRoute("", "2")));
+        Assert.Equal(["a", "b"], calls);
+    }
+
+    [Fact]
+    public void LaterQueryFunctionsAreNotCalledAfterAValueThatCannotBeWrittenOrAnException()
+    {
+        var calls = new List<string>();
+        var thrown = new InvalidOperationException("from the app");
+        RouteTable table = new RouteTableBuilder()
+            .Map("/q/{a}", _ => new QueryValuesRoute(null, null, null), f => f
+                .Path("a", r => Log(calls, "a", r.Text))
+                .Query("b", r =>
+                {
+                    calls.Add("b");
+                    return r.Text == "throw" ? throw thrown : r.Number;
+                })
+                .Query("c", r => Log(calls, "c", r.Text)))
+            .Build();
+
+        AssertQueryNotWritten(table, new QueryValuesRoute("t", double.NaN, null), "/q/{a}", "b", NoText);
+        Assert.Equal(["a", "b"], calls);
+
+        calls.Clear();
+        Assert.Same(thrown, Assert.Throws<InvalidOperationException>(
+            () => table.Format(new QueryValuesRoute("throw", 1, null))));
+        Assert.Equal(["a", "b"], calls);
+
+        calls.Clear();
+        Assert.Equal("/q/t?b=1&c=t", table.Format(new QueryValuesRoute("t", 1, null)));
+        Assert.Equal(["a", "b", "c"], calls);
+
+        // A path that cannot be written stops the calls before the query, whose value would not be written either.
+        calls.Clear();
+        ArgumentException exception = Assert.Throws<ArgumentException>(
+            () => table.Format(new QueryValuesRoute(null, double.PositiveInfinity, null)));
+        Assert.Contains("path parameter 'a'", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(["a"], calls);
+    }
+
+    // The capture check reads the path alone, after every value function has been called once: a query value that
+    // cannot be written is reported rather than the capture, and a query value never changes which template matches.
+    [Fact]
+    public void TheCaptureCheckReadsThePathAloneAfterEveryValueFunction()
+    {
+        var calls = new List<string>();
+        RouteTable table = new RouteTableBuilder()
+            .Map("/products/new", _ => new SettingsRoute())
+            .Map("/products/{name}",
+                c => new NamedQueryRoute(c.Path("name"), c.TryGetQuery("q", out double? q) ? q : null),
+                f => f
+                    .Path("name", r => Log(calls, "name", r.Name))
+                    .Query("q", r =>
+                    {
+                        calls.Add("q");
+                        return r.Q;
+                    }))
+            .Build();
+
+        AssertCaptured(table, new NamedQueryRoute("new", 1), "/products/{name}", "/products/new");
+        Assert.Equal(["name", "q"], calls);
+
+        calls.Clear();
+        ArgumentException exception = Assert.Throws<ArgumentException>(
+            () => table.Format(new NamedQueryRoute("new", double.NaN)));
+        Assert.Contains("query value 'q'", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(CapturedFirst, exception.Message, StringComparison.Ordinal);
+        Assert.Equal(["name", "q"], calls);
+
+        Assert.Equal("/products/widget?q=1", table.Format(new NamedQueryRoute("widget", 1)));
+        AssertRoundTrip(table, new NamedQueryRoute("widget", 1));
+        AssertRoundTrip(table, new NamedQueryRoute("widget", null));
+        AssertCaptured(table, new NamedQueryRoute("new", null), "/products/{name}", "/products/new");
+    }
+
+    // A query with text that looks like a path or a template literal changes nothing about the match.
+    [Fact]
+    public void AQueryValueNeverChangesWhichTemplateMatches()
+    {
+        RouteTable table = new RouteTableBuilder()
+            .Map("/products/new", _ => new SettingsRoute())
+            .Map("/products/{name}",
+                c => new ProductQueryRoute(c.Path("name"), c.TryGetQuery("new", out string? q) ? q : null),
+                f => f.Path("name", r => r.Name).Query("new", r => r.Q))
+            .Build();
+
+        foreach (string q in new[] { "/products/new", "new", "?new", "#new", "../new", "" })
+        {
+            string text = table.Format(new ProductQueryRoute("widget", q));
+            Assert.StartsWith("/products/widget?new=", text, StringComparison.Ordinal);
+            AssertRoundTrip(table, new ProductQueryRoute("widget", q));
+            Assert.Equal(new ProductQueryRoute("widget", q), table.Match(new Uri("https://h" + text)).Route);
+        }
+    }
+
+    // A mapping whose query values are all null writes its path alone, and allocates nothing more than a mapping with
+    // no query declarations, which returns the path the template wrote as it is.
+    [Fact]
+    public void FormatAllocatesNothingMoreForQueryValuesThatAreAllNull()
+    {
+        RouteTable plain = TextTable("/products/{id}");
+        RouteTable nulls = new RouteTableBuilder()
+            .Map("/products/{id}", c => new TextRoute(c.Path("id")), f => f
+                .Path("id", r => r.Text)
+                .Query("page", _ => (int?)null)
+                .Query("sort", _ => (string?)null)
+                .Query("when", _ => (Guid?)null)
+                .Query("access", _ => (Access?)null))
+            .AddEnumValueCodec<Access>()
+            .Build();
+        var route = new TextRoute("widget");
+
+        Assert.Equal("/products/widget", nulls.Format(route));
+        long plainBytes = AllocatedBytesPerFormat(plain, route);
+        long nullBytes = AllocatedBytesPerFormat(nulls, route);
+
+        Assert.InRange(nullBytes - plainBytes, long.MinValue, 0);
+    }
+
+    // A value type is written without a box. Each pair writes the same text, one from the value and one from the
+    // value's own text, which the value function makes, so both do the same work to make the text and only a box
+    // could tell them apart. Each box would be at least 24 bytes.
+    [Fact]
+    public void AQueryValueOfAValueTypeIsNotBoxed()
+    {
+        var route = new NumbersRoute(12345, new Guid("6f9619ff-8b86-d011-b42d-00cf4fc964ff"), 12345.678m);
+
+        AssertNoBox(route, f => f.Query("v", r => r.Int), f => f.Query("v", r => r.Int.ToString(Invariant)));
+        AssertNoBox(route, f => f.Query("v", r => r.Guid), f => f.Query("v", r => r.Guid.ToString()));
+        AssertNoBox(route, f => f.Query("v", r => r.Decimal), f => f.Query("v", r => r.Decimal.ToString(Invariant)));
+    }
+
+    // System.Uri drops %20 sequences only at the very end of an absolute URI that contains non-ASCII text. A path
+    // value followed by a query keeps its trailing space; a query value written last loses it, from an absolute link
+    // only, unless another value follows it or the URI is ASCII. This pins how System.Uri reads the written text.
+    [Fact]
+    public void OnlyTheEndOfTheWholeTextLosesATrailingSpaceInAnAbsoluteLink()
+    {
+        RouteTable table = new RouteTableBuilder()
+            .Map("/\u00E9/new", _ => new SettingsRoute())
+            .Map("/\u00E9/{name}", ReadSpaced, WriteSpaced)
+            .Build();
+        RouteTable ascii = new RouteTableBuilder()
+            .Map("/a/{name}", ReadSpaced, WriteSpaced)
+            .Build();
+        string[] prefixes = ["https://h", "myapp://", "myapp:///"];
+
+        var pathSpace = new SpacedRoute("new ", "x", null);
+        Assert.Equal("/%C3%A9/new%20?q=x", table.Format(pathSpace));
+        var notLast = new SpacedRoute("a", "x ", "y");
+        Assert.Equal("/%C3%A9/a?q=x%20&r=y", table.Format(notLast));
+        var last = new SpacedRoute("a", "x", "y ");
+        Assert.Equal("/%C3%A9/a?q=x&r=y%20", table.Format(last));
+        var onlySpaces = new SpacedRoute("a", null, "  ");
+
+        // A non-ASCII host the application puts in front counts as well, though the written text is all ASCII.
+        const string IdnHost = "https://\u00E9.example";
+        Assert.Equal("/a/a?q=x&r=y%20", ascii.Format(last));
+        Assert.Equal(last with { R = "y" }, ascii.Match(new Uri(IdnHost + ascii.Format(last))).Route);
+        Assert.Equal(pathSpace, ascii.Match(new Uri(IdnHost + ascii.Format(pathSpace))).Route);
+        Assert.Equal(
+            pathSpace with { Name = "new", Q = null },
+            ascii.Match(new Uri(IdnHost + ascii.Format(pathSpace with { Q = null }))).Route);
+
+        foreach (string prefix in prefixes)
+        {
+            Assert.Equal(pathSpace, table.Match(new Uri(prefix + table.Format(pathSpace))).Route);
+            Assert.Equal(notLast, table.Match(new Uri(prefix + table.Format(notLast))).Route);
+            Assert.Equal(last with { R = "y" }, table.Match(new Uri(prefix + table.Format(last))).Route);
+            Assert.Equal(onlySpaces with { R = "" }, table.Match(new Uri(prefix + table.Format(onlySpaces))).Route);
+            Assert.Equal(last, ascii.Match(new Uri(prefix + ascii.Format(last))).Route);
+            Assert.Equal(
+                new SettingsRoute(),
+                table.Match(new Uri(prefix + table.Format(pathSpace with { Q = null }))).Route);
+        }
+
+        foreach (SpacedRoute route in new[] { pathSpace, notLast, last, onlySpaces })
+            AssertRoundTrip(table, route);
+    }
+
     public static TheoryData<string, AppRoute, string> SecretFailures => new()
     {
         { "constraint", new TextRoute(Secret), "/c/{v:int}" },
@@ -979,6 +1333,67 @@ public sealed class RouteTableFormatTests
             .Build();
     }
 
+    private static RouteTable ProductsTable()
+    {
+        return new RouteTableBuilder()
+            .Map("/products", ReadProducts, f => f.Query("page", r => r.Page).Query("sort", r => r.Sort))
+            .Build();
+    }
+
+    private static ProductsRoute ReadProducts(RouteMatchContext context)
+    {
+        return new ProductsRoute(
+            context.TryGetQuery("page", out int page) ? page : null,
+            context.TryGetQuery("sort", out string? sort) ? sort : null);
+    }
+
+    private static SpacedRoute ReadSpaced(RouteMatchContext context)
+    {
+        return new SpacedRoute(
+            context.Path("name"),
+            context.TryGetQuery("q", out string? q) ? q : null,
+            context.TryGetQuery("r", out string? r) ? r : null);
+    }
+
+    private static void WriteSpaced(RouteFormatBuilder<SpacedRoute> format)
+    {
+        format.Path("name", r => r.Name).Query("q", r => r.Q).Query("r", r => r.R);
+    }
+
+    private static void AssertNoBox(
+        NumbersRoute route,
+        Action<RouteFormatBuilder<NumbersRoute>> typed,
+        Action<RouteFormatBuilder<NumbersRoute>> text)
+    {
+        RouteTable typedTable = new RouteTableBuilder().Map("/p", _ => route, typed).Build();
+        RouteTable textTable = new RouteTableBuilder().Map("/p", _ => route, text).Build();
+
+        Assert.Equal(textTable.Format(route), typedTable.Format(route));
+        long difference = AllocatedBytesPerFormat(typedTable, route) - AllocatedBytesPerFormat(textTable, route);
+
+        Assert.InRange(difference, long.MinValue, 23);
+    }
+
+    private static ArgumentException AssertQueryNotWritten(
+        RouteTable table,
+        AppRoute route,
+        string template,
+        string name,
+        string category)
+    {
+        ArgumentException exception = Assert.Throws<ArgumentException>(() => table.Format(route));
+
+        Assert.Equal("route", exception.ParamName);
+        Assert.Null(exception.InnerException);
+        Assert.Empty(exception.Data);
+        Assert.Contains(category, exception.Message, StringComparison.Ordinal);
+        Assert.Contains($"{route.GetType().Name}'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains($"'{template}'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains($"query value '{name}'", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("path parameter", exception.Message, StringComparison.Ordinal);
+        return exception;
+    }
+
     private static ArgumentException AssertNotWritten(
         RouteTable table,
         AppRoute route,
@@ -1039,6 +1454,20 @@ public sealed class RouteTableFormatTests
     private sealed record LetterRoute(Letter Letter) : AppRoute;
 
     private sealed record TwoRoute(string A, string B) : AppRoute;
+
+    private sealed record ProductsRoute(int? Page, string? Sort) : AppRoute;
+
+    private sealed record OrderTabRoute(int Id, string? Tab, string? Query) : AppRoute;
+
+    private sealed record QueryValuesRoute(string? Text, double? Number, Access? Access) : AppRoute;
+
+    private sealed record NamedQueryRoute(string Name, double? Q) : AppRoute;
+
+    private sealed record ProductQueryRoute(string Name, string? Q) : AppRoute;
+
+    private sealed record SpacedRoute(string Name, string? Q, string? R) : AppRoute;
+
+    private sealed record NumbersRoute(int Int, Guid Guid, decimal Decimal) : AppRoute;
 
     private sealed record CaptureCase(
         string Writer,

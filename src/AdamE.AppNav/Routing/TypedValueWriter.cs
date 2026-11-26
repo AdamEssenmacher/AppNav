@@ -2,9 +2,9 @@ using System.Collections.Frozen;
 
 namespace AdamE.AppNav.Routing;
 
-// A path value writer for values of type TValue, which RouteFormatBuilder.Path has checked is a built-in type, an enum
-// or the nullable form of one.
-internal sealed class TypedPathValueWriter<TRoute, TValue> : PathValueWriter<TRoute>
+// A value writer for values of type TValue, which RouteFormatBuilder has checked is a built-in type, an enum or the
+// nullable form of one.
+internal sealed class TypedValueWriter<TRoute, TValue> : ValueWriter<TRoute>
     where TRoute : AppRoute
 {
     private readonly Func<TRoute, TValue> _value;
@@ -12,13 +12,13 @@ internal sealed class TypedPathValueWriter<TRoute, TValue> : PathValueWriter<TRo
     // Null for a built-in type, which RouteConstraint.TryFormat writes without a codec.
     private readonly ValueCodec<TValue>? _codec;
 
-    public TypedPathValueWriter(string name, Func<TRoute, TValue> value)
-        : this(name, value, null)
+    public TypedValueWriter(string name, string subject, Func<TRoute, TValue> value)
+        : this(name, subject, value, null)
     {
     }
 
-    private TypedPathValueWriter(string name, Func<TRoute, TValue> value, ValueCodec<TValue>? codec)
-        : base(name)
+    private TypedValueWriter(string name, string subject, Func<TRoute, TValue> value, ValueCodec<TValue>? codec)
+        : base(name, subject)
     {
         _value = value;
         _codec = codec;
@@ -28,18 +28,18 @@ internal sealed class TypedPathValueWriter<TRoute, TValue> : PathValueWriter<TRo
 
     // The writer itself is shared by every table its builder builds, so binding a codec makes a new one, and a table
     // never sees a codec of another table.
-    public override PathValueWriter<TRoute> Bind(FrozenDictionary<Type, object> codecs, RouteTemplate template)
+    public override ValueWriter<TRoute> Bind(FrozenDictionary<Type, object> codecs, RouteTemplate template)
     {
         if (RouteValueTypes.SupportedTypeName<TValue>() is not null)
             return this;
 
         if (codecs.TryGetValue(typeof(TValue), out object? codec))
-            return new TypedPathValueWriter<TRoute, TValue>(Name, _value, (ValueCodec<TValue>)codec);
+            return new TypedValueWriter<TRoute, TValue>(Name, Subject, _value, (ValueCodec<TValue>)codec);
 
         Type enumType = RouteValueTypes.EnumType<TValue>()!;
         throw new InvalidOperationException(
             $"The format function of route type '{RouteValueTypes.DisplayName(typeof(TRoute))}', mapped to the " +
-            $"template '{template.Value}', writes path parameter '{Name}' as type " +
+            $"template '{template.Value}', writes {Subject} as type " +
             $"'{RouteValueTypes.DisplayName(typeof(TValue))}', but the enum is not registered. Register it with " +
             $"RouteTableBuilder.AddEnumValueCodec<{RouteValueTypes.DisplayName(enumType)}>() when building the " +
             "table.");

@@ -223,43 +223,59 @@ public sealed class RouteTable
     }
 
     /// <summary>
-    /// Writes a route as the path of the template it is mapped to, by the format function its mapping was given.
+    /// Writes a route as a relative URI of the template it is mapped to, by the format function its mapping was given.
     /// </summary>
     /// <param name="route">The route to write.</param>
     /// <returns>
     /// The route as the text of a relative URI: its path, as
-    /// <see cref="RouteTemplate.Format(IReadOnlyDictionary{string, string})"/> writes it for the values the format
-    /// function reads from the route, each written as the canonical text of its type that
-    /// <see cref="RouteFormatBuilder{TRoute}.Path{TValue}(string, Func{TRoute, TValue})"/> describes, such as
-    /// <c>/orders/42</c>. A later version will also write the route's query; this version writes the path only.
+    /// <see cref="RouteTemplate.Format(IReadOnlyDictionary{string, string})"/> writes it for the path values the
+    /// format function reads from the route, followed, when at least one query value is written, by <c>?</c> and the
+    /// query, such as <c>/orders/42</c> or <c>/products?page=2&amp;sort=name</c>. Each value is written as the
+    /// canonical text of its type that
+    /// <see cref="RouteFormatBuilder{TRoute}.Path{TValue}(string, Func{TRoute, TValue})"/> describes. The text never
+    /// has a fragment. Repeated values, several for one name, are not written in this version.
     /// </returns>
     /// <remarks>
     /// <para>
     /// The mapping is found by the exact type of the route, as <see cref="object.GetType()"/> gives it: a mapping of a
-    /// base type of the route does not write it. Each declared value function is called at most once, in template
-    /// order; after a value that cannot be written as text, or an exception from a value function, the later
-    /// functions are not called. A <see langword="null"/> value leaves out an optional or catch-all parameter.
+    /// base type of the route does not write it. Each declared value function is called at most once: the path
+    /// functions in template order, then the query functions in the order they were declared. After a value that
+    /// cannot be written, or an exception from a value function, the later functions are not called, so no query
+    /// function is called for a route whose path cannot be written. A <see langword="null"/> value leaves out an
+    /// optional or catch-all parameter, or a query value.
     /// </para>
     /// <para>
-    /// When this method returns a path, <see cref="Match(Uri)"/> of that path selects the mapping that wrote it, and
-    /// each value reads back equal through the typed read of its type, so the route that matches is equal to the one
-    /// written provided the create function and the format function agree, which the table cannot check. A path that
-    /// a template ranking higher would match first is not returned: with <c>/products/new</c> and
-    /// <c>/products/{name}</c> in one table, the name <c>new</c> cannot be written, because <c>/products/new</c> would
-    /// open the other route. Which template a path selects is decided exactly as <see cref="Match(Uri)"/> decides it,
-    /// by the templates alone, and no create function is called. That check comes after every other, and calls no
-    /// value function. A mapping of the same route type that ranks higher also counts, because the table cannot know
-    /// that its create function makes the same route.
+    /// The query values are written in the order they were declared, as <c>name=value</c> pairs joined by
+    /// <c>&amp;</c>, and the <c>?</c> only when there is at least one. An empty string is written as <c>name=</c>,
+    /// which reads back as the empty string. Names and values are percent-encoded with
+    /// <see cref="Uri.EscapeDataString(string)"/>, so a space is written as <c>%20</c>, never <c>+</c>, which the query
+    /// reads take for a space, and a <c>+</c> as <c>%2B</c>; <c>&amp;</c>, <c>=</c>, <c>#</c>, <c>%</c> and every
+    /// character but ASCII letters, digits, <c>-</c>, <c>.</c>, <c>_</c> and <c>~</c> are encoded too.
+    /// </para>
+    /// <para>
+    /// When this method returns, <see cref="Match(Uri)"/> of the text selects the mapping that wrote it, and each
+    /// value reads back equal through the typed read of its type, a query value through the read of its first value,
+    /// which is the only one written. So the route that matches is equal to the one written provided the create
+    /// function and the format function agree, which the table cannot check. A path that a template ranking higher
+    /// would match first is not returned: with <c>/products/new</c> and <c>/products/{name}</c> in one table, the name
+    /// <c>new</c> cannot be written, because <c>/products/new</c> would open the other route. Which template a path
+    /// selects is decided exactly as <see cref="Match(Uri)"/> decides it, by the templates alone, so a query value
+    /// never changes it, and no create function is called. That check comes after every other, once every value
+    /// function has been called, and calls none. A mapping of the same route type that ranks higher also counts,
+    /// because the table cannot know that its create function makes the same route.
     /// </para>
     /// <para>
     /// The promise is about <see cref="Match(Uri)"/> of the returned text as a relative URI, as in
-    /// <c>new Uri(path, UriKind.Relative)</c>, and of an absolute URI with that path, except where <see cref="Uri"/>
-    /// itself changes the path of an absolute URI. It does so in one case, described in the remarks on
-    /// <see cref="Match(Uri)"/>: it drops <c>%20</c> sequences at the very end. So a value that ends with a space,
-    /// written last in the path, may be read back without it from an absolute link, and may then match another
-    /// template: with <c>/&#233;/new</c> and <c>/&#233;/{name}</c>, the name <c>new </c> is written as
-    /// <c>/%C3%A9/new%20</c>, which matches as that name as a relative URI, while
-    /// <c>https://app/%C3%A9/new%20</c> opens the route of <c>/&#233;/new</c>.
+    /// <c>new Uri(text, UriKind.Relative)</c>, and of an absolute URI with that path and query. <see cref="Uri"/>
+    /// changes the text of an absolute URI in one way: it drops <c>%20</c> sequences at the very end of an absolute
+    /// URI that contains a non-ASCII character anywhere, including in the host the application puts in front of the
+    /// text, as the remarks on <see cref="Match(Uri)"/> describe. This method writes a non-ASCII character as
+    /// percent-encoded bytes from <c>%80</c> to <c>%FF</c>, which count too. So the last value written, the last query
+    /// value or the last path value when no query is written, loses its trailing spaces in such a link, and a path
+    /// value that is only spaces then no longer matches. An absolute URI that is all ASCII, and any relative URI, keep
+    /// them. With <c>/&#233;/new</c> and <c>/&#233;/{name}</c>, the name <c>new </c> is written as
+    /// <c>/%C3%A9/new%20</c>, which matches as that name as a relative URI, while <c>https://app/%C3%A9/new%20</c>
+    /// opens the route of <c>/&#233;/new</c>.
     /// </para>
     /// <para>
     /// The table is not changed, and several threads can call this method and <see cref="Match(Uri)"/> at once.
@@ -274,12 +290,12 @@ public sealed class RouteTable
     /// A value of the route cannot be written: a required parameter's value is <see langword="null"/>; a value is
     /// empty, contains a lone surrogate, does not satisfy the parameter's constraint or is a dot segment, <c>.</c> or
     /// <c>..</c>; a catch-all value starts or ends with <c>/</c>, contains <c>//</c> or has a dot segment as a part; an
-    /// optional parameter has a value although an earlier one is left out; or a value has no text, such as a
-    /// <see cref="double"/> that is NaN or an enum value that is not the value of a member. The exception's
-    /// <see cref="ArgumentException.ParamName"/> is <c>route</c>, and its message names the route type, the template
-    /// and the parameter and says what is wrong, but never quotes the value, which can be a secret, such as a sign-in
-    /// token. It has no inner exception. When more than one value cannot be written, which one is reported is not
-    /// specified.
+    /// optional parameter has a value although an earlier one is left out; a query value contains a lone surrogate; or
+    /// a value has no text, such as a <see cref="double"/> that is NaN or an enum value that is not the value of a
+    /// member. The exception's <see cref="ArgumentException.ParamName"/> is <c>route</c>, and its message names the
+    /// route type, the template and the path parameter or query value and says what is wrong, but never quotes the
+    /// value, which can be a secret, such as a sign-in token. It has no inner exception. When more than one value
+    /// cannot be written, which one is reported is not specified.
     /// <para>-or-</para>
     /// The path written for the route is matched first by the template of another mapping, one that ranks higher, so
     /// <see cref="Match(Uri)"/> of it would select that mapping instead, whether or not that mapping has a format
@@ -299,21 +315,24 @@ public sealed class RouteTable
         if (!_formatters.TryGetValue(type, out (RouteFormatter Formatter, int Position) writer))
         {
             throw new InvalidOperationException(_routeTypes.Contains(type)
-                ? $"The route type '{RouteValueTypes.DisplayName(type)}' cannot be written as a path, because it is " +
+                ? $"The route type '{RouteValueTypes.DisplayName(type)}' cannot be written, because it is " +
                   "mapped, but none of its mappings has a format function. Pass one to the RouteTableBuilder.Map " +
                   "overload that takes it; for a template with no parameters, a function that declares nothing, " +
                   "as in '_ => { }'."
-                : $"The route type '{RouteValueTypes.DisplayName(type)}' cannot be written as a path, because no " +
+                : $"The route type '{RouteValueTypes.DisplayName(type)}' cannot be written, because no " +
                   "mapping of exactly that type exists. A mapping of a base type does not write a route of a type " +
                   "derived from it; map the type itself with a format function.");
         }
 
-        string path = writer.Formatter.Format(route);
+        // Every value function has been called, and every value that cannot be written reported, before the path is
+        // checked here, so that this check reports a table that needs fixing only for a route that is otherwise valid.
+        // A query value never changes which template matches, so only the path is checked.
+        string text = writer.Formatter.Format(route, out string path);
 
         // A definition ranked first has none above it that could match the path first, so it pays nothing more.
         RouteDefinition? first = writer.Position == 0 ? null : FindMatchedFirst(path, writer.Position);
         if (first is null)
-            return path;
+            return text;
 
         // The message names both templates, but neither the route's values nor the path, which can carry a secret.
         // The capturing template can contain a literal equal to a value, as '/products/new' does for the name 'new',
@@ -321,7 +340,7 @@ public sealed class RouteTable
         // matches, not which route opens, because that template's create function may still reject the value.
         RouteDefinition owner = _matchOrder[writer.Position];
         throw new ArgumentException(
-            $"The route type '{RouteValueTypes.DisplayName(type)}' cannot be written as a path by the template " +
+            $"The route type '{RouteValueTypes.DisplayName(type)}' cannot be written by the template " +
             $"'{owner.Template.Value}': the path it writes is matched first by the template " +
             $"'{first.Template.Value}', which ranks higher, so a link to it would be matched by that template " +
             "instead. Change the templates so that they cannot match the same path, for example by constraining a " +

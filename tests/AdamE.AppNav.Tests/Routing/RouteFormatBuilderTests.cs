@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using AdamE.AppNav.Routing;
 using Xunit;
 
@@ -374,6 +375,20 @@ public sealed class RouteFormatBuilderTests
         },
         { "unsupported", b => b.Map("/items/{id}", c => new ItemRoute(c.Path("id")), f => f.Path("id", _ => 'c')) },
         {
+            "repeated query",
+            b => b.Map(
+                "/items/{id}",
+                c => new ItemRoute(c.Path("id")),
+                f => f.Path("id", r => r.Id).Query("q", r => r.Id).Query("Q", r => r.Id))
+        },
+        {
+            "unsupported query",
+            b => b.Map(
+                "/items/{id}",
+                c => new ItemRoute(c.Path("id")),
+                f => f.Path("id", r => r.Id).Query("q", _ => 'c'))
+        },
+        {
             "throwing action",
             b => b.Map("/items/{id}", c => new ItemRoute(c.Path("id")), _ => throw new FormatTestException())
         },
@@ -445,6 +460,267 @@ public sealed class RouteFormatBuilderTests
         InvalidOperationException exception = Assert.Throws<InvalidOperationException>(builder.Build);
 
         Assert.Contains("are the same template", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void QueryReturnsTheSameFormatBuilder()
+    {
+        RouteFormatBuilder<ItemRoute>? seen = null;
+        new RouteTableBuilder().Map("/{id}", c => new ItemRoute(c.Path("id")), f =>
+        {
+            seen = f;
+            Assert.Same(f, f.Query("q", r => r.Id));
+            Assert.Same(f, f.Path("id", r => r.Id));
+            Assert.Same(f, f.Query("r", _ => 1));
+        });
+
+        Assert.NotNull(seen);
+    }
+
+    [Fact]
+    public void QueryRejectsNullArguments()
+    {
+        var builder = new RouteTableBuilder();
+
+        Assert.Equal("name", Assert.Throws<ArgumentNullException>(() => builder.Map(
+            "/a", _ => new ItemRoute("a"), f => f.Query(null!, r => r.Id))).ParamName);
+        Assert.Equal("value", Assert.Throws<ArgumentNullException>(() => builder.Map(
+            "/a", _ => new ItemRoute("a"), f => f.Query<string>("q", null!))).ParamName);
+
+        Assert.Empty(builder.Build().Definitions);
+    }
+
+    // Names compare as the query reads compare them, ordinally ignoring case, so a second declaration in any case would
+    // write a value that no read returns.
+    [Theory]
+    [InlineData("page", "page")]
+    [InlineData("page", "PAGE")]
+    [InlineData("Page", "pAge")]
+    [InlineData("", "")]
+    [InlineData("\u00e9", "\u00c9")]
+    public void AQueryNameDeclaredTwiceIsRejected(string first, string second)
+    {
+        var builder = new RouteTableBuilder();
+
+        ArgumentException exception = Assert.Throws<ArgumentException>(() => builder.Map(
+            "/a",
+            _ => new ItemRoute("a"),
+            f => f.Query(first, r => r.Id).Query("other", r => r.Id).Query(second, _ => 1)));
+
+        Assert.Equal("name", exception.ParamName);
+        Assert.Contains(AlreadyDeclared, exception.Message, StringComparison.Ordinal);
+        Assert.Empty(builder.Build().Definitions);
+    }
+
+    // Names that differ other than by case, under ordinal comparison, are different names, as on the read side.
+    [Fact]
+    public void QueryNamesThatDifferOnlyByNormalizationAreDifferentNames()
+    {
+        RouteTable table = new RouteTableBuilder()
+            .Map("/a", _ => new ItemRoute("a"), f => f.Query("\u00e9", _ => 1).Query("e\u0301", _ => 2))
+            .Build();
+
+        Assert.Equal("/a?%C3%A9=1&e%CC%81=2", table.Format(new ItemRoute("a")));
+    }
+
+    // The path and the query are read separately, so a query value can have the name of a path parameter.
+    [Fact]
+    public void AQueryNameCanBeThatOfAPathParameter()
+    {
+        RouteTable table = new RouteTableBuilder()
+            .Map(
+                "/p/{id}",
+                c => new PairRoute(c.Path("id"), c.TryGetQuery("id", out string? q) ? q : "none"),
+                f => f.Query("ID", r => r.B).Path("id", r => r.A))
+            .Build();
+
+        string text = table.Format(new PairRoute("x", "y"));
+
+        Assert.Equal("/p/x?ID=y", text);
+        Assert.Equal(new PairRoute("x", "y"), table.Match(new Uri(text, UriKind.Relative)).Route);
+    }
+
+    [Fact]
+    public void AQueryNameWithALoneSurrogateIsRejected()
+    {
+        foreach (string name in new[] { "a\ud800", "\udc00", "\ud800\ud800" })
+        {
+            ArgumentException exception = Assert.Throws<ArgumentException>(() => new RouteTableBuilder().Map(
+                "/a", _ => new ItemRoute("a"), f => f.Query(name, r => r.Id)));
+
+            Assert.Equal("name", exception.ParamName);
+            Assert.Contains("lone surrogate", exception.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain(name, exception.Message, StringComparison.Ordinal);
+        }
+    }
+
+    public static TheoryData<Action<RouteFormatBuilder<ItemRoute>>, string> UnsupportedQueryTypes => new()
+    {
+        { f => f.Query("q", _ => Half.One), "Half" },
+        { f => f.Query("q", _ => (DateTime?)null), "DateTime?" },
+        { f => f.Query("q", _ => new object()), "Object" },
+        { f => f.Query("q", _ => 'c'), "Char" },
+        { f => f.Query("q", r => (AppRoute)r), "AppRoute" },
+        { f => f.Query("q", _ => new Uri("/", UriKind.Relative)), "Uri" },
+    };
+
+    [Theory]
+    [MemberData(nameof(UnsupportedQueryTypes))]
+    public void AValueOfAnUnsupportedTypeIsRejectedByQuery(Action<RouteFormatBuilder<ItemRoute>> declare, string type)
+    {
+        var builder = new RouteTableBuilder();
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() => builder.Map(
+            "/a",
+            _ => new ItemRoute("a"),
+            declare));
+
+        Assert.Contains("A query value cannot be written as type", exception.Message, StringComparison.Ordinal);
+        Assert.Contains($"'{type}'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("ulong and any enum registered", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("convert the value to a string", exception.Message, StringComparison.Ordinal);
+        Assert.Empty(builder.Build().Definitions);
+    }
+
+    public static TheoryData<Action<RouteFormatBuilder<ItemRoute>>, string> CollectionQueryTypes => new()
+    {
+        { f => f.Query("q", _ => new[] { "a" }), "String[]" },
+        { f => f.Query("q", _ => new[] { 1 }), "Int32[]" },
+        { f => f.Query("q", _ => new List<int>()), "List<Int32>" },
+        { f => f.Query("q", _ => (IEnumerable<string>)[]), "IEnumerable<String>" },
+        { f => f.Query("q", _ => (IReadOnlyList<Guid>)[]), "IReadOnlyList<Guid>" },
+        { f => f.Query("q", _ => new HashSet<string>()), "HashSet<String>" },
+        { f => f.Query("q", _ => new Dictionary<string, string>()), "Dictionary<String, String>" },
+        { f => f.Query("q", _ => (ImmutableArray<int>?)null), "ImmutableArray<Int32>?" },
+    };
+
+    // A collection is not supported, and converting it to one string would write a value that the typed read of the
+    // item type rejects, so the message does not advise that.
+    [Theory]
+    [MemberData(nameof(CollectionQueryTypes))]
+    public void ACollectionIsRejectedByQueryWithoutAdvisingAString(
+        Action<RouteFormatBuilder<ItemRoute>> declare,
+        string type)
+    {
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() =>
+            new RouteTableBuilder().Map("/a", _ => new ItemRoute("a"), declare));
+
+        Assert.Contains("A query value cannot be written as type", exception.Message, StringComparison.Ordinal);
+        Assert.Contains($"'{type}'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("A collection is not one of them", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("several values for one name are not supported", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("convert", exception.Message, StringComparison.Ordinal);
+    }
+
+    // The path message for a collection is as it was.
+    [Fact]
+    public void ACollectionIsRejectedByPathAsBefore()
+    {
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() =>
+            new RouteTableBuilder().Map(
+                "/{id}",
+                c => new ItemRoute(c.Path("id")),
+                f => f.Path("id", _ => new[] { 1 })));
+
+        Assert.Contains("A path value cannot be written as type", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("'Int32[]'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("convert the value to a string", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("collection", exception.Message, StringComparison.Ordinal);
+    }
+
+    // The type is checked first, as for Path, so a type that can never be written fails even for a repeated name.
+    [Fact]
+    public void QueryChecksTheTypeBeforeTheName()
+    {
+        Assert.Throws<InvalidOperationException>(() => new RouteTableBuilder().Map(
+            "/a",
+            _ => new ItemRoute("a"),
+            f => f.Query("q", r => r.Id).Query("q", _ => Half.One)));
+    }
+
+    [Fact]
+    public void AQueryEnumThatIsNotRegisteredIsReportedByBuild()
+    {
+        RouteTableBuilder plain = new RouteTableBuilder()
+            .Map("/s", _ => new StatusRoute(Status.Open), f => f.Query("status", r => r.Status));
+        RouteTableBuilder nullable = new RouteTableBuilder()
+            .Map("/n", _ => new StatusRoute(Status.Open), f => f.Query("status", _ => (Status?)null));
+
+        foreach ((RouteTableBuilder builder, string template) in new[] { (plain, "/s"), (nullable, "/n") })
+        {
+            InvalidOperationException exception = Assert.Throws<InvalidOperationException>(builder.Build);
+            Assert.Contains(NotRegistered, exception.Message, StringComparison.Ordinal);
+            Assert.Contains("query value 'status'", exception.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("path parameter", exception.Message, StringComparison.Ordinal);
+            Assert.Contains(nameof(Status), exception.Message, StringComparison.Ordinal);
+            Assert.Contains($"{nameof(StatusRoute)}'", exception.Message, StringComparison.Ordinal);
+            Assert.Contains($"'{template}'", exception.Message, StringComparison.Ordinal);
+        }
+
+        RouteTable table = plain.AddEnumValueCodec<Status>().Build();
+        Assert.Equal("/s?status=Closed", table.Format(new StatusRoute(Status.Closed)));
+    }
+
+    // A query name is quoted in a message with its control characters escaped, so that it cannot break the line.
+    [Fact]
+    public void AQueryNameIsQuotedSafelyInMessages()
+    {
+        ArgumentException exception = Assert.Throws<ArgumentException>(() => new RouteTableBuilder().Map(
+            "/a",
+            _ => new ItemRoute("a"),
+            f => f.Query("a\nb", r => r.Id).Query("A\nB", r => r.Id)));
+
+        Assert.Contains("'a\\u000Ab'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("as 'a\\u000Ab'", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("\n", exception.Message, StringComparison.Ordinal);
+    }
+
+    // The spelling the name was first declared with is added only when it differs from the repeated one.
+    [Fact]
+    public void ARepeatedQueryNameIsNamedOnceWhenSpelledTheSame()
+    {
+        ArgumentException exception = Assert.Throws<ArgumentException>(() => new RouteTableBuilder().Map(
+            "/a",
+            _ => new ItemRoute("a"),
+            f => f.Query("page", r => r.Id).Query("page", r => r.Id)));
+
+        Assert.Contains("'page' is already declared;", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(", as ", exception.Message, StringComparison.Ordinal);
+    }
+
+    // The quoted name, escaped, is what a failure to write the value and an enum that is not registered name.
+    [Fact]
+    public void AQueryNameIsQuotedSafelyWhenAValueCannotBeWritten()
+    {
+        RouteTable table = new RouteTableBuilder()
+            .Map("/a", _ => new ItemRoute("a"), f => f.Query("a\nb", _ => double.NaN))
+            .Build();
+        RouteTableBuilder unregistered = new RouteTableBuilder()
+            .Map("/a", _ => new StatusRoute(Status.Open), f => f.Query("a\nb", r => r.Status));
+
+        ArgumentException notWritten = Assert.Throws<ArgumentException>(() => table.Format(new ItemRoute("a")));
+        InvalidOperationException notRegistered = Assert.Throws<InvalidOperationException>(unregistered.Build);
+
+        foreach (string message in new[] { notWritten.Message, notRegistered.Message })
+        {
+            Assert.Contains("query value 'a\\u000Ab'", message, StringComparison.Ordinal);
+            Assert.DoesNotContain("\n", message, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void AFormatBuilderCannotDeclareAQueryValueAfterMapReturns()
+    {
+        RouteFormatBuilder<ItemRoute>? kept = null;
+        var builder = new RouteTableBuilder();
+        builder.Map("/items", _ => new ItemRoute("a"), f =>
+        {
+            kept = f;
+            f.Query("q", r => r.Id);
+        });
+
+        Assert.Throws<InvalidOperationException>(() => kept!.Query("r", r => r.Id));
+        Assert.Equal("/items?q=a", builder.Build().Format(new ItemRoute("a")));
     }
 
     public sealed record ItemRoute(string Id) : AppRoute;
