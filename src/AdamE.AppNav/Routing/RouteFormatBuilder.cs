@@ -117,7 +117,9 @@ public sealed class RouteFormatBuilder<TRoute>
     /// <exception cref="InvalidOperationException">
     /// <typeparamref name="TValue"/> is a collection, such as <c>int[]</c>, which no codec can write; the message lists
     /// the supported types. Any other type that is not built in, an enum included, can be given a codec after the
-    /// mapping, so one that has none is not reported here, but by <see cref="RouteTableBuilder.Build"/>.
+    /// mapping, so one that has none is not reported here, but by <see cref="RouteTableBuilder.Build"/>. So is
+    /// <see cref="char"/> or <c>char?</c>, which cannot have a codec: <see cref="RouteTableBuilder.Build"/> reports
+    /// it with a message that says to write the value as a string.
     /// <para>-or-</para>
     /// The call that maps the route has returned, so the builder can no longer be used.
     /// </exception>
@@ -132,8 +134,8 @@ public sealed class RouteFormatBuilder<TRoute>
         ThrowIfCompleted();
 
         // Checked before the name, as the typed reads check the type first, so that a type that can never be written
-        // fails whatever the name. Only a collection can never be: any other type can be given a codec, before or
-        // after this mapping, so Build reports one that has none.
+        // fails whatever the name. Only a collection is rejected here: any other type can be given a codec, before or
+        // after this mapping, so Build reports one that has none, as it reports char, which can never have one.
         if (RouteValueTypes.IsCollection<TValue>())
             throw RouteValueTypes.UnsupportedType<TValue>(Unsupported, UnsupportedTail);
 
@@ -188,7 +190,8 @@ public sealed class RouteFormatBuilder<TRoute>
     /// <typeparamref name="TValue"/> is a collection, such as <c>string[]</c>; the message names
     /// <see cref="QueryValues{TValue}(string, Func{TRoute, IEnumerable{TValue}})"/>. Any other type that is not built
     /// in, an enum included, can be given a codec after the mapping, so one that has none is not reported here, but by
-    /// <see cref="RouteTableBuilder.Build"/>.
+    /// <see cref="RouteTableBuilder.Build"/>. So is <see cref="char"/> or <c>char?</c>, which cannot have a codec:
+    /// <see cref="RouteTableBuilder.Build"/> reports it with a message that says to write the value as a string.
     /// <para>-or-</para>
     /// The call that maps the route has returned, so the builder can no longer be used.
     /// </exception>
