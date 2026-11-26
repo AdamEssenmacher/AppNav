@@ -8,9 +8,10 @@ namespace AdamE.AppNav.Routing;
 /// Matches URIs to typed routes, using the templates mapped by a <see cref="RouteTableBuilder"/>.
 /// </summary>
 /// <remarks>
-/// A table is immutable once built, and safe to use from several threads at once: <see cref="Match(Uri)"/> and
-/// <see cref="Format(AppRoute)"/> read nothing that can change. A create function, or a value function of a format
-/// function, that is called from several threads must itself be safe to call that way.
+/// A table is immutable once built, and safe to use from several threads at once: <see cref="Match(Uri)"/>,
+/// <see cref="Format(AppRoute)"/> and <see cref="FormatUri(AppRoute, Uri)"/> read nothing that can change. A create
+/// function, or a value function of a format function, that is called from several threads must itself be safe to call
+/// that way.
 /// </remarks>
 public sealed class RouteTable
 {
@@ -172,7 +173,7 @@ public sealed class RouteTable
     {
         ArgumentNullException.ThrowIfNull(uri);
 
-        string path = ReadPath(uri, out int queryStart);
+        string path = UriReader.ReadPath(uri, out int queryStart);
 
         // The path is split once and each segment decoded at most once for all the definitions, so that allocation and
         // decoding grow with the path plus the definitions tried rather than with their product.
@@ -280,7 +281,9 @@ public sealed class RouteTable
     /// value that is only spaces then no longer matches. An absolute URI that is all ASCII, and any relative URI, keep
     /// them. With <c>/&#233;/new</c> and <c>/&#233;/{name}</c>, the name <c>new </c> is written as
     /// <c>/%C3%A9/new%20</c>, which matches as that name as a relative URI, while <c>https://app/%C3%A9/new%20</c>
-    /// opens the route of <c>/&#233;/new</c>.
+    /// opens the route of <c>/&#233;/new</c>. To write an absolute link, use <see cref="FormatUri(AppRoute, Uri)"/>,
+    /// which has no such limit: it checks the link it builds, and throws for one that would be read back differently
+    /// rather than return it.
     /// </para>
     /// <para>
     /// The table is not changed, and several threads can call this method and <see cref="Match(Uri)"/> at once.
@@ -318,6 +321,166 @@ public sealed class RouteTable
     {
         ArgumentNullException.ThrowIfNull(route);
 
+        return Write(route, out _);
+    }
+
+    /// <summary>
+    /// Writes a route as an absolute URI, behind the scheme and authority of a base URI, by the format function its
+    /// mapping was given.
+    /// </summary>
+    /// <param name="route">The route to write.</param>
+    /// <param name="baseUri">
+    /// The absolute URI whose scheme, user information, host and port the link is written behind, such as
+    /// <c>https://example.com</c> or <c>myapp:///</c>. Its path must be empty or <c>/</c>, and it must have no query
+    /// and no fragment.
+    /// </param>
+    /// <returns>
+    /// An absolute URI of the scheme, user information, host and port of <paramref name="baseUri"/>, followed by
+    /// exactly the text that <see cref="Format(AppRoute)"/> returns for the route, such as
+    /// <c>https://example.com/orders/42</c> or <c>myapp:///orders/42</c>, which <see cref="Match(Uri)"/> reads back
+    /// as that path and query. Pass the <see cref="Uri"/> itself, or its <see cref="Uri.AbsoluteUri"/>, to other
+    /// code; never its <see cref="Uri.ToString()"/> or string interpolation of it, which unescape characters such as
+    /// <c>%20</c> and can change the link when it is parsed again.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// The route is written once, exactly as <see cref="Format(AppRoute)"/> writes it: each value function is called
+    /// at most once, in the same order, and each failure of <see cref="Format(AppRoute)"/> is thrown unchanged. The
+    /// base is checked first, so a base that cannot be used is reported before any value function is called.
+    /// </para>
+    /// <para>
+    /// The base gives only the scheme and the authority, because <see cref="Match(Uri)"/> reads the whole path of a
+    /// link: written under <c>https://example.com/app</c>, the route of <c>/orders/{id:int}</c> would have the path
+    /// <c>/app/orders/42</c>, which its template does not match. Put a prefix that every link shares in the templates
+    /// instead. The scheme, user information, host and port are written as <see cref="Uri"/> writes them in the
+    /// <see cref="Uri.AbsoluteUri"/> of the base, with the scheme and a host name in lower case and a default port
+    /// left out. User information in the base is copied into every link written from it, so a credential in the base
+    /// travels with each link; no exception message includes it. A base with an empty authority, <c>myapp:///</c>,
+    /// gives a link with no host, <c>myapp:///orders/42</c>; one with a host, <c>myapp://host</c>, gives
+    /// <c>myapp://host/orders/42</c>, whose host <see cref="Match(Uri)"/> ignores; and one with no authority,
+    /// <c>myapp:</c> or <c>myapp:/</c>, gives <c>myapp:/orders/42</c>.
+    /// </para>
+    /// <para>
+    /// A base whose path is empty or <c>/</c> is accepted under any scheme whose links read back as written:
+    /// <c>mailto:a@b.c</c>, which <see cref="Uri"/> reads as user information and a host with an empty path, gives
+    /// <c>mailto:a@b.c/orders/42</c>, while <c>urn:isbn:1</c> and <c>about:blank</c> have a path and are refused. This
+    /// method promises that <see cref="Match(Uri)"/> reads the link back, not that the link is useful under its scheme.
+    /// </para>
+    /// <para>
+    /// When this method returns, the path and the query that <see cref="Match(Uri)"/> reads from the result are
+    /// exactly the text that was written. So everything <see cref="Format(AppRoute)"/> promises for that text as a
+    /// relative URI holds for the result: <see cref="Match(Uri)"/> of it selects the mapping that wrote it, and each
+    /// value reads back equal through the typed read of its type. Where <see cref="Uri"/> would read the link back
+    /// differently, this method throws rather than return it. That happens when the last value written ends with a
+    /// space and the URI contains a non-ASCII character, as the remarks on <see cref="Match(Uri)"/> describe, whether
+    /// the character is in a value, a literal, the user information or the host of the base. It also happens under a
+    /// scheme for which <see cref="Uri"/> changes the path or the query: <c>ftp</c> and the other schemes that have no
+    /// query in <see cref="Uri"/> refuse a link with a query; <c>file</c> and <c>vsmacros</c> refuse a value that
+    /// contains <c>/</c> in a segment that is not a catch-all, which they decode from <c>%2F</c>, while a catch-all
+    /// value's <c>/</c> is written as it is and is unaffected; and <c>net.tcp</c> and <c>net.pipe</c> refuse a path
+    /// value that contains <c>\</c>, which they read as <c>/</c>. The behaviour of <c>file</c> was established on
+    /// Unix-like platforms and can differ on Windows, where <see cref="Uri"/> treats file URIs differently; the check
+    /// runs on every platform, so the promise holds everywhere, even where which links are refused differs. No
+    /// shorter or changed link is ever returned in place of one that is refused.
+    /// </para>
+    /// <para>
+    /// This method checks the read-back with one <see cref="Uri"/>, the result, and calls no create function. The
+    /// table is not changed, and several threads can call this method, <see cref="Format(AppRoute)"/> and
+    /// <see cref="Match(Uri)"/> at once.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="route"/> or <paramref name="baseUri"/> is <see langword="null"/>.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// No mapping of exactly the type of <paramref name="route"/> has a format function, as for
+    /// <see cref="Format(AppRoute)"/>.
+    /// </exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="baseUri"/> is a relative URI, or a path such as <c>/</c> that the table reads as relative; or it
+    /// has a path other than <c>/</c>, a query or a fragment, even an empty one, as in <c>https://example.com?</c>; or
+    /// its host is an IPv6 address with a zone id, as in <c>http://[fe80::1%25en0]</c>, which <see cref="Uri"/>
+    /// leaves out of the text of a URI. The exception's <see cref="ArgumentException.ParamName"/> is <c>baseUri</c>,
+    /// and its message says what is wrong but never quotes the base, which can carry user information.
+    /// <para>-or-</para>
+    /// <see cref="Uri"/> does not read back the path and query written under the scheme of <paramref name="baseUri"/>.
+    /// The exception's <see cref="ArgumentException.ParamName"/> is <c>baseUri</c>, and its message names the scheme
+    /// alone.
+    /// <para>-or-</para>
+    /// <see cref="Uri"/> cannot parse the link written behind <paramref name="baseUri"/>, which no base or route is
+    /// known to cause. The exception's <see cref="ArgumentException.ParamName"/> is <c>baseUri</c>.
+    /// <para>-or-</para>
+    /// The last value written ends with a space, and the URI contains a non-ASCII character, so <see cref="Uri"/>
+    /// drops the space. The exception's <see cref="ArgumentException.ParamName"/> is <c>route</c>, and its message
+    /// names the route type and the template, but neither the value, the text nor the base.
+    /// <para>-or-</para>
+    /// A value of the route cannot be written, or the path written for it is matched first by the template of
+    /// another mapping, as for <see cref="Format(AppRoute)"/>, with the same
+    /// <see cref="ArgumentException.ParamName"/> and message.
+    /// </exception>
+    /// <exception cref="Exception">
+    /// Any exception that a value function throws, or that a list of query values throws while it is enumerated,
+    /// unchanged.
+    /// </exception>
+    public Uri FormatUri(AppRoute route, Uri baseUri)
+    {
+        ArgumentNullException.ThrowIfNull(route);
+        ArgumentNullException.ThrowIfNull(baseUri);
+
+        string authority = ReadAuthority(baseUri);
+        string text = Write(route, out RouteDefinition owner);
+        // No base that passes the checks above, and no text Format writes, is known to give a link that Uri cannot
+        // parse. Should one, it is refused in its own words, so that a UriFormatException never escapes and the
+        // message does not blame a scheme that may be fine.
+        if (!Uri.TryCreate(authority + text, UriKind.Absolute, out Uri? uri))
+        {
+            throw new ArgumentException(
+                $"The route type '{RouteValueTypes.DisplayName(route.GetType())}' cannot be written by the template " +
+                $"'{owner.Template.Value}' as an absolute URI: System.Uri cannot parse the link written behind the " +
+                "base URI. Use the relative text that Format returns.",
+                nameof(baseUri));
+        }
+
+        // Read as Match reads it, so that the check holds for what Match will see, and compared in place, so that a
+        // link read back unchanged costs no more strings than reading it does.
+        string path = UriReader.ReadPath(uri, out int queryStart);
+        ReadOnlySpan<char> query = UriReader.ReadQuery(uri, queryStart);
+        ReadOnlySpan<char> written = text;
+        int read = path.Length + query.Length;
+        bool readFromStart =
+            read <= written.Length && written.StartsWith(path) && written[path.Length..].StartsWith(query);
+        if (readFromStart && read == written.Length)
+            return uri;
+
+        // The message never quotes the value, the text or the base, any of which can carry a secret.
+        if (readFromStart && IsEncodedSpaces(written[read..]))
+        {
+            throw new ArgumentException(
+                $"The route type '{RouteValueTypes.DisplayName(route.GetType())}' cannot be written by the template " +
+                $"'{owner.Template.Value}' as an absolute URI: the last value written ends with a space, which " +
+                "System.Uri drops from the end of an absolute URI that contains a non-ASCII character, so the link " +
+                "would be read back differently. Write a value that does not end with a space, or use the relative " +
+                "text that Format returns. A base whose host and user information are ASCII avoids this only when " +
+                "nothing else in the link is non-ASCII.",
+                nameof(route));
+        }
+
+        throw SchemeChangesLink(baseUri);
+    }
+
+    // Names the scheme alone: the rest of the base can carry user information.
+    private static ArgumentException SchemeChangesLink(Uri baseUri)
+    {
+        return new ArgumentException(
+            $"A URI of the scheme '{baseUri.Scheme}' does not keep the link as written: System.Uri changes its path " +
+            "or query, so the link would be read back differently. Use a scheme whose URIs keep them, such as https " +
+            "or a custom scheme of the application.",
+            nameof(baseUri));
+    }
+
+    // Writes the route as Format describes, and gives the definition that wrote it, for a message about the text.
+    private string Write(AppRoute route, out RouteDefinition owner)
+    {
         Type type = route.GetType();
         if (!_formatters.TryGetValue(type, out (RouteFormatter Formatter, int Position) writer))
         {
@@ -337,6 +500,7 @@ public sealed class RouteTable
         string text = writer.Formatter.Format(route, out string path);
 
         // A definition ranked first has none above it that could match the path first, so it pays nothing more.
+        owner = _matchOrder[writer.Position];
         RouteDefinition? first = writer.Position == 0 ? null : FindMatchedFirst(path, writer.Position);
         if (first is null)
             return text;
@@ -345,7 +509,6 @@ public sealed class RouteTable
         // The capturing template can contain a literal equal to a value, as '/products/new' does for the name 'new',
         // but such a value is text the application wrote into its own template, not a secret. It says which template
         // matches, not which route opens, because that template's create function may still reject the value.
-        RouteDefinition owner = _matchOrder[writer.Position];
         throw new ArgumentException(
             $"The route type '{RouteValueTypes.DisplayName(type)}' cannot be written by the template " +
             $"'{owner.Template.Value}': the path it writes is matched first by the template " +
@@ -353,6 +516,63 @@ public sealed class RouteTable
             "instead. Change the templates so that they cannot match the same path, for example by constraining a " +
             "parameter or by giving one of them a literal of its own.",
             nameof(route));
+    }
+
+    // Returns the scheme, user information, host and port of a base, as the start of an absolute URI that a link's
+    // path follows, or throws when the base is not one that a link can be written behind. The base's path, query and
+    // fragment are refused rather than dropped or kept: Match reads the whole path, so a link under a base path would
+    // not match, and a link written after a query or a fragment would be read as part of it. An empty query or
+    // fragment counts, since Uri reports it as "?" or "#".
+    private static string ReadAuthority(Uri baseUri)
+    {
+        if (UriReader.IsReadAsRelative(baseUri))
+        {
+            throw new ArgumentException(
+                "The base URI must be an absolute URI with a scheme, such as 'https://example.com' or 'myapp:///'; a " +
+                "relative URI, or a path such as '/' that System.Uri makes a file URI, gives no scheme to write the " +
+                "link behind.",
+                nameof(baseUri));
+        }
+
+        string? part = baseUri.AbsolutePath is not ("" or "/") ? "path"
+            : baseUri.Query.Length > 0 ? "query"
+            : baseUri.Fragment.Length > 0 ? "fragment"
+            : null;
+        if (part is not null)
+        {
+            throw new ArgumentException(
+                $"The base URI has a {part}, but a base gives only the scheme, user information, host and port of a " +
+                "link. Match reads the whole path of a link, so a link written under a base path would not match " +
+                "this table. Put a path that every link shares in the templates instead.",
+                nameof(baseUri));
+        }
+
+        // Uri leaves the zone id of an IPv6 host out of AbsoluteUri and of every component it writes, and keeps it
+        // only in IdnHost and DnsSafeHost, so a link built from the base would silently name another address.
+        if (baseUri.HostNameType == UriHostNameType.IPv6 && baseUri.IdnHost.Contains('%'))
+        {
+            throw new ArgumentException(
+                "The base URI's host is an IPv6 address with a zone id, which System.Uri leaves out of the text of a " +
+                "URI, so the link would name a different address.",
+                nameof(baseUri));
+        }
+
+        return baseUri.GetComponents(UriComponents.SchemeAndServer | UriComponents.UserInfo, UriFormat.UriEscaped);
+    }
+
+    // Whether the text is one or more "%20", as Format writes a space and as Uri drops it from the end of a URI.
+    private static bool IsEncodedSpaces(ReadOnlySpan<char> text)
+    {
+        if (text.IsEmpty || text.Length % 3 != 0)
+            return false;
+
+        for (var i = 0; i < text.Length; i += 3)
+        {
+            if (!text.Slice(i, 3).SequenceEqual("%20"))
+                return false;
+        }
+
+        return true;
     }
 
     // Returns the definition that Match would select for a path that the definition at position wrote, when it is one
@@ -533,10 +753,6 @@ public sealed class RouteTable
                   "no text satisfies together, or make them rank differently, or remove one."));
     }
 
-    // Where the path ends and where the query starts are decided here together, so that the two always agree. The
-    // query itself is not read: queryStart is -1 for an absolute URI, whose query is Uri.Query, and otherwise the index
-    // in OriginalString of the '?' that starts it, or the length of the text when there is none, so that a URI that
-    // matches nothing, and a route that reads no query values, pay nothing for it.
     // Tells an attached debugger that an exception the create function threw is not handled here, which the attribute
     // on Match would otherwise keep it from stopping on. The debugger takes that only from a method that has the
     // attribute, so this one has it too. It always declines the exception, and without a debugger it does nothing.
@@ -545,25 +761,5 @@ public sealed class RouteTable
     {
         Debugger.BreakForUserUnhandledException(exception);
         return false;
-    }
-
-    private static string ReadPath(Uri uri, out int queryStart)
-    {
-        // A relative URI has no parsed parts: AbsolutePath and Query throw for one, so both are read from the text. On
-        // Unix-like platforms, new Uri("/settings?tab=1") is an implicit file URI whose AbsolutePath escapes the '?'
-        // into the path, so a file URI whose text starts with '/', where the caller wrote no file: scheme, is read
-        // from its text too, as the app-relative link it was meant to be.
-        if (uri.IsAbsoluteUri && !(uri.IsFile && uri.OriginalString.StartsWith('/')))
-        {
-            queryStart = -1;
-            return uri.AbsolutePath;
-        }
-
-        // A fragment starts at the first '#' and a query at the first '?' before it, so the path ends at whichever
-        // comes first.
-        string text = uri.OriginalString;
-        int end = text.AsSpan().IndexOfAny('?', '#');
-        queryStart = end >= 0 && text[end] == '?' ? end : text.Length;
-        return end < 0 ? text : text[..end];
     }
 }

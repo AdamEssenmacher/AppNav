@@ -552,7 +552,7 @@ Console.WriteLine(table.Match(new Uri(path, UriKind.Relative)).Route); // OrderR
 public sealed record OrderRoute(int Id) : AppRoute;
 ```
 
-`Format` returns the route as the text of a relative URI: its path and, when at least one query value is written, its query, as described in [Writing query values](#writing-query-values). It never writes a fragment. Full URIs, with a scheme and a host, are not written yet.
+`Format` returns the route as the text of a relative URI: its path and, when at least one query value is written, its query, as described in [Writing query values](#writing-query-values). It never writes a fragment. `FormatUri` writes the same text behind a scheme and a host, as an absolute URI, as described in [Writing a full URI](#writing-a-full-uri).
 
 #### Declaring the values
 
@@ -728,7 +728,7 @@ The template `/products/new` matches the path `/products/new` first, so a link w
 
 To fix the table, change the templates so that they cannot match the same path, for example by constraining a parameter or by giving one of them a literal of its own. With `/products/{id:int}` in place of `/products/{name}`, no value it writes is `new`. With `/products/by-name/{name}` in place of it, the two templates never match the same path, and `new` is written as `/products/by-name/new`.
 
-The promise is about `Match` of the returned text as a relative URI, `new Uri(text, UriKind.Relative)`, and of an absolute URI with that path and query. `System.Uri` changes the text of an absolute URI in one way: it drops `%20` sequences at the very end of an absolute URI that contains a non-ASCII character anywhere, including in the host the application puts in front of the text, as [What is read from a URI](#what-is-read-from-a-uri) describes. `Format` writes a non-ASCII character in a literal, a path value, a query name or a query value as percent-encoded bytes from `%80` to `%FF`, which count too. So the last value written, the last query value or the last path value when no query is written, loses its trailing spaces in such a link, and a path value that is only spaces then no longer matches. An absolute URI that is all ASCII, and any relative URI, keep them. Only the very end counts: a path value followed by a query keeps its spaces, and so does a query value followed by another. A path value that loses its space may also match another template:
+The promise is about `Match` of the returned text as a relative URI, `new Uri(text, UriKind.Relative)`, and of an absolute URI with that path and query, with one limit for the absolute URI. `System.Uri` changes the text of an absolute URI in one way: it drops `%20` sequences at the very end of an absolute URI that contains a non-ASCII character anywhere, including in the host the application puts in front of the text, as [What is read from a URI](#what-is-read-from-a-uri) describes. `Format` writes a non-ASCII character in a literal, a path value, a query name or a query value as percent-encoded bytes from `%80` to `%FF`, which count too. So the last value written, the last query value or the last path value when no query is written, loses its trailing spaces in such a link, and a path value that is only spaces then no longer matches. An absolute URI that is all ASCII, and any relative URI, keep them. Only the very end counts: a path value followed by a query keeps its spaces, and so does a query value followed by another. A path value that loses its space may also match another template:
 
 ```csharp
 RouteTable table = new RouteTableBuilder()
@@ -761,6 +761,66 @@ public sealed record SearchRoute(string Name, string? Q) : AppRoute;
 
 The host counts as well: `https://app/a/new%20?q=a%20` keeps every `%20`, while `https://é.example/a/new%20?q=a%20` reads `q` as `a`, although nothing `Format` wrote is non-ASCII.
 
+That limit is `Format`'s, for an absolute URI the application builds from its text. `FormatUri` has none, because it refuses the link: it builds the absolute URI itself, checks what `System.Uri` reads back from it, and throws rather than return one that would lose a space, as [Writing a full URI](#writing-a-full-uri) describes.
+
+#### Writing a full URI
+
+`FormatUri(route, baseUri)` writes a route as an absolute URI: the scheme and authority of `baseUri`, followed by exactly the text that `Format` returns for the route. It returns a `Uri`.
+
+```csharp
+RouteTable table = new RouteTableBuilder()
+    .Map("/orders/{id:int}",
+        c => new OrderRoute(c.Path<int>("id")),
+        format => format.Path("id", r => r.Id))
+    .Build();
+
+Uri web = table.FormatUri(new OrderRoute(42), new Uri("https://example.com"));
+Uri app = table.FormatUri(new OrderRoute(42), new Uri("myapp:///"));
+Console.WriteLine(web.AbsoluteUri);        // https://example.com/orders/42
+Console.WriteLine(app.AbsoluteUri);        // myapp:///orders/42
+Console.WriteLine(table.Match(app).Route); // OrderRoute { Id = 42 }
+
+public sealed record OrderRoute(int Id) : AppRoute;
+```
+
+The route is written once, as `Format` writes it, so each value function is called at most once and in the same order, and every failure of `Format` is thrown unchanged, with the same exception type, `ParamName` and message. `FormatUri` throws `ArgumentNullException` for a `null` route or base, then checks the base, before any value function is called, then writes the route, then checks the link.
+
+Pass the `Uri` itself, or its `AbsoluteUri`, to the code that opens or shares the link. Never pass its `ToString()`, or put it in an interpolated string such as `$"{uri}"`, which calls `ToString()`: `ToString()` unescapes characters such as `%20`, and its text can change the link when it is parsed again, as the example under the trailing space below shows.
+
+The base gives the scheme, user information, host and port of the link, and nothing else. They are written as `System.Uri` writes them in the base's `AbsoluteUri`: the scheme and a host name in lower case, a default port left out, and a non-ASCII host name in Unicode. So `https://user:pw@example.com:8443` gives `https://user:pw@example.com:8443/orders/42`, `https://example.com:443` gives `https://example.com/orders/42`, and `https://é.example` gives `https://é.example/orders/42`. `Match` reads none of them. User information in the base is copied into every link written from it, so a credential in the base travels with each link; no exception message includes it.
+
+- The base must be absolute. `FormatUri` throws `ArgumentException`, whose `ParamName` is `baseUri`, for a relative URI, and for `new Uri("/")`, which is a file URI on Unix-like platforms that the table [reads as relative](#what-is-read-from-a-uri).
+- Its path must be empty or `/`, and it must have no query and no fragment, not even an empty one, as in `https://example.com?` or `https://example.com#`. `Match` reads the whole path of a link, so a link written under a base path would not match: under `https://example.com/app`, `new OrderRoute(42)` would be `https://example.com/app/orders/42`, which `/orders/{id:int}` does not match. Rather than drop the path or write under it, `FormatUri` throws `ArgumentException`, whose `ParamName` is `baseUri`. Its message says whether the base has a path, a query or a fragment, and never quotes the base, which can carry user information. To give every link a prefix, put the prefix in the templates: map `/app/orders/{id:int}`, and `https://example.com` gives `https://example.com/app/orders/42`.
+- For a custom scheme with no host, give the base an empty authority, `myapp:///`, so that the link has three slashes, as in `myapp:///orders/42`. A base with a host, `myapp://host`, keeps it: `myapp://host/orders/42` has the host `host` and the path `/orders/42`. That is the host trap of [What is read from a URI](#what-is-read-from-a-uri) seen from the other side: `FormatUri` never writes the first segment of the path where a host would be read, as the hand-written `myapp://orders/42` does. A base with no authority, `myapp:` or `myapp:/`, gives `myapp:/orders/42`, which `Match` reads as the same path.
+- A base whose path is empty or `/` is accepted under any scheme whose links read back as written. `System.Uri` parses `mailto:`, `urn:`, `about:`, `data:` and `javascript:` as it parses a custom scheme, so `urn:` gives `urn:/orders/42`. `mailto:a@b.c` is accepted too, because `System.Uri` reads `a@b.c` as user information and a host, with an empty path, and it gives `mailto:a@b.c/orders/42`. `urn:isbn:1` and `about:blank` have a path and are refused. `FormatUri` promises that `Match` reads the link back, not that the link is useful under its scheme.
+- A host that is an IPv6 address with a zone id, as in `http://[fe80::1%25en0]:5000`, is refused with `ArgumentException`, whose `ParamName` is `baseUri`: `System.Uri` leaves the zone id out of the text of a URI, so the link would name a different address.
+
+When `FormatUri` returns, the path and the query that `Match` reads from the URI it returns are exactly the text that `Format` returns for the route. So everything that [What a round trip promises](#what-a-round-trip-promises) says of that text as a relative URI holds for the URI: `Match` of it selects the mapping that wrote it, and each value reads back equal through the typed read of its type. `FormatUri` checks this on the URI it built, reading its path and query as `Match` reads them, and throws `ArgumentException` rather than return a link that would read back differently. That happens in two ways.
+
+The first is a trailing space. The last value written ends with a space, and the URI contains a non-ASCII character anywhere: in a value, in a literal of the template, or in the user information or host of the base. `System.Uri` drops `%20` from the end of such a URI, as [What is read from a URI](#what-is-read-from-a-uri) describes, so the link would lose the space. The value written last is the last query value, or the last path value when no query is written; the last element of a list counts too. A value followed by another keeps its spaces, and so does every value of an all-ASCII URI:
+
+```csharp
+RouteTable table = new RouteTableBuilder()
+    .Map("/s/{name}",
+        c => new SearchRoute(c.Path("name"), c.TryGetQuery("q", out string? q) ? q : null),
+        format => format.Path("name", r => r.Name).Query("q", r => r.Q))
+    .Build();
+
+var idn = new Uri("https://é.example");
+var ascii = new Uri("https://example.com");
+Console.WriteLine(table.FormatUri(new SearchRoute("new ", "a"), idn).AbsoluteUri);    // https://é.example/s/new%20?q=a
+Console.WriteLine(table.FormatUri(new SearchRoute("new ", null), ascii).AbsoluteUri); // https://example.com/s/new%20
+table.FormatUri(new SearchRoute("new ", null), idn);                                  // throws ArgumentException
+
+public sealed record SearchRoute(string Name, string? Q) : AppRoute;
+```
+
+The second link keeps its space only as long as it is passed on as a `Uri` or as its `AbsoluteUri`: its `ToString()` is `https://example.com/s/new ` with the space unescaped, and `new Uri` of that text trims the space, so `Match` reads the name `new`.
+
+The exception's `ParamName` is `route`, and its message names the route type and the template, as in `The route type 'SearchRoute' cannot be written by the template '/s/{name}' as an absolute URI: the last value written ends with a space, which System.Uri drops from the end of an absolute URI that contains a non-ASCII character, so the link would be read back differently. Write a value that does not end with a space, or use the relative text that Format returns. A base whose host and user information are ASCII avoids this only when nothing else in the link is non-ASCII.` Like every `Format` failure, it never quotes the value or the text, and it does not quote the base either.
+
+The other way is a scheme under which `System.Uri` changes the path or the query. The schemes that have no query, such as `ftp`, [listed above](#what-is-read-from-a-uri), refuse a link with a query, though they write one without: `ftp://example.com` gives `ftp://example.com/s/new` for `new SearchRoute("new", null)`. `file` and `vsmacros` refuse a value that contains `/` in a segment that is not a catch-all, which they decode from `%2F`; a catch-all value's `/` is written as it is and is unaffected. `net.tcp` and `net.pipe` refuse a path value that contains `\`, which they read as `/`. The behaviour of `file` was established on Unix-like platforms and can differ on Windows, where `System.Uri` treats file URIs differently; the check runs on every platform, so the promise holds everywhere, even where which links are refused differs. The exception's `ParamName` is `baseUri`, and its message names the scheme alone: `A URI of the scheme 'ftp' does not keep the link as written: System.Uri changes its path or query, so the link would be read back differently. Use a scheme whose URIs keep them, such as https or a custom scheme of the application.` Under `http`, `https`, `ws`, `wss` and a custom scheme, `System.Uri` changes nothing that `Format` writes: `Format` writes no dot segment, writes every percent sequence in upper case, and encodes only characters that are not unreserved, so under those schemes a link is refused only for a trailing space.
+
 ### Threads
 
-A built table is immutable and safe to use from several threads at once, for `Match` and `Format` alike. Mapping more routes or registering more enums on the builder does not change a table it has already built; call `Build` again for a table that includes them. A builder itself is not thread-safe, and a create function or a value function of a format function that runs on several threads must be safe to call that way.
+A built table is immutable and safe to use from several threads at once, for `Match`, `Format` and `FormatUri` alike. Mapping more routes or registering more enums on the builder does not change a table it has already built; call `Build` again for a table that includes them. A builder itself is not thread-safe, and a create function or a value function of a format function that runs on several threads must be safe to call that way.
