@@ -3,8 +3,8 @@ using System.Collections.Frozen;
 namespace AdamE.AppNav.Routing;
 
 // Reads one value from a route and writes it as text, for a format function declared with RouteFormatBuilder.Path or
-// RouteFormatBuilder.Query. The type of the value is known only to the derived class, so that the route formatter that
-// calls it needs no type argument but the route's.
+// RouteFormatBuilder.Query, which ValueQueryWriter wraps. The type of the value is known only to the derived class, so
+// that the route formatter that calls it needs no type argument but the route's.
 internal abstract class ValueWriter<TRoute>
     where TRoute : AppRoute
 {

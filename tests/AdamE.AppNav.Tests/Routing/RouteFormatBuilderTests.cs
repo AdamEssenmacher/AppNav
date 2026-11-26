@@ -608,7 +608,9 @@ public sealed class RouteFormatBuilderTests
         Assert.Contains("A query value cannot be written as type", exception.Message, StringComparison.Ordinal);
         Assert.Contains($"'{type}'", exception.Message, StringComparison.Ordinal);
         Assert.Contains("A collection is not one of them", exception.Message, StringComparison.Ordinal);
-        Assert.Contains("several values for one name are not supported", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("declare several values for one name with QueryValues", exception.Message,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("not supported in this version", exception.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("convert", exception.Message, StringComparison.Ordinal);
     }
 
@@ -723,6 +725,328 @@ public sealed class RouteFormatBuilderTests
         Assert.Equal("/items?q=a", builder.Build().Format(new ItemRoute("a")));
     }
 
+    [Fact]
+    public void QueryValuesReturnsTheSameFormatBuilder()
+    {
+        RouteFormatBuilder<ItemRoute>? seen = null;
+        new RouteTableBuilder().Map("/{id}", c => new ItemRoute(c.Path("id")), f =>
+        {
+            seen = f;
+            Assert.Same(f, f.QueryValues("a", _ => new[] { "x" }));
+            Assert.Same(f, f.Path("id", r => r.Id));
+            Assert.Same(f, f.Query("b", r => r.Id));
+            Assert.Same(f, f.QueryValues("c", _ => new List<int>()));
+        });
+
+        Assert.NotNull(seen);
+    }
+
+    [Fact]
+    public void QueryValuesRejectsNullArguments()
+    {
+        var builder = new RouteTableBuilder();
+
+        Assert.Equal("name", Assert.Throws<ArgumentNullException>(() => builder.Map(
+            "/a", _ => new ItemRoute("a"), f => f.QueryValues(null!, _ => new[] { 1 }))).ParamName);
+        Assert.Equal("values", Assert.Throws<ArgumentNullException>(() => builder.Map(
+            "/a", _ => new ItemRoute("a"), f => f.QueryValues<string>("q", null!))).ParamName);
+
+        Assert.Empty(builder.Build().Definitions);
+    }
+
+    // The element types are those the read of a list accepts: every built-in type and any enum, never a nullable form.
+    [Fact]
+    public void QueryValuesAcceptsEveryTypeThatTheReadOfAListReads()
+    {
+        RouteTable table = new RouteTableBuilder()
+            .AddEnumValueCodec<Status>()
+            .Map("/a", _ => new ItemRoute("a"), f => f
+                .QueryValues("string", _ => new[] { "s" })
+                .QueryValues("bool", _ => new[] { true })
+                .QueryValues("guid", _ => new[] { Guid.Empty })
+                .QueryValues("decimal", _ => new[] { 1.5m })
+                .QueryValues("double", _ => new[] { 2.5 })
+                .QueryValues("float", _ => new[] { 3.5f })
+                .QueryValues("sbyte", _ => new sbyte[] { -1 })
+                .QueryValues("byte", _ => new byte[] { 1 })
+                .QueryValues("short", _ => new short[] { -2 })
+                .QueryValues("ushort", _ => new ushort[] { 2 })
+                .QueryValues("int", _ => new[] { -3 })
+                .QueryValues("uint", _ => new uint[] { 3 })
+                .QueryValues("long", _ => new long[] { -4 })
+                .QueryValues("ulong", _ => new ulong[] { 4 })
+                .QueryValues("status", _ => new[] { Status.Closed }))
+            .Build();
+
+        Assert.Equal(
+            "/a?string=s&bool=true&guid=00000000-0000-0000-0000-000000000000&decimal=1.5&double=2.5&float=3.5" +
+            "&sbyte=-1&byte=1&short=-2&ushort=2&int=-3&uint=3&long=-4&ulong=4&status=Closed",
+            table.Format(new ItemRoute("a")));
+    }
+
+    public static TheoryData<Action<RouteFormatBuilder<ItemRoute>>, string> UnsupportedListTypes => new()
+    {
+        { f => f.QueryValues("q", _ => new[] { Half.One }), "Half" },
+        { f => f.QueryValues("q", _ => new[] { DateTime.MinValue }), "DateTime" },
+        { f => f.QueryValues("q", _ => new DateTime?[] { null }), "DateTime?" },
+        { f => f.QueryValues("q", _ => new[] { new object() }), "Object" },
+        { f => f.QueryValues("q", _ => new[] { new Uri("/", UriKind.Relative) }), "Uri" },
+        { f => f.QueryValues("q", _ => new Dictionary<string, string>()), "KeyValuePair<String, String>" },
+    };
+
+    // The message lists the supported types without nullable forms, which a list does not have.
+    [Theory]
+    [MemberData(nameof(UnsupportedListTypes))]
+    public void AnElementOfAnUnsupportedTypeIsRejectedByQueryValues(
+        Action<RouteFormatBuilder<ItemRoute>> declare,
+        string type)
+    {
+        var builder = new RouteTableBuilder();
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() => builder.Map(
+            "/a",
+            _ => new ItemRoute("a"),
+            declare));
+
+        Assert.Contains("A list of query values cannot be written as type", exception.Message,
+            StringComparison.Ordinal);
+        Assert.Contains($"'{type}'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("ulong and any enum registered", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("convert the values to strings", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("nullable", exception.Message, StringComparison.Ordinal);
+        Assert.Empty(builder.Build().Definitions);
+    }
+
+    public static TheoryData<Action<RouteFormatBuilder<ItemRoute>>, string> NestedListTypes => new()
+    {
+        { f => f.QueryValues("q", _ => new[] { new[] { "a" } }), "String[]" },
+        { f => f.QueryValues("q", _ => new List<List<int>>()), "List<Int32>" },
+        { f => f.QueryValues("q", _ => new[] { new HashSet<string>() }), "HashSet<String>" },
+        { f => f.QueryValues("q", _ => new ImmutableArray<int>?[] { null }), "ImmutableArray<Int32>?" },
+    };
+
+    // An element that is itself a collection is told to be a list of its own, not to be converted to a string.
+    [Theory]
+    [MemberData(nameof(NestedListTypes))]
+    public void AnElementThatIsACollectionIsRejectedByQueryValues(
+        Action<RouteFormatBuilder<ItemRoute>> declare,
+        string type)
+    {
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() =>
+            new RouteTableBuilder().Map("/a", _ => new ItemRoute("a"), declare));
+
+        Assert.Contains($"'{type}'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("is itself a collection", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("convert", exception.Message, StringComparison.Ordinal);
+    }
+
+    // A string is a list of chars, so a function that returns one makes the element type char, and the message says
+    // to declare the string with Query rather than to convert the values to strings.
+    [Fact]
+    public void AStringGivenToQueryValuesIsToldToUseQuery()
+    {
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() =>
+            new RouteTableBuilder().Map("/a", _ => new ItemRoute("a"), f => f.QueryValues("q", r => r.Id)));
+
+        Assert.Contains("A string is one value", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("convert", exception.Message, StringComparison.Ordinal);
+    }
+
+    public static TheoryData<Action<RouteFormatBuilder<ItemRoute>>> NullableListTypes => new()
+    {
+        f => f.QueryValues("q", _ => new int?[] { 1 }),
+        f => f.QueryValues("q", _ => new List<Guid?>()),
+        f => f.QueryValues("q", _ => (IEnumerable<bool?>)[]),
+        f => f.QueryValues("q", _ => new Status?[] { Status.Open }),
+    };
+
+    // An element of a list is never absent, so a nullable element type is rejected, as the read of a list rejects it,
+    // whether or not the enum of a nullable enum is registered.
+    [Theory]
+    [MemberData(nameof(NullableListTypes))]
+    public void ANullableElementTypeIsRejectedByQueryValues(Action<RouteFormatBuilder<ItemRoute>> declare)
+    {
+        foreach (RouteTableBuilder builder in new[] { new RouteTableBuilder(), new RouteTableBuilder()
+                     .AddEnumValueCodec<Status>() })
+        {
+            InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() => builder.Map(
+                "/a",
+                _ => new ItemRoute("a"),
+                declare));
+
+            Assert.Contains("never absent", exception.Message, StringComparison.Ordinal);
+            Assert.Empty(builder.Build().Definitions);
+        }
+    }
+
+    [Fact]
+    public void AListEnumThatIsNotRegisteredIsReportedByBuild()
+    {
+        RouteTableBuilder builder = new RouteTableBuilder()
+            .Map("/s", _ => new StatusRoute(Status.Open), f => f.QueryValues("status", r => new[] { r.Status }));
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(builder.Build);
+
+        Assert.Contains(NotRegistered, exception.Message, StringComparison.Ordinal);
+        Assert.Contains("query value 'status'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains($"{nameof(Status)}'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains($"{nameof(StatusRoute)}'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("'/s'", exception.Message, StringComparison.Ordinal);
+
+        RouteTable table = builder.AddEnumValueCodec<Status>().Build();
+        Assert.Equal("/s?status=Closed", table.Format(new StatusRoute(Status.Closed)));
+    }
+
+    // One name has one declaration, whichever method made it and whichever came first, compared ordinally without
+    // regard to case.
+    [Theory]
+    [InlineData("tag", "tag")]
+    [InlineData("tag", "TAG")]
+    [InlineData("Tag", "tAg")]
+    [InlineData("", "")]
+    [InlineData("\u00e9", "\u00c9")]
+    public void AQueryNameIsDeclaredOnceAcrossQueryAndQueryValues(string first, string second)
+    {
+        var declarations = new (string Description, Action<RouteFormatBuilder<ItemRoute>> Declare)[]
+        {
+            ("Query, QueryValues", f => f.Query(first, r => r.Id).Query("other", r => r.Id)
+                .QueryValues(second, _ => new[] { 1 })),
+            ("QueryValues, Query", f => f.QueryValues(first, _ => new[] { "a" }).QueryValues("other", _ => new[] { 1 })
+                .Query(second, r => r.Id)),
+            ("QueryValues, QueryValues", f => f.QueryValues(first, _ => new[] { "a" })
+                .QueryValues(second, _ => new[] { 2 })),
+        };
+
+        foreach ((string description, Action<RouteFormatBuilder<ItemRoute>> declare) in declarations)
+        {
+            var builder = new RouteTableBuilder();
+
+            ArgumentException exception = Assert.Throws<ArgumentException>(() => builder.Map(
+                "/a",
+                _ => new ItemRoute("a"),
+                declare));
+
+            Assert.True(exception.ParamName == "name", description);
+            Assert.Contains(AlreadyDeclared, exception.Message, StringComparison.Ordinal);
+            Assert.Empty(builder.Build().Definitions);
+        }
+    }
+
+    // A repeated name is reported the same way by both methods, with the first spelling when it differs.
+    [Fact]
+    public void ARepeatedListNameIsNamedAsAQueryValue()
+    {
+        ArgumentException same = Assert.Throws<ArgumentException>(() => new RouteTableBuilder().Map(
+            "/a",
+            _ => new ItemRoute("a"),
+            f => f.Query("tag", r => r.Id).QueryValues("tag", _ => new[] { "a" })));
+        ArgumentException spelled = Assert.Throws<ArgumentException>(() => new RouteTableBuilder().Map(
+            "/a",
+            _ => new ItemRoute("a"),
+            f => f.QueryValues("tag", _ => new[] { "a" }).Query("Tag", r => r.Id)));
+
+        Assert.Equal("name", same.ParamName);
+        Assert.Equal("name", spelled.ParamName);
+        Assert.Contains(AlreadyDeclared, same.Message, StringComparison.Ordinal);
+        Assert.Contains(", as 'tag'", spelled.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void QueryValuesChecksTheTypeBeforeTheName()
+    {
+        Assert.Throws<InvalidOperationException>(() => new RouteTableBuilder().Map(
+            "/a",
+            _ => new ItemRoute("a"),
+            f => f.Query("q", r => r.Id).QueryValues("q", _ => new[] { Half.One })));
+        Assert.Throws<InvalidOperationException>(() => new RouteTableBuilder().Map(
+            "/a",
+            _ => new ItemRoute("a"),
+            f => f.QueryValues("q\ud800", _ => new int?[] { 1 })));
+    }
+
+    [Fact]
+    public void AListNameWithALoneSurrogateIsRejected()
+    {
+        foreach (string name in new[] { "a\ud800", "\udc00", "\ud800\ud800" })
+        {
+            ArgumentException exception = Assert.Throws<ArgumentException>(() => new RouteTableBuilder().Map(
+                "/a", _ => new ItemRoute("a"), f => f.QueryValues(name, _ => new[] { "x" })));
+
+            Assert.Equal("name", exception.ParamName);
+            Assert.Contains("lone surrogate", exception.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain(name, exception.Message, StringComparison.Ordinal);
+        }
+    }
+
+    // A list can have the empty name, and the name of a path parameter, which is read separately.
+    [Fact]
+    public void AListNameCanBeEmptyOrThatOfAPathParameter()
+    {
+        RouteTable table = new RouteTableBuilder()
+            .Map(
+                "/p/{id}",
+                c => new PairRoute(c.Path("id"), string.Join(",", c.GetQueryValues("ID"))),
+                f => f.QueryValues("ID", r => r.B.Split(',')).Path("id", r => r.A).QueryValues("", _ => new[] { 1 }))
+            .Build();
+
+        string text = table.Format(new PairRoute("x", "y,z"));
+
+        Assert.Equal("/p/x?ID=y&ID=z&=1", text);
+        Assert.Equal(new PairRoute("x", "y,z"), table.Match(new Uri(text, UriKind.Relative)).Route);
+    }
+
+    [Fact]
+    public void AFormatBuilderCannotDeclareAListAfterMapReturns()
+    {
+        RouteFormatBuilder<ItemRoute>? kept = null;
+        var builder = new RouteTableBuilder();
+        builder.Map("/items", _ => new ItemRoute("a"), f =>
+        {
+            kept = f;
+            f.QueryValues("q", r => new[] { r.Id });
+        });
+
+        Assert.Throws<InvalidOperationException>(() => kept!.QueryValues("r", r => new[] { r.Id }));
+        Assert.Throws<InvalidOperationException>(() => kept!.QueryValues("r", _ => new[] { Half.One }));
+        Assert.Equal("/items?q=a", builder.Build().Format(new ItemRoute("a")));
+    }
+
+    // TValue is inferred from the function for the common shapes of a list, a struct and a registered enum included.
+    [Fact]
+    public void TheElementTypeIsInferredFromCommonListShapes()
+    {
+        var route = new ShapesRoute(
+            ["a", "b"],
+            [1, 2],
+            [new Guid("6f9619ff-8b86-d011-b42d-00cf4fc964ff")],
+            ["h"],
+            [3, 4],
+            Longs(),
+            [Status.Open, Status.Closed]);
+        RouteTable table = new RouteTableBuilder()
+            .AddEnumValueCodec<Status>()
+            .Map("/s", _ => route, f => f
+                .QueryValues("array", r => r.Array)
+                .QueryValues("list", r => r.List)
+                .QueryValues("readOnly", r => r.ReadOnly)
+                .QueryValues("set", r => r.Set)
+                .QueryValues("immutable", r => r.Immutable)
+                .QueryValues("enumerable", r => r.Enumerable)
+                .QueryValues("enum", r => r.Statuses))
+            .Build();
+
+        Assert.Equal(
+            "/s?array=a&array=b&list=1&list=2&readOnly=6f9619ff-8b86-d011-b42d-00cf4fc964ff&set=h&immutable=3" +
+            "&immutable=4&enumerable=-5&enumerable=6&enum=Open&enum=Closed",
+            table.Format(route));
+
+        static IEnumerable<long> Longs()
+        {
+            yield return -5;
+            yield return 6;
+        }
+    }
+
     public sealed record ItemRoute(string Id) : AppRoute;
 
     private sealed record PairRoute(string A, string B) : AppRoute;
@@ -730,6 +1054,15 @@ public sealed class RouteFormatBuilderTests
     private sealed record HomeRoute : AppRoute;
 
     private sealed record StatusRoute(Status Status) : AppRoute;
+
+    private sealed record ShapesRoute(
+        string[] Array,
+        List<int> List,
+        IReadOnlyList<Guid> ReadOnly,
+        HashSet<string> Set,
+        ImmutableArray<int> Immutable,
+        IEnumerable<long> Enumerable,
+        Status[] Statuses) : AppRoute;
 
     private record BaseRoute(string Id) : AppRoute;
 

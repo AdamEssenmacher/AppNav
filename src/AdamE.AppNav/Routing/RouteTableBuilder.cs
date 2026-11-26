@@ -70,10 +70,11 @@ public sealed class RouteTableBuilder
     /// <param name="format">
     /// Declares, on the <see cref="RouteFormatBuilder{TRoute}"/> it receives, a function that reads the value of each
     /// parameter of the template from a route, as in <c>format =&gt; format.Path("id", r =&gt; r.Id)</c>, and one for
-    /// each query value the route is written with, as in <c>.Query("page", r =&gt; r.Page)</c>. It is called once,
-    /// here, and must declare every parameter of the template: required, optional and catch-all. Query values are
-    /// optional, one value for each name. For a template with no parameters and a route with no query values, pass an
-    /// action that declares nothing, such as <c>_ =&gt; { }</c>. An exception it throws propagates unchanged.
+    /// each query value the route is written with, as in <c>.Query("page", r =&gt; r.Page)</c>, or list of values of
+    /// one name, as in <c>.QueryValues("tag", r =&gt; r.Tags)</c>. It is called once, here, and must declare every
+    /// parameter of the template: required, optional and catch-all. Query values are optional, one declaration for
+    /// each name. For a template with no parameters and a route with no query values, pass an action that declares
+    /// nothing, such as <c>_ =&gt; { }</c>. An exception it throws propagates unchanged.
     /// </param>
     /// <returns>This builder, so that calls can be chained.</returns>
     /// <remarks>
@@ -112,16 +113,19 @@ public sealed class RouteTableBuilder
     /// <paramref name="format"/> declared a name that is not a parameter of the template, or declared a parameter
     /// twice, as <see cref="RouteFormatBuilder{TRoute}.Path{TValue}(string, Func{TRoute, TValue})"/> describes, or
     /// declared a query value name twice or one with a lone surrogate, as
-    /// <see cref="RouteFormatBuilder{TRoute}.Query{TValue}(string, Func{TRoute, TValue})"/> describes; the
-    /// exception's <see cref="ArgumentException.ParamName"/> is <c>name</c>.
+    /// <see cref="RouteFormatBuilder{TRoute}.Query{TValue}(string, Func{TRoute, TValue})"/> and
+    /// <see cref="RouteFormatBuilder{TRoute}.QueryValues{TValue}(string, Func{TRoute, IEnumerable{TValue}})"/>
+    /// describe; the exception's <see cref="ArgumentException.ParamName"/> is <c>name</c>.
     /// <para>-or-</para>
     /// <typeparamref name="TRoute"/> is abstract, which happens when it is inferred from a create function whose
     /// result is a base type. The exception's <see cref="ArgumentException.ParamName"/> is <c>TRoute</c>.
     /// </exception>
     /// <exception cref="InvalidOperationException">
     /// <paramref name="format"/> declared a value of a type that cannot be written, as
-    /// <see cref="RouteFormatBuilder{TRoute}.Path{TValue}(string, Func{TRoute, TValue})"/> and
-    /// <see cref="RouteFormatBuilder{TRoute}.Query{TValue}(string, Func{TRoute, TValue})"/> describe.
+    /// <see cref="RouteFormatBuilder{TRoute}.Path{TValue}(string, Func{TRoute, TValue})"/>,
+    /// <see cref="RouteFormatBuilder{TRoute}.Query{TValue}(string, Func{TRoute, TValue})"/> and
+    /// <see cref="RouteFormatBuilder{TRoute}.QueryValues{TValue}(string, Func{TRoute, IEnumerable{TValue}})"/>
+    /// describe.
     /// </exception>
     public RouteTableBuilder Map<TRoute>(
         string template,
