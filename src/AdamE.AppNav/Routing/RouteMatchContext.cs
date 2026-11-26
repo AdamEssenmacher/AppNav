@@ -531,12 +531,6 @@ public sealed class RouteMatchContext
 
     private IReadOnlyDictionary<string, IReadOnlyList<string>> ParseQuery()
     {
-        if (_queryStart < 0)
-            return QueryString.Parse(SourceUri.Query);
-
-        // The query of a relative URI ends at the first '#' after its '?', and is parsed from the text in place.
-        ReadOnlySpan<char> query = SourceUri.OriginalString.AsSpan(_queryStart);
-        int fragment = query.IndexOf('#');
-        return QueryString.Parse(fragment < 0 ? query : query[..fragment]);
+        return QueryString.Parse(UriReader.ReadQuery(SourceUri, _queryStart));
     }
 }
