@@ -656,10 +656,17 @@ Console.WriteLine(table.Format(new ProductsRoute(null, ["b", "a", "b"]))); // /p
 Console.WriteLine(table.Format(new ProductsRoute(2, [])));                 // /products?page=2
 Console.WriteLine(table.Format(new ProductsRoute(null, [""])));            // /products?tag=
 
-public sealed record ProductsRoute(int? Page, IReadOnlyList<string> Tags) : AppRoute;
+public sealed record ProductsRoute(int? Page, IReadOnlyList<string> Tags) : AppRoute
+{
+    // A record compares a list member by reference, so this route compares its tags by their elements.
+    public bool Equals(ProductsRoute? other) =>
+        other is not null && Page == other.Page && Tags.SequenceEqual(other.Tags);
+
+    public override int GetHashCode() => HashCode.Combine(Page, Tags.Count);
+}
 ```
 
-Matching `/products?page=2&tag=a&tag=b` gives a `ProductsRoute` whose tags are `a` and `b`, but a record compares a list member by reference, so it is not equal to the route that was written, as [What a round trip promises](#what-a-round-trip-promises) explains.
+The route defines its own equality because a record compares a list member by reference, and [The route table](#the-route-table) asks for routes whose members compare by value. With it, matching `/products?page=2&tag=a&tag=b` gives a route equal to `new ProductsRoute(2, ["a", "b"])`. Without it, the matched route would have the same tags and still not be equal to the route that was written, as [What a round trip promises](#what-a-round-trip-promises) explains.
 
 - The element type is one that `GetQueryValues<T>` reads: `string`, `bool`, `Guid`, `decimal`, `double`, `float`, the eight integer types or a registered enum, each written as the same canonical text as a single value. It is inferred from the function, so a function that returns `string[]`, `List<int>`, `IReadOnlyList<Guid>`, `HashSet<string>`, `ImmutableArray<int>` or `IEnumerable<long>` needs no type argument. A function that returns only `null` or `[]` has no type to infer from; give it, as in `QueryValues<string>("tag", _ => [])`. A default `ImmutableArray<T>`, which is what an unset member of that type holds, is neither `null` nor empty: enumerating it throws `InvalidOperationException`, which propagates unchanged, as any exception from the list does.
 - A nullable element type, such as `int?`, is not supported, since an element of a list is never absent, and neither is a collection, so a list of lists cannot be written. `QueryValues` throws `InvalidOperationException` for either, and for any other type. For the nullable form of a supported type or of an enum, the message names the type to declare instead; another nullable type, such as `DateTime?`, gets the message for an unsupported type. A string given to `QueryValues` is a list of `char`, and its message says to declare it with `Query`; a list of lists gets a message that says to declare each list under its own name. As for `Query`, `Build` reports an enum that is not registered.
