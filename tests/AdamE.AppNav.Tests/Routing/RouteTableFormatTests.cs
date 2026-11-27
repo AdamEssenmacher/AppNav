@@ -45,7 +45,7 @@ public sealed class RouteTableFormatTests
     {
         RouteTable table = new RouteTableBuilder().Build();
 
-        Assert.Equal("route", Assert.Throws<ArgumentNullException>(() => table.Format(null!)).ParamName);
+        Assert.Equal("route", Assert.Throws<ArgumentNullException>(() => table.Format((AppRoute)null!)).ParamName);
     }
 
     [Fact]
@@ -1000,6 +1000,31 @@ public sealed class RouteTableFormatTests
         Assert.InRange(nullBytes - plainBytes, long.MinValue, 0);
     }
 
+    // A table that declares metadata keys writes a route alone, and a request with no metadata, at no more cost than a
+    // table that declares none.
+    [Fact]
+    public void FormatAllocatesNothingMoreForDeclaredMetadataKeys()
+    {
+        RouteTable plain = TextTable("/products/{id}");
+        RouteTable declared = new RouteTableBuilder()
+            .Map("/products/{id}", c => new TextRoute(c.Path("id")), f => f.Path("id", r => r.Text))
+            .AddQueryMetadata(new RouteMetadataKey<string>("campaign"))
+            .AddQueryMetadata(new RouteMetadataKey<int>("step"))
+            .Build();
+        var route = new TextRoute("widget");
+
+        var request = new AppRouteRequest(route);
+
+        Assert.Equal("/products/widget", declared.Format(route));
+        Assert.Equal("/products/widget", declared.Format(request));
+        long plainBytes = AllocatedBytesPerFormat(plain, route);
+        long declaredBytes = AllocatedBytesPerFormat(declared, route);
+        long requestBytes = AllocatedBytesPerFormat(declared, request);
+
+        Assert.InRange(declaredBytes - plainBytes, long.MinValue, 0);
+        Assert.InRange(requestBytes - plainBytes, long.MinValue, 0);
+    }
+
     // A value type is written without a box. Each pair writes the same text, one from the value and one from the
     // value's own text, which the value function makes, so both do the same work to make the text and only a box
     // could tell them apart. Each box would be at least 24 bytes.
@@ -1932,16 +1957,27 @@ public sealed class RouteTableFormatTests
     // several samples is what the calls themselves allocate.
     private static long AllocatedBytesPerFormat(RouteTable table, AppRoute route)
     {
+        return AllocatedBytesPerCall(() => table.Format(route));
+    }
+
+    private static long AllocatedBytesPerFormat(RouteTable table, AppRouteRequest request)
+    {
+        return AllocatedBytesPerCall(() => table.Format(request));
+    }
+
+    // The delegate is made once, before anything is measured, and calling it allocates nothing of its own.
+    private static long AllocatedBytesPerCall(Func<string> format)
+    {
         const int Calls = 50;
         for (var i = 0; i < 200; i++)
-            table.Format(route);
+            format();
 
         long least = long.MaxValue;
         for (var sample = 0; sample < 5; sample++)
         {
             long before = GC.GetAllocatedBytesForCurrentThread();
             for (var i = 0; i < Calls; i++)
-                table.Format(route);
+                format();
 
             least = Math.Min(least, (GC.GetAllocatedBytesForCurrentThread() - before) / Calls);
         }

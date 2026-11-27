@@ -185,7 +185,8 @@ public sealed class RouteTableFormatUriTests
 
         Assert.Equal(
             "route",
-            Assert.Throws<ArgumentNullException>(() => table.FormatUri(null!, new Uri("https://h"))).ParamName);
+            Assert.Throws<ArgumentNullException>(
+                () => table.FormatUri((AppRoute)null!, new Uri("https://h"))).ParamName);
         Assert.Equal(
             "baseUri",
             Assert.Throws<ArgumentNullException>(() => table.FormatUri(new IdRoute(1), null!)).ParamName);
@@ -456,7 +457,9 @@ public sealed class RouteTableFormatUriTests
         AssertBaseRejected(table, badBase, HasPath, new UnmappedRoute());
         AssertBaseRejected(table, new Uri("orders", UriKind.Relative), NotAbsolute, new UnmappedRoute());
         Assert.Equal(0, calls);
-        Assert.Equal("route", Assert.Throws<ArgumentNullException>(() => table.FormatUri(null!, badBase)).ParamName);
+        Assert.Equal(
+            "route",
+            Assert.Throws<ArgumentNullException>(() => table.FormatUri((AppRoute)null!, badBase)).ParamName);
         Assert.Equal(
             "baseUri",
             Assert.Throws<ArgumentNullException>(() => table.FormatUri(new UnmappedRoute(), null!)).ParamName);

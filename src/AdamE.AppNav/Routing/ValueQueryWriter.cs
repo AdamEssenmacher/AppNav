@@ -26,9 +26,6 @@ internal sealed class ValueQueryWriter<TRoute> : QueryWriter<TRoute>
     public override QueryValueProblem Write(TRoute route, ref QueryBuilder query)
     {
         ValueTextProblem problem = _writer.Write(route, out string? text);
-        if (problem != ValueTextProblem.None || text is null)
-            return ProblemOf(problem);
-
-        return query.TryAppend(EncodedName, text) ? QueryValueProblem.None : QueryValueProblem.LoneSurrogate;
+        return query.AppendValue(EncodedName, problem, text);
     }
 }
