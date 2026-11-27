@@ -4,5 +4,6 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/AdamE.AppNav.Tests/AdamE.AppNav.Tests.csproj" />
+    <Project Path="tests/AdamE.AppNav.Tests.OtherAssembly/AdamE.AppNav.Tests.OtherAssembly.csproj" />
   </Folder>
 </Solution>

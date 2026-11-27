@@ -27,6 +27,12 @@ internal static class RouteTypeNames
     public const string GenericOfCatalogDetail =
         "AdamE.AppNav.Tests.Routing.GenericRoute`1[AdamE.AppNav.Tests.Routing.Catalog.DetailRoute]";
 
+    // Orders.DetailRoute of this assembly and that of the other test assembly share the full name as well, so only the
+    // simple names of their assemblies tell them apart.
+    public const string OrdersDetailOfTests = "AdamE.AppNav.Tests.Routing.Orders.DetailRoute, AdamE.AppNav.Tests";
+    public const string OrdersDetailOfOtherAssembly =
+        "AdamE.AppNav.Tests.Routing.Orders.DetailRoute, AdamE.AppNav.Tests.OtherAssembly";
+
     // The error for a constraint that is not added is the reference for how a message writes a route type, so a
     // message that names the same type is checked to write it the same way, and never in the Type.ToString() form.
     public static void AssertWrittenAsInTheUnboundConstraintError<TRoute>(string message, string name)

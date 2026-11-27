@@ -138,10 +138,18 @@ internal static class RouteValueTypes
 
     // The names for a message that names two route types, as the same-template and ambiguity errors of a table do.
     // A message that names one type can rely on what surrounds it, but the reader of one that names two must be able
-    // to tell the mappings apart, so when two different types have the same short name, both are written with their
-    // namespace. Two types of the same namespace can still share it, when they differ only in generic arguments
-    // whose own short names are the same, as GenericRoute<X> closed over X of two namespaces; the namespace does not
-    // help there, so both are then written as Type.ToString() writes them, which names every namespace involved.
+    // to tell the mappings apart, so each step below is taken only while the one before it writes two different types
+    // alike. The same type twice, or two types of different short names, are written by their short names. Two
+    // different types of the same short name are written with their namespace. Two types of the same namespace can
+    // still share it, when they differ only in generic arguments whose own short names are the same, as
+    // GenericRoute<X> closed over X of two namespaces, so both are then written as Type.ToString() writes them, which
+    // names every namespace involved. Two types of the same full name declared in two assemblies are still alike
+    // there, so each is then followed by the simple name of its assembly. Two assemblies can share that name too, as
+    // two versions of one do, and the same generic definition can be closed over arguments of two assemblies; both
+    // are then written as their assembly-qualified names, which carry the version, culture and public key token of
+    // every assembly involved. When even those are alike, as for one assembly loaded twice, or there are none,
+    // nothing is left to tell the types apart, so the text of the step before is kept: two different route types are
+    // written identically only when not even their assembly-qualified names differ.
     public static (string First, string Second) DisplayNames(Type first, Type second)
     {
         string firstName = DisplayName(first);
@@ -151,8 +159,24 @@ internal static class RouteValueTypes
 
         firstName = QualifiedName(first, firstName);
         secondName = QualifiedName(second, secondName);
-        return string.Equals(firstName, secondName, StringComparison.Ordinal)
-            ? (first.ToString(), second.ToString())
+        if (!string.Equals(firstName, secondName, StringComparison.Ordinal))
+            return (firstName, secondName);
+
+        firstName = first.ToString();
+        secondName = second.ToString();
+        if (!string.Equals(firstName, secondName, StringComparison.Ordinal))
+            return (firstName, secondName);
+
+        firstName = $"{firstName}, {first.Assembly.GetName().Name}";
+        secondName = $"{secondName}, {second.Assembly.GetName().Name}";
+        if (!string.Equals(firstName, secondName, StringComparison.Ordinal))
+            return (firstName, secondName);
+
+        string? firstFullName = first.AssemblyQualifiedName;
+        string? secondFullName = second.AssemblyQualifiedName;
+        return firstFullName is not null && secondFullName is not null &&
+               !string.Equals(firstFullName, secondFullName, StringComparison.Ordinal)
+            ? (firstFullName, secondFullName)
             : (firstName, secondName);
     }
 

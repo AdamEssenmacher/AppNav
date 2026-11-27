@@ -1,8 +1,11 @@
+extern alias OtherAssembly;
+
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 using AdamE.AppNav.Routing;
 using Xunit;
+using OtherOrders = OtherAssembly::AdamE.AppNav.Tests.Routing.Orders;
 
 namespace AdamE.AppNav.Tests.Routing;
 
@@ -393,6 +396,22 @@ public sealed class RouteTableAmbiguousTemplateTests
             message,
             $"'{RouteTypeNames.GenericOfOrdersDetail}'",
             $"'{RouteTypeNames.GenericOfCatalogDetail}'");
+    }
+
+    [Fact]
+    public void TheAmbiguityMessageWritesRouteTypesOfTheSameFullNameWithTheirAssemblies()
+    {
+        string message = PairMessage<Orders.DetailRoute, OtherOrders.DetailRoute>();
+        string reversed = PairMessage<OtherOrders.DetailRoute, Orders.DetailRoute>();
+
+        AssertInOrder(
+            message,
+            $"'{RouteTypeNames.OrdersDetailOfTests}'",
+            $"'{RouteTypeNames.OrdersDetailOfOtherAssembly}'");
+        AssertInOrder(
+            reversed,
+            $"'{RouteTypeNames.OrdersDetailOfOtherAssembly}'",
+            $"'{RouteTypeNames.OrdersDetailOfTests}'");
     }
 
     [Fact]
