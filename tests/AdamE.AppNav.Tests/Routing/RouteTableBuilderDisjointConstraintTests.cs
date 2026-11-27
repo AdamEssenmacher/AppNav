@@ -10,7 +10,10 @@ public sealed class RouteTableBuilderDisjointConstraintTests
 {
     private const string FewerThanTwo = "takes two or more constraint names";
     private const string NotValid = "is not valid";
-    private const string Reserved = "is reserved";
+    // The reason every reserved-name message gives, in the same words, whichever method refuses the name.
+    private const string Reserved =
+        "is reserved: a template that named it would look like a built-in constraint of that type, so no " +
+        "constraint can be added with that name";
     private const string GivenTwice = "is given twice";
     private const string NotAdded = "neither built in nor added on this builder";
     private const string NamedByDeclare = "named by DeclareDisjointConstraints";
@@ -234,8 +237,8 @@ public sealed class RouteTableBuilderDisjointConstraintTests
 
     [Theory]
     [InlineData("string")]
-    [InlineData("Double")]
-    [InlineData("ULONG")]
+    [InlineData("Char")]
+    [InlineData("STRING")]
     public void AReservedNameIsRejected(string name)
     {
         var builder = new RouteTableBuilder();
@@ -388,6 +391,9 @@ public sealed class RouteTableBuilderDisjointConstraintTests
     [InlineData("int", "long", "0")]
     [InlineData("decimal", "long", "0")]
     [InlineData("bool", "alpha", "true")]
+    [InlineData("byte", "int", "0")]
+    [InlineData("float", "double", "0")]
+    [InlineData("ulong", "sbyte", "0")]
     [InlineData("guid", "guid-like", "00000000-0000-0000-0000-000000000000")]
     public void BuildReportsADeclarationASampleProvesFalse(string first, string second, string sample)
     {
@@ -422,6 +428,7 @@ public sealed class RouteTableBuilderDisjointConstraintTests
     {
         RouteTable table = new RouteTableBuilder()
             .DeclareDisjointConstraints("int", "guid", "alpha")
+            .DeclareDisjointConstraints("double", "bool", "guid")
             .Map("/a/{id:int}", c => new ProductRoute(c.Path("id")))
             .Map("/a/{key:guid}", c => new ProductByNameRoute(c.Path("key")))
             .Build();

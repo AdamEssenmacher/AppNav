@@ -18,7 +18,9 @@ public sealed class RouteTemplateTests
     private const string NoConstraint = "no constraint after ':'";
     private const string MoreThanOneColon = "more than one ':'";
     private const string UnknownConstraint = "unknown constraint";
-    private const string SupportedConstraints = "'int', 'long', 'decimal', 'bool', 'guid' and 'alpha'";
+    private const string SupportedConstraints =
+        "'int', 'long', 'decimal', 'bool', 'guid', 'alpha', 'sbyte', 'byte', 'short', 'ushort', 'uint', 'ulong', " +
+        "'float' and 'double'";
 
     [Theory]
     [InlineData("/")]
@@ -151,8 +153,8 @@ public sealed class RouteTemplateTests
     [InlineData("/files/a%20b", "/files/a%20b")]
     [InlineData("/stores/northwind", "/stores/north%77ind")]
     [InlineData("/stores/north%77ind", "/stores/northwind")]
-    [InlineData("/caf%C3%A9", "/café")]
-    [InlineData("/café", "/caf%C3%A9")]
+    [InlineData("/caf%C3%A9", "/caf\u00E9")]
+    [InlineData("/caf\u00E9", "/caf%C3%A9")]
     public void PercentEncodedSegmentsAreDecodedBeforeComparison(string value, string path)
     {
         RouteTemplate template = RouteTemplate.Parse(value);
@@ -206,7 +208,7 @@ public sealed class RouteTemplateTests
         RouteTemplate template = RouteTemplate.Parse(value);
 
         Assert.NotNull(template.Match(value));
-        Assert.Null(template.Match("/discount/�"));
+        Assert.Null(template.Match("/discount/\uFFFD"));
     }
 
     [Fact]
@@ -373,7 +375,7 @@ public sealed class RouteTemplateTests
 
     [Theory]
     [InlineData("/files/a%20b", "a b")]
-    [InlineData("/files/caf%C3%A9", "café")]
+    [InlineData("/files/caf%C3%A9", "caf\u00E9")]
     [InlineData("/files/a%2Fb", "a/b")]
     [InlineData("/files/a%252Fb", "a%2Fb")]
     [InlineData("/files/%20", " ")]
@@ -481,8 +483,8 @@ public sealed class RouteTemplateTests
     [InlineData("/{1a}", "{1a}", MisplacedAsterisk)]
     [InlineData("/{a-b}", "{a-b}", MisplacedAsterisk)]
     [InlineData("/{a.b}", "{a.b}", MisplacedAsterisk)]
-    [InlineData("/{é}", "{é}", MisplacedAsterisk)]
-    [InlineData("/{café}", "{café}", MisplacedAsterisk)]
+    [InlineData("/{\u00E9}", "{\u00E9}", MisplacedAsterisk)]
+    [InlineData("/{caf\u00E9}", "{caf\u00E9}", MisplacedAsterisk)]
     [InlineData("/{%41}", "{%41}", MisplacedAsterisk)]
     [InlineData("/{:}", "{:}", MisplacedAsterisk)]
     [InlineData("/{:int}", "{:int}", MisplacedAsterisk)]

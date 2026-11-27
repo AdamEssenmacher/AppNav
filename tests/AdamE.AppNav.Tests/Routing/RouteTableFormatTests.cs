@@ -265,6 +265,25 @@ public sealed class RouteTableFormatTests
         AssertNotWritten(table, new LongRoute(int.MaxValue + 1L), "/orders/{id:int}", "id", Constraint + " 'int'");
         AssertNotWritten(table, new TextRoute("ab1"), "/names/{n:alpha}", "n", Constraint + " 'alpha'");
 
+        // A number constraint narrower than the type written refuses a value beyond its own range, and the message
+        // never gives the value.
+        RouteTable bytes = new RouteTableBuilder()
+            .Map("/b/{n:byte}", c => new IntRoute(c.Path<int>("n")), f => f.Path("n", r => r.Value))
+            .Map("/f/{n:float}", c => new DoubleRoute(c.Path<double>("n")), f => f.Path("n", r => r.Value))
+            .Build();
+        Assert.Equal("/b/255", bytes.Format(new IntRoute(255)));
+        Assert.Equal("/b/0", bytes.Format(new IntRoute(0)));
+        foreach (int value in new[] { 256, -1, 1000 })
+        {
+            ArgumentException rejected =
+                AssertNotWritten(bytes, new IntRoute(value), "/b/{n:byte}", "n", Constraint + " 'byte'");
+            string text = value.ToString(CultureInfo.InvariantCulture);
+            Assert.DoesNotContain(text, rejected.Message, StringComparison.Ordinal);
+        }
+
+        Assert.Equal("/f/1.5", bytes.Format(new DoubleRoute(1.5)));
+        AssertNotWritten(bytes, new DoubleRoute(1e39), "/f/{n:float}", "n", Constraint + " 'float'");
+
         // The guid constraint's hint about hyphens is left out, because whether it applies says something about the
         // value.
         ArgumentException exception = AssertNotWritten(
@@ -2157,6 +2176,8 @@ public sealed class RouteTableFormatTests
     private sealed class CodecTestException : Exception;
 
     private sealed record LongRoute(long Value) : AppRoute;
+
+    private sealed record IntRoute(int Value) : AppRoute;
 
     private sealed record TextRoute(string? Text) : AppRoute;
 

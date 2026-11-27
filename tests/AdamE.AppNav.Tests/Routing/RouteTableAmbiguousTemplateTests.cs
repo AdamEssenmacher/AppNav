@@ -1,6 +1,7 @@
 extern alias OtherAssembly;
 
 using System.Globalization;
+using System.Numerics;
 using System.Text;
 using System.Text.RegularExpressions;
 using AdamE.AppNav.Routing;
@@ -22,7 +23,15 @@ public sealed class RouteTableAmbiguousTemplateTests
     private const string GeneralAdvice = "Keep them apart at a required position";
     private const string OptionalAdvice = "never keep templates apart";
 
-    private static readonly string[] ConstraintNames = ["int", "long", "decimal", "bool", "guid", "alpha"];
+    private static readonly string[] ConstraintNames =
+    [
+        "int", "long", "decimal", "bool", "guid", "alpha", "sbyte", "byte", "short", "ushort", "uint", "ulong", "float",
+        "double",
+    ];
+
+    // The number constraints, every two of which accept 0, and none of which accepts a bool, a guid or letters.
+    private static readonly string[] Numbers =
+        ["int", "long", "decimal", "sbyte", "byte", "short", "ushort", "uint", "ulong", "float", "double"];
 
     private static readonly string Zeros = new('0', 32);
     private static readonly string Letters = new('a', 32);
@@ -31,37 +40,29 @@ public sealed class RouteTableAmbiguousTemplateTests
     private const string ZeroGuid = "00000000-0000-0000-0000-000000000000";
     private const string LetterGuid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 
-    // The pairs of distinct built-in constraints that some text satisfies both, with the value the message gives.
-    // Every other pair of distinct built-in constraints is disjoint, which the corpus test checks.
+    // The pairs of distinct built-in constraints that some text satisfies both, with the value the message gives:
+    // every two numbers, with 0, and bool and alpha, with true. Every other pair of distinct built-in constraints is
+    // disjoint, which the corpus test checks.
     private static readonly (string First, string Second, string Value)[] Overlapping =
     [
-        ("int", "long", "0"),
-        ("int", "decimal", "0"),
-        ("long", "decimal", "0"),
+        .. NumberPairs(),
         ("bool", "alpha", "true"),
     ];
 
+    // Each number with bool, guid and alpha, and the three of those with each other but for bool and alpha.
     private static readonly (string First, string Second)[] Disjoint =
     [
-        ("alpha", "int"),
-        ("alpha", "long"),
-        ("alpha", "decimal"),
-        ("bool", "int"),
-        ("bool", "long"),
-        ("bool", "decimal"),
+        .. Numbers.Select(number => ("alpha", number)),
+        .. Numbers.Select(number => ("bool", number)),
+        .. Numbers.Select(number => ("guid", number)),
         ("bool", "guid"),
-        ("guid", "int"),
-        ("guid", "long"),
-        ("guid", "decimal"),
         ("guid", "alpha"),
     ];
 
     // The value each constraint shares with itself.
     private static readonly (string Constraint, string Value)[] Own =
     [
-        ("int", "0"),
-        ("long", "0"),
-        ("decimal", "0"),
+        .. Numbers.Select(number => (number, "0")),
         ("bool", "true"),
         ("guid", ZeroGuid),
         ("alpha", "a"),
@@ -659,7 +660,7 @@ public sealed class RouteTableAmbiguousTemplateTests
     // that rank equally, and both outcomes for them, are common.
     private static Template[] RandomTable(Random random, int count)
     {
-        string[] constraints = ["int", "long", "decimal", "bool", "guid", "alpha"];
+        string[] constraints = ["int", "long", "decimal", "bool", "guid", "alpha", "byte", "ulong", "double"];
         var templates = new Template[count];
         for (var i = 0; i < count; i++)
         {
@@ -687,7 +688,7 @@ public sealed class RouteTableAmbiguousTemplateTests
     private static (char Kind, string Key)[] RandomModel(Random random)
     {
         string[] literals = ["a", "b"];
-        string[] constraints = ["", "", "int", "long", "decimal", "bool", "guid", "alpha"];
+        string[] constraints = ["", "", "int", "long", "decimal", "bool", "guid", "alpha", "byte", "ulong", "double"];
         var model = new List<(char Kind, string Key)>();
         int positionalCount = random.Next(0, 4);
         for (var i = 0; i < positionalCount; i++)
@@ -821,6 +822,9 @@ public sealed class RouteTableAmbiguousTemplateTests
             "int" => ["0", "-5", "+7", "2147483648"],
             "long" => ["0", "42", "9223372036854775807", "2147483648"],
             "decimal" => ["0", "1.5", ".5", "99999999999999999999"],
+            "byte" => ["0", "255", "+7", "-0"],
+            "ulong" => ["0", "18446744073709551615", "42"],
+            "double" => ["0", "1.5", "-.5", "1" + new string('0', 40)],
             "bool" => ["true", "FALSE", "tRuE"],
             "guid" => [ZeroGuid, LetterGuid, "6F9619FF-8b86-D011-b42d-00CF4fc964ff"],
             "alpha" => ["a", "true", "false", Letters, "caf%C3%A9", "x"],
@@ -857,6 +861,15 @@ public sealed class RouteTableAmbiguousTemplateTests
             Zeros, Letters, new string('f', 32), new string('F', 32), new string('g', 32), new string('a', 31),
             new string('a', 33), new string('0', 36), new string('-', 36), ZeroGuid, LetterGuid,
             "{" + ZeroGuid + "}", ZeroGuid + "\n",
+
+            // The edges of the ranges of the other number types, which tell them apart from each other.
+            "127", "128", "-128", "-129", "255", "256", "-1", "-0", "+0", "32767", "32768", "-32768", "-32769", "65535",
+            "65536", "4294967295", "4294967296", "18446744073709551615", "18446744073709551616",
+            "-9223372036854775809", "1e5", "1E5", "1.5e3", "NaN", "Infinity", "-Infinity",
+            "1" + new string('0', 29), "1" + new string('0', 38), "1" + new string('0', 39), "1" + new string('0', 308),
+            "1" + new string('0', 309), "-" + new string('9', 400), "0." + new string('0', 400) + "1",
+            new BigInteger(float.MaxValue).ToString(CultureInfo.InvariantCulture),
+            new BigInteger(double.MaxValue).ToString(CultureInfo.InvariantCulture),
         };
 
         for (var length = 1; length <= 40; length++)
@@ -948,6 +961,16 @@ public sealed class RouteTableAmbiguousTemplateTests
             string[] rest = [.. items[..i], .. items[(i + 1)..]];
             foreach (string[] tail in Permutations(rest))
                 yield return [items[i], .. tail];
+        }
+    }
+
+    // Every two distinct numbers, each pair once, with the 0 that both accept.
+    private static IEnumerable<(string First, string Second, string Value)> NumberPairs()
+    {
+        for (var i = 0; i < Numbers.Length; i++)
+        {
+            for (int j = i + 1; j < Numbers.Length; j++)
+                yield return (Numbers[i], Numbers[j], "0");
         }
     }
 

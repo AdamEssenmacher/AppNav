@@ -12,10 +12,9 @@ namespace AdamE.AppNav.Routing;
 // a constraint does not, such as trailing null characters. Each constraint that names a type is its TryParse method,
 // which RouteMatchContext also uses to read a value as that type, so a value converts exactly when it satisfies the
 // constraint of the same name. TryParseInteger reads the integer types other than int and long, and
-// TryParseFloatingPoint reads float and double. For those types they are rules of the typed reads only; no constraint
-// is named after them. They live here so that each shares the shape check of int or decimal. Beside each parse method
-// is the method that writes a value of its type as the one canonical text that it reads back to an equal value, and
-// TryFormat chooses among them by type.
+// TryParseFloatingPoint reads float and double, each sharing the shape check of int or decimal. Beside each parse
+// method is the method that writes a value of its type as the one canonical text that it reads back to an equal value,
+// and TryFormat chooses among them by type.
 //
 // The other constraints are the application's own, added with RouteTableBuilder.AddConstraint. Such a constraint is
 // made unbound, when a template mapped on a builder or AddConstraint first names it, and bound to its function once,
@@ -33,15 +32,31 @@ internal sealed class RouteConstraint
         new("bool", static value => TryParseBool(value, out _)),
         new("guid", static value => TryParseGuid(value, out _), HintForGuid),
         new("alpha", IsAlpha),
+
+        // The other number types, after the first six, so that messages list the commonest constraints first.
+        new("sbyte", static value => TryParseInteger<sbyte>(value, out _)),
+        new("byte", static value => TryParseInteger<byte>(value, out _)),
+        new("short", static value => TryParseInteger<short>(value, out _)),
+        new("ushort", static value => TryParseInteger<ushort>(value, out _)),
+        new("uint", static value => TryParseInteger<uint>(value, out _)),
+        new("ulong", static value => TryParseInteger<ulong>(value, out _)),
+        new("float", static value => TryParseFloatingPoint<float>(value, out _)),
+        new("double", static value => TryParseFloatingPoint<double>(value, out _)),
     ];
 
-    // The C# keywords of the built-in value types that no constraint is named after, kept from the application's own
-    // constraints so that a built-in constraint can be given one of these names later without breaking a table.
-    private static readonly string[] Reserved =
-        ["string", "char", "sbyte", "byte", "short", "ushort", "uint", "ulong", "float", "double"];
+    // Names kept from the application's own constraints, because a template that named one would look like a
+    // constraint of a type whose values a route reads or writes as text, which neither is: a string constraint would
+    // accept every text, which is no constraint at all, and a char is deliberately not a value type of the library.
+    private static readonly string[] Reserved = ["string", "char"];
+
+    // Why a reserved name is refused, in the same words wherever it is: by the template parser, AddConstraint and
+    // DeclareDisjointConstraints. It follows "The name 'string' is reserved: ".
+    public const string ReservedReason =
+        "a template that named it would look like a built-in constraint of that type, so no constraint can be " +
+        "added with that name";
 
     // Whenever two built-in constraints both accept some text, they both accept one of these, tried simplest first:
-    // '0' is an int, a long and a decimal, 'a' letters, 'true' a bool and letters, and the zero guid a guid, which
+    // '0' is a value of every number type, 'a' letters, 'true' a bool and letters, and the zero guid a guid, which
     // overlaps only itself: a number has a hyphen only as its first character, and letters have none. So two built-in
     // constraints that accept none of them together accept no text together, which the tests check against a corpus.
     // A new built-in constraint needs a sample here for every overlap it creates, and an entry in the tests' tables of
@@ -137,13 +152,25 @@ internal sealed class RouteConstraint
     // differs from a built-in one by a single character added, left out or changed, or by two adjacent characters
     // swapped, as 'itn' does from 'int', or the name another system gives the same type, as 'int32' is. A name is
     // compared in lower case, as an unbound constraint's already is. The first match in the order of the built-ins
-    // is given, so the hint does not change from one build to the next.
+    // is given, so the hint does not change from one build to the next; 'unt', one edit from both 'int' and 'uint',
+    // gives 'int'. Several built-in names are one edit from another, as 'byte' is from 'sbyte', so a built-in name
+    // itself, which never reaches the messages that give the hint, gives null rather than another name.
     public static string? FindSimilarBuiltIn(string name)
     {
+        if (Find(name) is not null)
+            return null;
+
         string? alias = name switch
         {
             "int32" or "integer" => "int",
             "int64" => "long",
+            "int8" => "sbyte",
+            "uint8" or "ubyte" => "byte",
+            "int16" => "short",
+            "uint16" => "ushort",
+            "uint32" => "uint",
+            "uint64" => "ulong",
+            "single" => "float",
             "boolean" => "bool",
             "uuid" => "guid",
             _ => null,
@@ -188,7 +215,7 @@ internal sealed class RouteConstraint
                x.AsSpan(start + 2).SequenceEqual(y.AsSpan(start + 2));
     }
 
-    // Whether a name is reserved for a later built-in constraint, ignoring case.
+    // Whether a name is one of the reserved ones, ignoring case.
     public static bool IsReserved(string name)
     {
         foreach (string reserved in Reserved)
@@ -250,8 +277,8 @@ internal sealed class RouteConstraint
         return builder.ToString();
     }
 
-    // int and long call their parsers directly rather than through TryParseInteger, because they are on the path that
-    // matches a constraint, where the generic call costs time until the JIT optimizes it.
+    // int and long, the commonest constraints, call their parsers directly rather than through TryParseInteger: on the
+    // path that matches a constraint, the generic call costs time until the JIT optimizes it.
     public static bool TryParseInt(string value, out int result)
     {
         result = 0;

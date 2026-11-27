@@ -267,6 +267,56 @@ public sealed class RouteTableFormatValueTests
         AssertCanonical<double?>(text, canonical);
     }
 
+    // The canonical text of a number, a bool or a guid always satisfies the constraint named after its type, so a
+    // template with that constraint writes every value of the type, as the same text a template without it writes:
+    // the edges of each range, random values, and for float and double the largest and smallest magnitudes, written
+    // in full without an exponent.
+    [Fact]
+    public void TheTextOfAValueSatisfiesTheConstraintNamedAfterItsType()
+    {
+        AssertIntegersSatisfyTheirConstraint<sbyte>("sbyte");
+        AssertIntegersSatisfyTheirConstraint<byte>("byte");
+        AssertIntegersSatisfyTheirConstraint<short>("short");
+        AssertIntegersSatisfyTheirConstraint<ushort>("ushort");
+        AssertIntegersSatisfyTheirConstraint<int>("int");
+        AssertIntegersSatisfyTheirConstraint<uint>("uint");
+        AssertIntegersSatisfyTheirConstraint<long>("long");
+        AssertIntegersSatisfyTheirConstraint<ulong>("ulong");
+
+        var random = new Random(29);
+        var floats = new List<float>
+        {
+            float.MaxValue, float.MinValue, float.Epsilon, -float.Epsilon, 1E21f, 1E-7f, 0.1f, -0f, 16777217f,
+        };
+        var doubles = new List<double>
+        {
+            double.MaxValue, double.MinValue, double.Epsilon, -double.Epsilon, 1E21, 1E-7, 0.1, -0.0, 1E308,
+        };
+        while (floats.Count < 2000)
+        {
+            float value = BitConverter.Int32BitsToSingle(random.Next(int.MinValue, int.MaxValue));
+            if (float.IsFinite(value))
+                floats.Add(value);
+        }
+
+        while (doubles.Count < 2000)
+        {
+            double value = BitConverter.Int64BitsToDouble(random.NextInt64(long.MinValue, long.MaxValue));
+            if (double.IsFinite(value))
+                doubles.Add(value);
+        }
+
+        AssertSatisfiesItsConstraint("float", floats);
+        AssertSatisfiesItsConstraint("double", doubles);
+        AssertSatisfiesItsConstraint(
+            "decimal",
+            [decimal.MaxValue, decimal.MinValue, 0.0000000000000000000000000001m, -0.5m, 1.50m, -0.0m]);
+        AssertSatisfiesItsConstraint("bool", [true, false]);
+        AssertSatisfiesItsConstraint(
+            "guid",
+            [System.Guid.Empty, new System.Guid("6F9619FF-8B86-D011-B42D-00CF4FC964FF")]);
+    }
+
     [Fact]
     public void AGuidIsWrittenInLowerCaseWithHyphens()
     {
@@ -585,6 +635,40 @@ public sealed class RouteTableFormatValueTests
                     .QueryValues("ids", r => r.Ids)
                     .QueryValues("stages", r => r.Stages))
             .Build();
+    }
+
+    private static void AssertIntegersSatisfyTheirConstraint<T>(string constraint)
+        where T : struct, IBinaryInteger<T>, IMinMaxValue<T>
+    {
+        var values = new List<T> { T.MinValue, T.MaxValue, T.Zero, T.One };
+        var random = new Random(37);
+        var bytes = new byte[16];
+        for (var i = 0; i < 500; i++)
+        {
+            random.NextBytes(bytes);
+            values.Add(T.ReadLittleEndian(bytes.AsSpan(0, T.Zero.GetByteCount()), T.MinValue == T.Zero));
+        }
+
+        AssertSatisfiesItsConstraint(constraint, values);
+    }
+
+    // Each value written by a template with the constraint gives the same text as one without it, which the
+    // constraint accepts and which reads back as an equal value.
+    private static void AssertSatisfiesItsConstraint<T>(string constraint, IEnumerable<T> values)
+    {
+        RouteConstraint rule = RouteConstraint.Find(constraint)!;
+        RouteTable table = new RouteTableBuilder()
+            .Map($"/v/{{v:{constraint}}}", c => new ValueRoute<T>(c.Path<T>("v")), f => f.Path("v", r => r.Value))
+            .Build();
+
+        foreach (T value in values)
+        {
+            string path = table.Format(new ValueRoute<T>(value));
+            string text = Write(value);
+            Assert.Equal("/v/" + text, path);
+            Assert.True(rule.IsSatisfiedBy(Uri.UnescapeDataString(text)), $"{constraint}: {text}");
+            Assert.Equal(new ValueRoute<T>(value), Match(table, path).Route);
+        }
     }
 
     private static void AssertIntegerEdges<T>()

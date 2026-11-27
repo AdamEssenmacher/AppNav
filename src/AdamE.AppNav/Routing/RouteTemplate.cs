@@ -21,16 +21,18 @@ namespace AdamE.AppNav.Routing;
 /// </para>
 /// <para>
 /// A parameter written <c>{name:constraint}</c> matches a segment only when the segment's decoded text satisfies the
-/// constraint, one of the built-in constraints <c>int</c>, <c>long</c>, <c>decimal</c>, <c>bool</c>, <c>guid</c> and
-/// <c>alpha</c>, whose names are compared without regard to case. Each checks the text exactly as decoded, without
-/// trimming, and independently of culture: <c>int</c> and <c>long</c> accept an optional leading <c>+</c> or
-/// <c>-</c> and ASCII digits within the type's range; <c>decimal</c> also accepts one <c>.</c>; <c>bool</c> accepts
-/// <c>true</c> or <c>false</c> in any ASCII case; <c>guid</c> accepts only 32 hex digits, in either case, with
-/// hyphens in the 8-4-4-4-12 form; and <c>alpha</c> accepts one or more Unicode letters. The captured value is the
-/// decoded text, unchanged. A template mapped on a <see cref="RouteTableBuilder"/> can also name a constraint added
-/// to that builder with <see cref="RouteTableBuilder.AddConstraint(string, Func{string, bool})"/>;
-/// <see cref="Parse(string)"/> knows only the built-in ones, so the <see cref="Value"/> of such a template, read from
-/// <see cref="RouteTable.Definitions"/>, cannot be given to it.
+/// constraint, one of the built-in constraints <c>int</c>, <c>long</c>, <c>decimal</c>, <c>bool</c>, <c>guid</c>,
+/// <c>alpha</c>, <c>sbyte</c>, <c>byte</c>, <c>short</c>, <c>ushort</c>, <c>uint</c>, <c>ulong</c>, <c>float</c> and
+/// <c>double</c>, whose names are compared without regard to case. Each checks the text exactly as decoded, without
+/// trimming, and independently of culture: the integer types accept an optional leading <c>+</c> or <c>-</c> and
+/// ASCII digits within the type's range; <c>decimal</c>, <c>float</c> and <c>double</c> also accept one <c>.</c>,
+/// with no exponent, within the type's range; <c>bool</c> accepts <c>true</c> or <c>false</c> in any ASCII case;
+/// <c>guid</c> accepts only 32 hex digits, in either case, with hyphens in the 8-4-4-4-12 form; and <c>alpha</c>
+/// accepts one or more Unicode letters. The captured value is the decoded text, unchanged. A template mapped on a
+/// <see cref="RouteTableBuilder"/> can also name a constraint added to that builder with
+/// <see cref="RouteTableBuilder.AddConstraint(string, Func{string, bool})"/>; <see cref="Parse(string)"/> knows only
+/// the built-in ones, so the <see cref="Value"/> of such a template, read from <see cref="RouteTable.Definitions"/>,
+/// cannot be given to it.
 /// </para>
 /// <para>
 /// A parameter written <c>{name?}</c> or <c>{name:constraint?}</c> is optional: it matches one segment or none. The
