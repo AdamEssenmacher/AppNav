@@ -78,6 +78,10 @@ override AdamE.AppNav.RouteMetadataKey<TValue>.ToString() -> string!
 static AdamE.AppNav.AppRoute.operator !=(AdamE.AppNav.AppRoute? left, AdamE.AppNav.AppRoute? right) -> bool
 static AdamE.AppNav.AppRoute.operator ==(AdamE.AppNav.AppRoute? left, AdamE.AppNav.AppRoute? right) -> bool
 static AdamE.AppNav.RouteMetadata.Empty.get -> AdamE.AppNav.RouteMetadata!
+static AdamE.AppNav.RouteMetadata.operator !=(AdamE.AppNav.RouteMetadata? left, AdamE.AppNav.RouteMetadata? right) -> bool
+static AdamE.AppNav.RouteMetadata.operator ==(AdamE.AppNav.RouteMetadata? left, AdamE.AppNav.RouteMetadata? right) -> bool
+static AdamE.AppNav.RouteMetadataKey<TValue>.operator !=(AdamE.AppNav.RouteMetadataKey<TValue>? left, AdamE.AppNav.RouteMetadataKey<TValue>? right) -> bool
+static AdamE.AppNav.RouteMetadataKey<TValue>.operator ==(AdamE.AppNav.RouteMetadataKey<TValue>? left, AdamE.AppNav.RouteMetadataKey<TValue>? right) -> bool
 static AdamE.AppNav.Routing.RouteTemplate.Parse(string! value) -> AdamE.AppNav.Routing.RouteTemplate!
 virtual AdamE.AppNav.AppRoute.EqualityContract.get -> System.Type!
 virtual AdamE.AppNav.AppRoute.Equals(AdamE.AppNav.AppRoute? other) -> bool

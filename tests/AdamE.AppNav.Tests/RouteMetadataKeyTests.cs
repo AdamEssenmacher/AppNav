@@ -104,4 +104,24 @@ public sealed class RouteMetadataKeyTests
         Assert.False(key.Equals((object?)null));
         Assert.False(key.Equals("n"));
     }
+
+    // The operators agree with Equals, and two nulls are equal.
+    [Fact]
+    public void TheOperatorsAgreeWithEquals()
+    {
+        var first = new RouteMetadataKey<int>("n");
+        var same = new RouteMetadataKey<int>("n");
+        var other = new RouteMetadataKey<int>("m");
+        RouteMetadataKey<int>? none = null;
+        RouteMetadataKey<int>? alsoNone = null;
+
+        Assert.True(first == same);
+        Assert.False(first != same);
+        Assert.False(first == other);
+        Assert.True(first != other);
+        Assert.False(first == none);
+        Assert.True(none != first);
+        Assert.True(none == alsoNone);
+        Assert.False(none != alsoNone);
+    }
 }

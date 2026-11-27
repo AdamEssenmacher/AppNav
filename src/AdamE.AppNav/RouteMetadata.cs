@@ -206,6 +206,29 @@ public sealed class RouteMetadata : IEquatable<RouteMetadata>
         return hash;
     }
 
+    /// <summary>
+    /// Determines whether two collections are equal, as <see cref="Equals(RouteMetadata)"/> does; two that are both
+    /// <see langword="null"/> are equal.
+    /// </summary>
+    /// <param name="left">The first to compare.</param>
+    /// <param name="right">The second to compare.</param>
+    /// <returns><see langword="true"/> when they are equal; otherwise <see langword="false"/>.</returns>
+    public static bool operator ==(RouteMetadata? left, RouteMetadata? right)
+    {
+        return left is null ? right is null : left.Equals(right);
+    }
+
+    /// <summary>
+    /// Determines whether two collections are not equal: the opposite of the equality operator.
+    /// </summary>
+    /// <param name="left">The first to compare.</param>
+    /// <param name="right">The second to compare.</param>
+    /// <returns><see langword="true"/> when they are not equal; otherwise <see langword="false"/>.</returns>
+    public static bool operator !=(RouteMetadata? left, RouteMetadata? right)
+    {
+        return !(left == right);
+    }
+
     // The entry for key and its position, found by a type test, which cannot fail, so no cast is made; null and -1
     // when there is none.
     private TypedRouteMetadataEntry<TValue>? Find<TValue>(RouteMetadataKey<TValue> key, out int index)

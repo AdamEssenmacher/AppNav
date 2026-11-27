@@ -89,6 +89,29 @@ public sealed class RouteMetadataKey<TValue> : IEquatable<RouteMetadataKey<TValu
     }
 
     /// <summary>
+    /// Determines whether two keys are equal, as <see cref="Equals(RouteMetadataKey{TValue})"/> does; two that are both
+    /// <see langword="null"/> are equal.
+    /// </summary>
+    /// <param name="left">The first to compare.</param>
+    /// <param name="right">The second to compare.</param>
+    /// <returns><see langword="true"/> when they are equal; otherwise <see langword="false"/>.</returns>
+    public static bool operator ==(RouteMetadataKey<TValue>? left, RouteMetadataKey<TValue>? right)
+    {
+        return left is null ? right is null : left.Equals(right);
+    }
+
+    /// <summary>
+    /// Determines whether two keys are not equal: the opposite of the equality operator.
+    /// </summary>
+    /// <param name="left">The first to compare.</param>
+    /// <param name="right">The second to compare.</param>
+    /// <returns><see langword="true"/> when they are not equal; otherwise <see langword="false"/>.</returns>
+    public static bool operator !=(RouteMetadataKey<TValue>? left, RouteMetadataKey<TValue>? right)
+    {
+        return !(left == right);
+    }
+
+    /// <summary>
     /// Returns the name of the key.
     /// </summary>
     /// <returns>The name of the key.</returns>

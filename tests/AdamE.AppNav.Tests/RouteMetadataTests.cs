@@ -432,6 +432,27 @@ public sealed class RouteMetadataTests
         Assert.Equal("spring", campaign);
     }
 
+    // The operators agree with Equals, and two nulls are equal.
+    [Fact]
+    public void TheOperatorsAgreeWithEquals()
+    {
+        var key = new RouteMetadataKey<string>("campaign");
+        RouteMetadata first = RouteMetadata.Empty.With(key, "spring");
+        RouteMetadata same = RouteMetadata.Empty.With(key, "spring");
+        RouteMetadata other = RouteMetadata.Empty.With(key, "autumn");
+        RouteMetadata? none = null;
+        RouteMetadata? alsoNone = null;
+
+        Assert.True(first == same);
+        Assert.False(first != same);
+        Assert.False(first == other);
+        Assert.True(first != other);
+        Assert.False(first == none);
+        Assert.True(none != first);
+        Assert.True(none == alsoNone);
+        Assert.False(none != alsoNone);
+    }
+
     private sealed record Referral(string Channel, int Step);
 
     private readonly struct Unequatable(int id) : IEquatable<Unequatable>
