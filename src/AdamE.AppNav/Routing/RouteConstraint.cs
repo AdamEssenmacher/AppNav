@@ -49,11 +49,13 @@ internal sealed class RouteConstraint
     // accept every text, which is no constraint at all, and a char is deliberately not a value type of the library.
     private static readonly string[] Reserved = ["string", "char"];
 
-    // Why a reserved name is refused, in the same words wherever it is: by the template parser, AddConstraint and
-    // DeclareDisjointConstraints. It follows "The name 'string' is reserved: ".
-    public const string ReservedReason =
-        "a template that named it would look like a built-in constraint of that type, so no constraint can be " +
-        "added with that name";
+    private const string StringReservedReason =
+        "a string constraint would accept every text, which is no constraint at all. Leave the parameter " +
+        "unconstrained";
+
+    private const string CharReservedReason =
+        "a char is not a type a route value is read as. Leave the parameter unconstrained and read the value as " +
+        "a string";
 
     // Whenever two built-in constraints both accept some text, they both accept one of these, tried simplest first:
     // '0' is a value of every number type, 'a' letters, 'true' a bool and letters, and the zero guid a guid, which
@@ -214,6 +216,15 @@ internal sealed class RouteConstraint
 
         return start + 1 < y.Length && x[start] == y[start + 1] && x[start + 1] == y[start] &&
                x.AsSpan(start + 2).SequenceEqual(y.AsSpan(start + 2));
+    }
+
+    // Why a reserved name is refused and what to write instead, in the same words wherever it is refused: by the
+    // template parser, AddConstraint and DeclareDisjointConstraints. It follows "The name 'string' is reserved: " and
+    // has no full stop of its own.
+    public static string ReservedReason(string name)
+    {
+        Debug.Assert(IsReserved(name), "Only a reserved name has a reason.");
+        return StringComparer.OrdinalIgnoreCase.Equals(name, "string") ? StringReservedReason : CharReservedReason;
     }
 
     // Whether a name is one of the reserved ones, ignoring case.

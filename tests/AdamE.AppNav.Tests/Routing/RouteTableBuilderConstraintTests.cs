@@ -11,10 +11,6 @@ public sealed class RouteTableBuilderConstraintTests
 {
     private const string NotValid = "is not valid";
     private const string BuiltInName = "is the name of a built-in constraint";
-    // The reason every reserved-name message gives, in the same words, whichever method refuses the name.
-    private const string Reserved =
-        "is reserved: a template that named it would look like a built-in constraint of that type, so no " +
-        "constraint can be added with that name";
     private const string AlreadyAdded = "is already added on this builder";
     private const string NotAdded = "neither built in nor added on this builder";
     private const string UnknownConstraint = "unknown constraint";
@@ -135,7 +131,7 @@ public sealed class RouteTableBuilderConstraintTests
         ArgumentException exception = Assert.Throws<ArgumentException>(() => builder.AddConstraint(name, IsSlug));
 
         Assert.Equal("name", exception.ParamName);
-        Assert.Contains(Reserved, exception.Message, StringComparison.Ordinal);
+        ReservedConstraintNames.AssertExplained(name, exception.Message);
         Assert.Contains($"'{name.ToLowerInvariant()}'", exception.Message, StringComparison.Ordinal);
         AssertSlugCanStillBeAdded(builder);
     }
@@ -263,7 +259,7 @@ public sealed class RouteTableBuilderConstraintTests
         Assert.Equal("value", parse.ParamName);
         foreach (ArgumentException exception in new[] { map, parse })
         {
-            Assert.Contains(Reserved, exception.Message, StringComparison.Ordinal);
+            ReservedConstraintNames.AssertExplained(name, exception.Message);
             Assert.Contains($"'{name}'", exception.Message, StringComparison.Ordinal);
         }
     }

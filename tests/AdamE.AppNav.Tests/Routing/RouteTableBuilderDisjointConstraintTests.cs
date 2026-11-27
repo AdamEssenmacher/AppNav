@@ -10,10 +10,6 @@ public sealed class RouteTableBuilderDisjointConstraintTests
 {
     private const string FewerThanTwo = "takes two or more constraint names";
     private const string NotValid = "is not valid";
-    // The reason every reserved-name message gives, in the same words, whichever method refuses the name.
-    private const string Reserved =
-        "is reserved: a template that named it would look like a built-in constraint of that type, so no " +
-        "constraint can be added with that name";
     private const string GivenTwice = "is given twice";
     private const string NotAdded = "neither built in nor added on this builder";
     private const string NamedByDeclare = "named by DeclareDisjointConstraints";
@@ -247,7 +243,7 @@ public sealed class RouteTableBuilderDisjointConstraintTests
             () => builder.DeclareDisjointConstraints("int", name));
 
         Assert.Equal("names", exception.ParamName);
-        Assert.Contains(Reserved, exception.Message, StringComparison.Ordinal);
+        ReservedConstraintNames.AssertExplained(name, exception.Message);
         Assert.Contains($"'{name.ToLowerInvariant()}'", exception.Message, StringComparison.Ordinal);
     }
 

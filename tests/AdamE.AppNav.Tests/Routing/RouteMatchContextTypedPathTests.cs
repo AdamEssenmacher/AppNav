@@ -15,9 +15,6 @@ public sealed class RouteMatchContextTypedPathTests
     private const string PathValue = "path value";
     private const string Unsupported = "cannot be read as type";
     private const string GuidText = "6f9619ff-8b86-d011-b42d-00cf4fc964ff";
-    private const string ReservedReason =
-        "is reserved: a template that named it would look like a built-in constraint of that type, so no " +
-        "constraint can be added with that name";
 
     // Text that stands for a secret a deep link can carry, distinctive enough that finding it in a message or in Data
     // is not a coincidence.
@@ -323,10 +320,10 @@ public sealed class RouteMatchContextTypedPathTests
 
         Assert.Equal("value", parse.ParamName);
         Assert.Contains($"unknown constraint '{type}'", parse.Message, StringComparison.Ordinal);
-        Assert.Contains(ReservedReason, parse.Message, StringComparison.Ordinal);
+        ReservedConstraintNames.AssertExplained(type, parse.Message);
         Assert.Equal("template", map.ParamName);
         Assert.Contains($"unknown constraint '{type}'", map.Message, StringComparison.Ordinal);
-        Assert.Contains(ReservedReason, map.Message, StringComparison.Ordinal);
+        ReservedConstraintNames.AssertExplained(type, map.Message);
         Assert.Null(RouteConstraint.Find(type));
     }
 

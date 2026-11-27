@@ -223,7 +223,7 @@ internal static class RouteTemplateParser
         {
             return $"has an unknown constraint '{constraintText}'; the supported constraints are " +
                 $"{RouteConstraint.SupportedNames}, ignoring case. The name " +
-                $"'{constraintText.ToLowerInvariant()}' is reserved: {RouteConstraint.ReservedReason}";
+                $"'{constraintText.ToLowerInvariant()}' is reserved: {RouteConstraint.ReservedReason(constraintText)}";
         }
 
         // On a builder, a name that a constraint could be added under is left for Build to find added or not, since

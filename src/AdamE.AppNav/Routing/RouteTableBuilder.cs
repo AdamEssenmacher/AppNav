@@ -481,7 +481,7 @@ public sealed class RouteTableBuilder
         if (RouteConstraint.IsReserved(name))
         {
             throw new ArgumentException(
-                $"The constraint name '{lower}' is reserved: {RouteConstraint.ReservedReason}.",
+                $"The constraint name '{lower}' is reserved: {RouteConstraint.ReservedReason(name)}.",
                 nameof(name));
         }
 
@@ -588,7 +588,7 @@ public sealed class RouteTableBuilder
             if (RouteConstraint.IsReserved(name))
             {
                 throw new ArgumentException(
-                    $"The constraint name '{lower[i]}' is reserved: {RouteConstraint.ReservedReason}.",
+                    $"The constraint name '{lower[i]}' is reserved: {RouteConstraint.ReservedReason(name)}.",
                     nameof(names));
             }
 
