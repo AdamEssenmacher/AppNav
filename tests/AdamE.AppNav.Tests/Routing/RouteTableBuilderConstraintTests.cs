@@ -327,6 +327,74 @@ public sealed class RouteTableBuilderConstraintTests
         Assert.Contains("AddConstraint", exception.Message, StringComparison.Ordinal);
     }
 
+    // A misspelled built-in name has the form of an added one, so Build reports it, and says which built-in
+    // constraint it resembles: one character added, left out or changed, two adjacent characters swapped, or the
+    // name another system gives the type.
+    [Theory]
+    [InlineData("itn", "int")]
+    [InlineData("nit", "int")]
+    [InlineData("ints", "int")]
+    [InlineData("in", "int")]
+    [InlineData("imt", "int")]
+    [InlineData("Int32", "int")]
+    [InlineData("integer", "int")]
+    [InlineData("lnog", "long")]
+    [InlineData("lung", "long")]
+    [InlineData("int-", "int")]
+    [InlineData("Int64", "long")]
+    [InlineData("deciml", "decimal")]
+    [InlineData("boolean", "bool")]
+    [InlineData("boool", "bool")]
+    [InlineData("giud", "guid")]
+    [InlineData("UUID", "guid")]
+    [InlineData("alpah", "alpha")]
+    [InlineData("alfha", "alpha")]
+    public void BuildNamesTheBuiltInConstraintThatAMisspelledNameResembles(string written, string meant)
+    {
+        RouteTableBuilder builder = new RouteTableBuilder()
+            .Map("/p/{s:" + written + "}", c => new ProductRoute(c.Path("s")));
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(builder.Build);
+
+        Assert.Contains(NotAdded, exception.Message, StringComparison.Ordinal);
+        Assert.Contains($"If '{meant}' was meant", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("AddConstraint", exception.Message, StringComparison.Ordinal);
+    }
+
+    // A name two or more edits from every built-in name gets no such hint, only the general one.
+    [Theory]
+    [InlineData("slug")]
+    [InlineData("tin")]
+    [InlineData("i")]
+    [InlineData("integers")]
+    [InlineData("alphabet")]
+    [InlineData("lungs")]
+    [InlineData("int-id")]
+    public void BuildNamesNoBuiltInConstraintForANameThatResemblesNone(string written)
+    {
+        RouteTableBuilder builder = new RouteTableBuilder()
+            .Map("/p/{s:" + written + "}", c => new ProductRoute(c.Path("s")));
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(builder.Build);
+
+        Assert.Contains(NotAdded, exception.Message, StringComparison.Ordinal);
+        Assert.Contains("If one of them was meant", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("' was meant", exception.Message, StringComparison.Ordinal);
+    }
+
+    // The hint is advice only: a name that resembles a built-in one can still be added and used.
+    [Fact]
+    public void ANameThatResemblesABuiltInConstraintCanBeAdded()
+    {
+        RouteTable table = new RouteTableBuilder()
+            .AddConstraint("ints", text => text == "1,2")
+            .Map("/p/{s:ints}", c => new ProductRoute(c.Path("s")))
+            .Build();
+
+        Assert.True(Matches(table, "/p/1,2"));
+        Assert.False(Matches(table, "/p/1"));
+    }
+
     // The first name not added, in the order the routes were mapped and then in template order, is reported in the
     // case messages write names in, before any other problem with the templates.
     [Fact]

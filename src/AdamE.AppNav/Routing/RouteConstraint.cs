@@ -129,6 +129,61 @@ internal sealed class RouteConstraint
         return true;
     }
 
+    // The built-in name that a name not added was most likely meant to be, or null when it resembles none: a name that
+    // differs from a built-in one by a single character added, left out or changed, or by two adjacent characters
+    // swapped, as 'itn' does from 'int', or the name another system gives the same type, as 'int32' is. A name is
+    // compared in lower case, as an unbound constraint's already is. The first match in the order of the built-ins
+    // is given, so the hint does not change from one build to the next.
+    public static string? FindSimilarBuiltIn(string name)
+    {
+        string? alias = name switch
+        {
+            "int32" or "integer" => "int",
+            "int64" => "long",
+            "boolean" => "bool",
+            "uuid" => "guid",
+            _ => null,
+        };
+        if (alias is not null)
+            return alias;
+
+        foreach (RouteConstraint constraint in BuiltIn)
+        {
+            if (IsOneEditApart(name, constraint.Name))
+                return constraint.Name;
+        }
+
+        return null;
+    }
+
+    // Whether two different texts are one insertion, deletion, substitution or swap of adjacent characters apart.
+    private static bool IsOneEditApart(string x, string y)
+    {
+        if (x.Length < y.Length)
+            (x, y) = (y, x);
+
+        if (x.Length - y.Length > 1)
+            return false;
+
+        var start = 0;
+        while (start < y.Length && x[start] == y[start])
+            start++;
+
+        // The texts agree up to start. One edit there leaves the rest equal: after skipping a character of the
+        // longer text, after skipping one of each, or after two characters that are each other's in reverse.
+        if (x.Length > y.Length)
+            return x.AsSpan(start + 1).SequenceEqual(y.AsSpan(start));
+
+        if (start == y.Length)
+            return false;
+
+        if (x.AsSpan(start + 1).SequenceEqual(y.AsSpan(start + 1)))
+            return true;
+
+        return start + 1 < y.Length && x[start] == y[start + 1] && x[start + 1] == y[start] &&
+               x.AsSpan(start + 2).SequenceEqual(y.AsSpan(start + 2));
+    }
+
     // Whether a name is reserved for a later built-in constraint, ignoring case.
     public static bool IsReserved(string name)
     {

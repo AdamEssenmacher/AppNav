@@ -498,8 +498,9 @@ public sealed class RouteTableBuilder
     /// <exception cref="InvalidOperationException">
     /// A template names a constraint that is neither built in nor added with
     /// <see cref="AddConstraint(string, Func{string, bool})"/>. The message names the template, the route type and
-    /// the constraint, and lists the built-in constraints. The first such constraint, in the order the routes were
-    /// mapped and then in template order, is reported.
+    /// the constraint, and lists the built-in constraints. A misspelled built-in name, such as <c>itn</c>, is
+    /// reported here too, and the message then names the built-in constraint it resembles. The first such
+    /// constraint, in the order the routes were mapped and then in template order, is reported.
     /// <para>-or-</para>
     /// Two mappings have the same template: the same number of segments and, at every position, the same kind of
     /// segment, the same decoded literal text, compared ordinally and case-sensitively, and the same constraint or
@@ -578,13 +579,19 @@ public sealed class RouteTableBuilder
                     continue;
 
                 // The parser has already rejected a reserved name, which could never be added.
+                // A misspelled built-in name has the form of an added one, so it arrives here and not at Map, and the
+                // likeliest fix is then to correct the template, which the message says first.
                 string name = constraint.Name;
+                string? similar = RouteConstraint.FindSimilarBuiltIn(name);
                 throw new InvalidOperationException(
                     $"The template '{definition.Template.Value}', mapped to route type " +
                     $"'{RouteValueTypes.DisplayName(definition.RouteType)}', names the constraint '{name}', which is " +
                     $"neither built in nor added on this builder. The built-in constraints are " +
-                    $"{RouteConstraint.SupportedNames}, ignoring case. Add it with AddConstraint(\"{name}\", ...) on " +
-                    "this builder, before or after the Map call.");
+                    $"{RouteConstraint.SupportedNames}, ignoring case. " +
+                    (similar is null
+                        ? "If one of them was meant, correct the template. Otherwise add "
+                        : $"If '{similar}' was meant, correct the template. Otherwise add ") +
+                    $"it with AddConstraint(\"{name}\", ...) on this builder, before or after the Map call.");
             }
         }
     }
