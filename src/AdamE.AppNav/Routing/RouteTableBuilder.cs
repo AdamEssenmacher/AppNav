@@ -642,7 +642,8 @@ public sealed class RouteTableBuilder
     /// mapped, whose template repeats an earlier one is reported, with the mapping it repeats. When two different route
     /// types have the same name, the message writes both in full: with their namespace where they have one, or, when
     /// that still leaves them alike, as for generic types whose arguments share a name, as
-    /// <see cref="Type.ToString()"/> writes them.
+    /// <see cref="Type.ToString()"/> writes them, and with the name of their assembly when even that leaves them
+    /// alike, or, when that still leaves them alike, as their assembly-qualified names.
     /// <para>-or-</para>
     /// Two mappings have templates that are not the same but rank equally at every position and both match some
     /// path, such as <c>/products/{id:int}</c> and <c>/products/{n:long}</c>, which both match <c>/products/0</c>, or
@@ -651,7 +652,9 @@ public sealed class RouteTableBuilder
     /// mapping first, and one path that both match: the first mapping, in the order the routes were mapped, that
     /// conflicts with an earlier one is reported, with the earliest it conflicts with. As for the same template, two
     /// different route types of the same name are written in full: with their namespace where they have one, or as
-    /// <see cref="Type.ToString()"/> writes them when that still leaves them alike. A constraint added with
+    /// <see cref="Type.ToString()"/> writes them when that still leaves them alike, and with the name of their
+    /// assembly when even that leaves them alike, or, when that still leaves them alike, as their assembly-qualified
+    /// names. A constraint added with
     /// <see cref="AddConstraint(string, Func{string, bool})"/> is treated as overlapping every constraint, so two such
     /// templates are reported even when no text is known that both match, unless the two constraints are declared
     /// disjoint with <see cref="DeclareDisjointConstraints(ReadOnlySpan{string})"/>; the message then names no path,

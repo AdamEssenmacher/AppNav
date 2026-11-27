@@ -1,6 +1,9 @@
+extern alias OtherAssembly;
+
 using System.Text;
 using AdamE.AppNav.Routing;
 using Xunit;
+using OtherOrders = OtherAssembly::AdamE.AppNav.Tests.Routing.Orders;
 
 namespace AdamE.AppNav.Tests.Routing;
 
@@ -92,6 +95,22 @@ public sealed class RouteTableDuplicateTemplateTests
             message,
             $"'{RouteTypeNames.GenericOfOrdersDetail}'",
             $"'{RouteTypeNames.GenericOfCatalogDetail}'");
+    }
+
+    [Fact]
+    public void TheSameTemplateMessageWritesRouteTypesOfTheSameFullNameWithTheirAssemblies()
+    {
+        string message = PairMessage<Orders.DetailRoute, OtherOrders.DetailRoute>();
+        string reversed = PairMessage<OtherOrders.DetailRoute, Orders.DetailRoute>();
+
+        AssertInOrder(
+            message,
+            $"'{RouteTypeNames.OrdersDetailOfTests}'",
+            $"'{RouteTypeNames.OrdersDetailOfOtherAssembly}'");
+        AssertInOrder(
+            reversed,
+            $"'{RouteTypeNames.OrdersDetailOfOtherAssembly}'",
+            $"'{RouteTypeNames.OrdersDetailOfTests}'");
     }
 
     [Fact]

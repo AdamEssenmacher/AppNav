@@ -12,6 +12,9 @@
 
     <ItemGroup>
         <ProjectReference Include="..\..\src\AdamE.AppNav\AdamE.AppNav.csproj" />
+        <!-- Declares a route type of the same full name as one of this project, so it is named by an alias. -->
+        <ProjectReference Include="..\AdamE.AppNav.Tests.OtherAssembly\AdamE.AppNav.Tests.OtherAssembly.csproj"
+                          Aliases="OtherAssembly" />
     </ItemGroup>
 
 </Project>
