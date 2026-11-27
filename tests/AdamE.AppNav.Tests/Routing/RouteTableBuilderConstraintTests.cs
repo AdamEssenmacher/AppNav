@@ -374,6 +374,8 @@ public sealed class RouteTableBuilderConstraintTests
     [InlineData("UInt32", "uint")]
     [InlineData("uint64", "ulong")]
     [InlineData("Single", "float")]
+    [InlineData("float32", "float")]
+    [InlineData("Float64", "double")]
     [InlineData("int8", "sbyte")]
     [InlineData("uint8", "byte")]
     [InlineData("UByte", "byte")]
