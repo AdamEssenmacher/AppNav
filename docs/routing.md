@@ -1,6 +1,6 @@
 # Routing
 
-A [route](architecture.md#the-central-idea) is a typed value that names a destination in application terms. A [route template](#route-templates) is the path pattern a route answers to, and the [route table](#the-route-table) maps templates to route types, so that matching a URI gives you a typed route. [Route metadata](#route-metadata) carries values that travel with a route but are not part of its identity.
+A [route](architecture.md#the-central-idea) is a typed value that names a destination in application terms. A [route template](#route-templates) is the path pattern a route answers to, and the [route table](#the-route-table) maps templates to route types, so that matching a URI gives you a typed route. [Route metadata](#route-metadata) carries values that travel with a route but are not part of its identity, and a [route request](#route-requests) holds a route together with its metadata.
 
 ## Route templates
 
@@ -1082,3 +1082,29 @@ Console.WriteLine(metadata.Count);                               // 2: the colle
 - Two collections are equal when they hold the same entries, with equal keys and values equal by `EqualityComparer<TValue>.Default`, whatever order the entries were added in, and equal collections have equal hash codes; `==` and `!=` agree with `Equals`. A value of a type that compares by reference, such as an array or a list, makes two collections equal only when that entry holds the same instance, so prefer values with value equality: strings, numbers, enums and records.
 - Equal collections can hold values that differ in ways their type's equality ignores, such as the scale of a `decimal` or the offset of a `DateTimeOffset`. `With` always stores the value it is given, even when the entry already holds an equal one, so `TryGet` reads `1.00` after `With(key, 1.0m).With(key, 1.00m)`. `With`, `Without` and `TryGet` find an entry by its key alone and never call the value's `Equals` or `GetHashCode`; only comparing collections does.
 - Keys and collections are immutable and safe to share across threads.
+
+## Route requests
+
+An `AppRouteRequest` is a route together with the metadata that travels with it. The route says where to go and is the destination's identity; the metadata says things about this particular request for it, such as the campaign a link came from. Create one from a route and add entries with `WithMetadata`, and read them from its `Metadata`:
+
+```csharp
+using AdamE.AppNav;
+
+RouteMetadataKey<string> campaign = new("campaign");
+
+AppRouteRequest request = new AppRouteRequest(new ItemRoute(42))
+    .WithMetadata(campaign, "spring");
+
+Console.WriteLine(request.Route);                                       // ItemRoute { Id = 42 }
+Console.WriteLine(request.Metadata.TryGet(campaign, out string? code)); // True
+Console.WriteLine(code);                                                // spring
+
+public sealed record ItemRoute(int Id) : AppRoute;
+```
+
+- `new AppRouteRequest(route)` has no metadata, so its `Metadata` has no entries, and `new AppRouteRequest(route, metadata)` has the metadata given. A `null` route or metadata throws `ArgumentNullException` whose `ParamName` is `route` or `metadata`.
+- `WithMetadata` returns a request for the same route with the entry for a key set, as `RouteMetadata.With` sets it, and leaves the request it is called on unchanged. A `null` key or value throws `ArgumentNullException` whose `ParamName` is `key` or `value`.
+- `Route` and `Metadata` are get-only: they never hold `null`, and a `with` expression cannot change them.
+- Two requests are equal when their routes are equal and their metadata are equal, and equal requests have equal hash codes; `==` and `!=` agree with `Equals`.
+- A request's `ToString` prints its route with all of the route's values, but not the values of its metadata, which prints only its full type name.
+- A request is immutable and safe to share across threads, provided its route is immutable too, as a route whose members cannot be set is.
