@@ -139,7 +139,7 @@ public sealed class RouteTableAmbiguousTemplateTests
     }
 
     // The value Build names for each pair, in both orders, satisfies both constraints, and only the pairs listed as
-    // overlapping have one.
+    // overlapping have one; every other pair of built-in constraints is disjoint, never only possibly overlapping.
     [Fact]
     public void TheCommonValueOfEveryPairSatisfiesBothAndIsTheSameInBothOrders()
     {
@@ -155,10 +155,16 @@ public sealed class RouteTableAmbiguousTemplateTests
             {
                 RouteConstraint x = RouteConstraint.Find(first)!;
                 RouteConstraint y = RouteConstraint.Find(second)!;
-                string? value = RouteConstraint.FindCommonValue(x, y);
+                ConstraintOverlap overlap = RouteConstraint.FindCommonValue(x, y, out string? value);
+                ConstraintOverlap reversed = RouteConstraint.FindCommonValue(y, x, out string? reversedValue);
 
-                Assert.Equal(expected.GetValueOrDefault(PairKey(first, second)), value);
-                Assert.Equal(value, RouteConstraint.FindCommonValue(y, x));
+                string? expectedValue = expected.GetValueOrDefault(PairKey(first, second));
+                Assert.Equal(expectedValue, value);
+                Assert.Equal(
+                    expectedValue is null ? ConstraintOverlap.Disjoint : ConstraintOverlap.CommonValue,
+                    overlap);
+                Assert.Equal(overlap, reversed);
+                Assert.Equal(value, reversedValue);
                 if (value is not null)
                     Assert.True(x.IsSatisfiedBy(value) && y.IsSatisfiedBy(value), $"{first} {second} {value}");
             }
@@ -906,6 +912,7 @@ public sealed class RouteTableAmbiguousTemplateTests
             advice == GeneralAdvice ? OptionalAdvice : GeneralAdvice,
             exception.Message,
             StringComparison.Ordinal);
+        Assert.DoesNotContain("AddConstraint", exception.Message, StringComparison.Ordinal);
         AssertWitnessMatchesBoth(exception.Message);
     }
 

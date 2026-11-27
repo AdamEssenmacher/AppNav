@@ -9,8 +9,13 @@ internal static class RouteTemplateParser
         "followed by ASCII letters, digits or '_'";
 
     // The caller names the public argument the template came from, so that every exception thrown here reports it as
-    // its ParamName: value for RouteTemplate.Parse, template for RouteTableBuilder.Map.
-    public static RouteSegment[] Parse(string value, string paramName)
+    // its ParamName: value for RouteTemplate.Parse, template for RouteTableBuilder.Map. resolveAdded is null for
+    // RouteTemplate.Parse, which knows only the built-in constraints. A builder passes one that returns its constraint
+    // for a name that is not built in but has the form of an added constraint's, bound or not, so that whether it is
+    // ever added is left to Build and the order of the calls does not matter. It is called only for a segment that has
+    // passed every check, though a later segment can still fail; a name it has seen then stays with the builder,
+    // unbound, which changes nothing, since Build looks only at the constraints of the templates it was given.
+    public static RouteSegment[] Parse(string value, string paramName, Func<string, RouteConstraint>? resolveAdded)
     {
         string[] segments = RouteText.SplitSegments(value);
         var parsed = new RouteSegment[segments.Length];
@@ -27,7 +32,7 @@ internal static class RouteTemplateParser
 
             // A literal is decoded once, for the dot segment check and for the segment itself.
             string? literal = parameter is null ? Uri.UnescapeDataString(segment) : null;
-            if (FindSegmentProblem(segment, parameter, literal) is { } problem)
+            if (FindSegmentProblem(segment, parameter, literal, resolveAdded is not null) is { } problem)
             {
                 throw new ArgumentException(
                     $"Route template segment '{RouteText.EscapeForMessage(segment)}' {problem}.",
@@ -77,20 +82,26 @@ internal static class RouteTemplateParser
             if (found.IsCatchAll)
                 catchAll = i;
 
+            // FindParameterProblem has rejected constraint text that is neither built in nor, with a resolver, of the
+            // form of an added constraint's name, so any other text is resolved here.
+            RouteConstraint? constraint = found.Constraint ??
+                (found.ConstraintText is { } constraintText ? resolveAdded!(constraintText) : null);
+
             // A catch-all parameter is never optional and has no constraint, because FindParameterProblem rejects both.
             parsed[i] = found.IsCatchAll
                 ? RouteSegment.CatchAllParameter(name)
                 : found.IsOptional
-                    ? RouteSegment.OptionalParameter(name, found.Constraint)
-                    : RouteSegment.Parameter(name, found.Constraint);
+                    ? RouteSegment.OptionalParameter(name, constraint)
+                    : RouteSegment.Parameter(name, constraint);
         }
 
         return parsed;
     }
 
     // Returns the parameter's name and constraint text, split at the first ':' after a first '*' and a final '?' are
-    // removed, the built-in constraint that text names, if any, and whether there was a first '*' and a final '?',
-    // when the segment is a whole-segment parameter, valid or not; null when the segment is a literal.
+    // removed, the built-in constraint that text names, if any, which is null for the name of an added constraint,
+    // and whether there was a first '*' and a final '?', when the segment is a whole-segment parameter, valid or not;
+    // null when the segment is a literal.
     private static ParameterText? FindParameter(string segment)
     {
         if (segment.Length < 2 || segment[0] != '{' || segment[^1] != '}')
@@ -123,8 +134,13 @@ internal static class RouteTemplateParser
             isCatchAll);
     }
 
-    // The decoded literal is null for a parameter.
-    private static string? FindSegmentProblem(string segment, ParameterText? parameter, string? literal)
+    // The decoded literal is null for a parameter. canAddConstraints says whether the template is mapped on a builder,
+    // which can add constraints of its own.
+    private static string? FindSegmentProblem(
+        string segment,
+        ParameterText? parameter,
+        string? literal,
+        bool canAddConstraints)
     {
         // Checked first: a control character is invisible where the template is written, and its rule covers the
         // whole segment, so a tab or line feed at an edge is reported here rather than as white space.
@@ -137,7 +153,7 @@ internal static class RouteTemplateParser
             return "contains a lone surrogate, which is not valid UTF-16";
 
         if (parameter is { } found)
-            return FindParameterProblem(found);
+            return FindParameterProblem(found, canAddConstraints);
 
         // Checked before braces, so that a space next to an otherwise valid parameter, as in ' {id}', is reported as
         // the white space it is.
@@ -158,7 +174,7 @@ internal static class RouteTemplateParser
         return null;
     }
 
-    private static string? FindParameterProblem(ParameterText parameter)
+    private static string? FindParameterProblem(ParameterText parameter, bool canAddConstraints)
     {
         // Both checked across the name and the constraint, so that '{id?:int}' and '{id:in?t}' are reported alike.
         if (parameter.Name.Contains('*', StringComparison.Ordinal) || parameter.ConstraintText.AsSpan().Contains('*'))
@@ -198,10 +214,33 @@ internal static class RouteTemplateParser
         if (constraintText.Length == 0)
             return "has no constraint after ':'; a parameter is written '{name}' or '{name:constraint}'";
 
-        if (parameter.Constraint is null)
+        if (parameter.Constraint is not null)
+            return null;
+
+        // A reserved name can never be added, so it is rejected here on a builder too, and the message says why rather
+        // than pointing to AddConstraint.
+        if (RouteConstraint.IsReserved(constraintText))
         {
             return $"has an unknown constraint '{constraintText}'; the supported constraints are " +
-                $"{RouteConstraint.SupportedNames}, ignoring case";
+                $"{RouteConstraint.SupportedNames}, ignoring case. The name " +
+                $"'{constraintText.ToLowerInvariant()}' is reserved for a constraint the library may add, so it " +
+                "cannot be added with RouteTableBuilder.AddConstraint either";
+        }
+
+        // On a builder, a name that a constraint could be added under is left for Build to find added or not, since
+        // AddConstraint can be called after Map. Any other text can never name a constraint, so it is rejected here.
+        if (!canAddConstraints)
+        {
+            return $"has an unknown constraint '{constraintText}'; the supported constraints are " +
+                $"{RouteConstraint.SupportedNames}, ignoring case. A constraint added with " +
+                "RouteTableBuilder.AddConstraint is known only to the templates mapped on the builder it was added to";
+        }
+
+        if (!RouteConstraint.IsAddableName(constraintText))
+        {
+            return $"has an unknown constraint '{constraintText}'; the supported constraints are " +
+                $"{RouteConstraint.SupportedNames}, ignoring case, and a constraint added with AddConstraint has a " +
+                "name of an ASCII letter followed by ASCII letters, digits, '-' or '_'";
         }
 
         return null;
@@ -223,7 +262,7 @@ internal static class RouteTemplateParser
 
     // A parameter segment's text, without a first '*' or a final '?', split at the first ':' into the name and, when
     // there is a ':', the constraint text, with the built-in constraint that the text names, or null when it names
-    // none.
+    // none, as the name of an added constraint does.
     private readonly record struct ParameterText(
         string Name,
         string? ConstraintText,

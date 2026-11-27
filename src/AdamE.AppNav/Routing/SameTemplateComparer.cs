@@ -60,7 +60,8 @@ internal sealed class SameTemplateComparer : IEqualityComparer<RouteTemplate>
     }
 
     // Whether two segments in the same position are the same. Constraints compare by reference, because each built-in
-    // constraint is one instance, whatever case its name was written in.
+    // constraint is one instance, whatever case its name was written in, and so is each constraint a builder adds,
+    // which only the templates mapped on that builder, and so in its tables, can name.
     private bool IsSameSegment(in RouteSegment x, in RouteSegment y)
     {
         if (x.Kind != y.Kind)

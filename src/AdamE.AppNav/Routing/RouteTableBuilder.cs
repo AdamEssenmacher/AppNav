@@ -16,6 +16,15 @@ public sealed class RouteTableBuilder
     // side by side, and a type of AddValueCodec alone, since its nullable form cannot be named without reflection.
     private readonly Dictionary<Type, object> _codecs = [];
 
+    // One constraint for each name that AddConstraint or a mapped template has named, not built in, ignoring case,
+    // bound once AddConstraint is called for it. One instance for each name makes two templates that name it in
+    // different case the same template, as for a built-in constraint. The names are ASCII, so ignoring case ordinally
+    // is the same in every culture.
+    private readonly Dictionary<string, RouteConstraint> _constraints = new(StringComparer.OrdinalIgnoreCase);
+
+    // The resolver passed to the template parser, made once.
+    private Func<string, RouteConstraint>? _resolveConstraint;
+
     /// <summary>
     /// Maps a route template to a route type.
     /// </summary>
@@ -33,22 +42,25 @@ public sealed class RouteTableBuilder
     /// <remarks>
     /// In this version, the same route type can be mapped to more than one template. The same template cannot be
     /// mapped twice, nor two templates that rank equally and can match the same path, but that is checked by
-    /// <see cref="Build"/>, not here. The order of the calls sets the order of <see cref="RouteTable.Definitions"/>,
-    /// but never which mapping wins when several match, which follows the precedence of their templates as
-    /// <see cref="RouteTable.Match(Uri)"/> describes.
+    /// <see cref="Build"/>, not here. The template can name a constraint added with
+    /// <see cref="AddConstraint(string, Func{string, bool})"/>, before or after this call. The order of the calls sets
+    /// the order of <see cref="RouteTable.Definitions"/>, but never which mapping wins when several match, which
+    /// follows the precedence of their templates as <see cref="RouteTable.Match(Uri)"/> describes.
     /// </remarks>
     /// <exception cref="ArgumentNullException">
     /// <paramref name="template"/> or <paramref name="createRoute"/> is <see langword="null"/>.
     /// </exception>
     /// <exception cref="ArgumentException">
     /// <paramref name="template"/> is not a valid route template, for any of the reasons that
-    /// <see cref="RouteTemplate.Parse(string)"/> gives. The exception's <see cref="ArgumentException.ParamName"/> is
-    /// <c>template</c>.
+    /// <see cref="RouteTemplate.Parse(string)"/> gives, except that a constraint whose name is not built in, is not
+    /// reserved and has the form that <see cref="AddConstraint(string, Func{string, bool})"/> accepts is left for
+    /// <see cref="Build"/> to check. A reserved name, which can never be added, is rejected here.
+    /// The exception's <see cref="ArgumentException.ParamName"/> is <c>template</c>.
     /// </exception>
     public RouteTableBuilder Map<TRoute>(string template, Func<RouteMatchContext, TRoute> createRoute)
         where TRoute : AppRoute
     {
-        RouteTemplate parsed = RouteTemplate.Parse(template, nameof(template));
+        RouteTemplate parsed = RouteTemplate.Parse(template, nameof(template), ResolveConstraint());
         ArgumentNullException.ThrowIfNull(createRoute);
 
         // Func is covariant in its result, so the function is stored as it is, without a wrapper.
@@ -105,8 +117,10 @@ public sealed class RouteTableBuilder
     /// </exception>
     /// <exception cref="ArgumentException">
     /// <paramref name="template"/> is not a valid route template, for any of the reasons that
-    /// <see cref="RouteTemplate.Parse(string)"/> gives; the exception's <see cref="ArgumentException.ParamName"/> is
-    /// <c>template</c>.
+    /// <see cref="RouteTemplate.Parse(string)"/> gives, except that a constraint whose name is not built in, is not
+    /// reserved and has the form that <see cref="AddConstraint(string, Func{string, bool})"/> accepts is left for
+    /// <see cref="Build"/> to check, while a reserved name, which can never be added, is rejected here; the
+    /// exception's <see cref="ArgumentException.ParamName"/> is <c>template</c>.
     /// <para>-or-</para>
     /// <paramref name="format"/> did not declare every parameter of the template. The message names the template and
     /// the first parameter, in template order, that is not declared, and the exception's
@@ -135,7 +149,7 @@ public sealed class RouteTableBuilder
         Action<RouteFormatBuilder<TRoute>> format)
         where TRoute : AppRoute
     {
-        RouteTemplate parsed = RouteTemplate.Parse(template, nameof(template));
+        RouteTemplate parsed = RouteTemplate.Parse(template, nameof(template), ResolveConstraint());
         ArgumentNullException.ThrowIfNull(createRoute);
         ArgumentNullException.ThrowIfNull(format);
 
@@ -370,6 +384,109 @@ public sealed class RouteTableBuilder
     }
 
     /// <summary>
+    /// Adds a constraint of the application's own, which the templates mapped on this builder can then name, as in
+    /// <c>{value:name}</c> or <c>{value:name?}</c>, as they name a built-in constraint.
+    /// </summary>
+    /// <param name="name">
+    /// The name of the constraint: an ASCII letter followed by ASCII letters, digits, <c>-</c> or <c>_</c>, such as
+    /// <c>slug</c> or <c>order-code</c>. Names are compared without regard to ASCII case, so a template can write
+    /// <c>{x:Slug}</c> for <c>slug</c>, and messages write the name in lower case.
+    /// </param>
+    /// <param name="isSatisfiedBy">
+    /// Returns whether a parameter's decoded segment text satisfies the constraint. It receives the text exactly as a
+    /// built-in constraint does, decoded and never trimmed, and must return the same answer for the same text. It is
+    /// called by <see cref="RouteTable.Match(Uri)"/> for the segment in the parameter's position, unless the segment is
+    /// <c>.</c> or <c>..</c> once decoded; by <see cref="RouteTable.Format(AppRoute)"/> and
+    /// <see cref="RouteTable.FormatUri(AppRoute, Uri)"/>, to check the value written, unless it is <c>.</c> or
+    /// <c>..</c>, and when checking whether a template that ranks higher would match the path written; by
+    /// <see cref="RouteTemplate.Match(string)"/> and
+    /// <see cref="RouteTemplate.Format(IReadOnlyDictionary{string, string})"/> of a template mapped on this builder,
+    /// such as one read from <see cref="RouteTable.Definitions"/>, as the table's own methods call it; and by
+    /// <see cref="Build"/>, with sample texts, when it checks that templates can be told apart. It must be safe to call
+    /// from several threads at once, since a built table is. An exception it throws, a
+    /// <see cref="RouteValueException"/> included, propagates unchanged from each of them.
+    /// </param>
+    /// <returns>This builder, so that calls can be chained.</returns>
+    /// <remarks>
+    /// <para>
+    /// Adding applies to the whole table, so the order of this call and of the <c>Map</c> calls does not matter: a
+    /// template can name the constraint before it is added. A template that names a constraint that is neither built
+    /// in nor added by the time <see cref="Build"/> is called is reported by <see cref="Build"/>; one that names a
+    /// reserved name, which can never be added, is rejected by <c>Map</c>. A table already built
+    /// does not change; <see cref="Build"/> builds one that includes the constraint.
+    /// </para>
+    /// <para>
+    /// The constraint belongs to this builder: <see cref="RouteTemplate.Parse(string)"/> and the templates mapped on
+    /// another builder do not know it, so the <see cref="RouteTemplate.Value"/> of a template that names it cannot be
+    /// given to <see cref="RouteTemplate.Parse(string)"/>.
+    /// </para>
+    /// <para>
+    /// A constraint only decides whether a segment matches; the value captured is the decoded text, unchanged, as for
+    /// a built-in constraint. To read it as a type of the application's own, pair the constraint with a codec
+    /// registered with <see cref="AddValueCodec{TValue}"/> and a typed read.
+    /// </para>
+    /// <para>
+    /// A parameter with an added constraint ranks as one with a built-in constraint does. Which text the function
+    /// accepts cannot be known, so <see cref="Build"/> treats an added constraint as overlapping every constraint,
+    /// itself included: it cannot keep apart two templates that otherwise rank equally, and such a pair is rejected
+    /// as templates that cannot be told apart. Keep them apart with a different literal instead.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="name"/> or <paramref name="isSatisfiedBy"/> is <see langword="null"/>.
+    /// </exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="name"/> is not an ASCII letter followed by ASCII letters, digits, <c>-</c> or <c>_</c>; it is
+    /// the name of a built-in constraint, <c>int</c>, <c>long</c>, <c>decimal</c>, <c>bool</c>, <c>guid</c> or
+    /// <c>alpha</c>; it is reserved for a later built-in constraint, as the C# keywords of the other built-in value
+    /// types are: <c>string</c>, <c>char</c>, <c>sbyte</c>, <c>byte</c>, <c>short</c>, <c>ushort</c>, <c>uint</c>,
+    /// <c>ulong</c>, <c>float</c> and <c>double</c>; or a constraint with that name, ignoring case, is already added on
+    /// this builder. The exception's <see cref="ArgumentException.ParamName"/> is <c>name</c>, and the builder is not
+    /// changed.
+    /// </exception>
+    public RouteTableBuilder AddConstraint(string name, Func<string, bool> isSatisfiedBy)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        ArgumentNullException.ThrowIfNull(isSatisfiedBy);
+
+        if (!RouteConstraint.IsAddableName(name))
+        {
+            throw new ArgumentException(
+                $"The constraint name '{RouteText.EscapeForMessage(name)}' is not valid; the name of a constraint is " +
+                "an ASCII letter followed by ASCII letters, digits, '-' or '_'.",
+                nameof(name));
+        }
+
+        string lower = name.ToLowerInvariant();
+        if (RouteConstraint.Find(name) is not null)
+        {
+            throw new ArgumentException(
+                $"The constraint name '{lower}' is the name of a built-in constraint, which cannot be replaced; the " +
+                $"built-in constraints are {RouteConstraint.SupportedNames}, ignoring case.",
+                nameof(name));
+        }
+
+        if (RouteConstraint.IsReserved(name))
+        {
+            throw new ArgumentException(
+                $"The constraint name '{lower}' is reserved, so that a later built-in constraint can have it.",
+                nameof(name));
+        }
+
+        if (_constraints.TryGetValue(name, out RouteConstraint? constraint) && constraint.IsBound)
+        {
+            throw new ArgumentException(
+                $"The constraint name '{lower}' is already added on this builder, and a name has one constraint; " +
+                "names are compared without regard to case.",
+                nameof(name));
+        }
+
+        constraint ??= AddUnbound(name);
+        constraint.Bind(isSatisfiedBy);
+        return this;
+    }
+
+    /// <summary>
     /// Builds a route table from the mappings made so far.
     /// </summary>
     /// <returns>
@@ -379,6 +496,12 @@ public sealed class RouteTableBuilder
     /// which <see cref="RouteTable.Match(Uri)"/> tries them, by precedence, is decided here, once.
     /// </returns>
     /// <exception cref="InvalidOperationException">
+    /// A template names a constraint that is neither built in nor added with
+    /// <see cref="AddConstraint(string, Func{string, bool})"/>. The message names the template, the route type and
+    /// the constraint, and lists the built-in constraints. A misspelled built-in name, such as <c>itn</c>, is
+    /// reported here too, and the message then names the built-in constraint it resembles. The first such
+    /// constraint, in the order the routes were mapped and then in template order, is reported.
+    /// <para>-or-</para>
     /// Two mappings have the same template: the same number of segments and, at every position, the same kind of
     /// segment, the same decoded literal text, compared ordinally and case-sensitively, and the same constraint or
     /// none. Parameter names do not count, so <c>/a/{x}</c> and <c>/a/{y}</c> are the same. The message names both
@@ -390,7 +513,10 @@ public sealed class RouteTableBuilder
     /// <c>/a/{x:int?}</c> and <c>/a/{y:alpha?}</c>, which both match <c>/a</c>. The route that won for such a path
     /// would depend on the order of the mappings. The message names both templates and both route types, the earlier
     /// mapping first, and one path that both match: the first mapping, in the order the routes were mapped, that
-    /// conflicts with an earlier one is reported, with the earliest it conflicts with. The same template twice is
+    /// conflicts with an earlier one is reported, with the earliest it conflicts with. A constraint added with
+    /// <see cref="AddConstraint(string, Func{string, bool})"/> is treated as overlapping every constraint, so two such
+    /// templates are reported even when no text is known that both match; the message then names no path, but the
+    /// constraints at the first required position where no common text is known. The same template twice is
     /// looked for first, across the whole table, so it is reported even when two other mappings that conflict in this
     /// way come earlier. Templates that rank differently can match the same path, because precedence decides between
     /// them.
@@ -408,13 +534,66 @@ public sealed class RouteTableBuilder
     /// value, the type and the method that registers it: <see cref="AddEnumValueCodec{TEnum}"/> for an enum, which it
     /// says can also be given a codec of its own, and <see cref="AddValueCodec{TValue}"/> for any other type.
     /// <para/>
-    /// The templates are checked first, then that no route type has two format functions, then the types the format
-    /// functions write, each in the order the routes were mapped. In every case, the builder is not changed.
+    /// The constraints the templates name are checked first, then the templates, then that no route type has two
+    /// format functions, then the types the format functions write, each in the order the routes were mapped. In every
+    /// case, the builder is not changed.
+    /// </exception>
+    /// <exception cref="Exception">
+    /// Any exception that the function of a constraint added with
+    /// <see cref="AddConstraint(string, Func{string, bool})"/> throws when it is called with a sample text, unchanged.
     /// </exception>
     public RouteTable Build()
     {
+        ThrowIfConstraintNotAdded();
+
         // The codecs themselves never change, so tables can share them; only the dictionary is copied.
         return new RouteTable(_definitions.ToArray(), _codecs.ToFrozenDictionary());
+    }
+
+    // The resolver that lets the parser leave a name that is not built in to this builder, made on first use so that
+    // a builder that maps nothing allocates none.
+    private Func<string, RouteConstraint> ResolveConstraint()
+    {
+        return _resolveConstraint ??= name => _constraints.TryGetValue(name, out RouteConstraint? constraint)
+            ? constraint
+            : AddUnbound(name);
+    }
+
+    private RouteConstraint AddUnbound(string name)
+    {
+        RouteConstraint constraint = RouteConstraint.Unbound(name);
+        _constraints.Add(name, constraint);
+        return constraint;
+    }
+
+    // A table must never hold a constraint without its function, so a template whose constraint has not been added
+    // yet is reported before anything calls one. Only the templates of the mappings count: a name that a template
+    // which then failed to map named stays in _constraints unbound, and is no error.
+    private void ThrowIfConstraintNotAdded()
+    {
+        foreach (RouteDefinition definition in _definitions)
+        {
+            foreach (RouteSegment segment in definition.Template.Segments)
+            {
+                if (segment.Constraint is not { IsBound: false } constraint)
+                    continue;
+
+                // The parser has already rejected a reserved name, which could never be added.
+                // A misspelled built-in name has the form of an added one, so it arrives here and not at Map, and the
+                // likeliest fix is then to correct the template, which the message says first.
+                string name = constraint.Name;
+                string? similar = RouteConstraint.FindSimilarBuiltIn(name);
+                throw new InvalidOperationException(
+                    $"The template '{definition.Template.Value}', mapped to route type " +
+                    $"'{RouteValueTypes.DisplayName(definition.RouteType)}', names the constraint '{name}', which is " +
+                    $"neither built in nor added on this builder. The built-in constraints are " +
+                    $"{RouteConstraint.SupportedNames}, ignoring case. " +
+                    (similar is null
+                        ? "If one of them was meant, correct the template. Otherwise add "
+                        : $"If '{similar}' was meant, correct the template. Otherwise add ") +
+                    $"it with AddConstraint(\"{name}\", ...) on this builder, before or after the Map call.");
+            }
+        }
     }
 
     // A second codec for a type would make which one a table reads and writes it with depend on the order of the

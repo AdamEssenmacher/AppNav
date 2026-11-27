@@ -44,7 +44,7 @@ public sealed class RouteTableTests
     [InlineData("settings", MustStartWithSlash)]
     [InlineData("/{id}/{ID}", RepeatedName)]
     [InlineData("/a/../b", DotSegment)]
-    [InlineData("/{id:slug}", UnknownConstraint)]
+    [InlineData("/{id:in t}", UnknownConstraint)]
     public void MapRejectsAnInvalidTemplateUnderItsOwnParameterName(string template, string category)
     {
         var builder = new RouteTableBuilder();

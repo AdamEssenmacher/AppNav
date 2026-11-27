@@ -36,6 +36,7 @@ AdamE.AppNav.Routing.RouteTable.Format(AdamE.AppNav.AppRoute! route) -> string!
 AdamE.AppNav.Routing.RouteTable.FormatUri(AdamE.AppNav.AppRoute! route, System.Uri! baseUri) -> System.Uri!
 AdamE.AppNav.Routing.RouteTable.Match(System.Uri! uri) -> AdamE.AppNav.Routing.RouteMatchResult!
 AdamE.AppNav.Routing.RouteTableBuilder
+AdamE.AppNav.Routing.RouteTableBuilder.AddConstraint(string! name, System.Func<string!, bool>! isSatisfiedBy) -> AdamE.AppNav.Routing.RouteTableBuilder!
 AdamE.AppNav.Routing.RouteTableBuilder.AddEnumValueCodec<TEnum>() -> AdamE.AppNav.Routing.RouteTableBuilder!
 AdamE.AppNav.Routing.RouteTableBuilder.AddValueCodec<TValue>(AdamE.AppNav.Routing.RouteValueParser<TValue>! tryParse, System.Func<TValue, string?>! format) -> AdamE.AppNav.Routing.RouteTableBuilder!
 AdamE.AppNav.Routing.RouteTableBuilder.Build() -> AdamE.AppNav.Routing.RouteTable!

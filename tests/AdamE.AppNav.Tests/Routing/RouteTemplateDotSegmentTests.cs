@@ -261,6 +261,8 @@ public sealed class RouteTemplateDotSegmentTests
         Assert.DoesNotContain(DotSegmentValue, exception.Message, StringComparison.Ordinal);
     }
 
+    // A dot segment is reported as one before the constraint is asked, as Match rejects it before asking, even though
+    // no built-in constraint accepts one.
     [Theory]
     [InlineData("int")]
     [InlineData("long")]
@@ -279,9 +281,10 @@ public sealed class RouteTemplateDotSegmentTests
             ArgumentException exception = AssertRejectsValue(
                 () => template.Format(values),
                 "v",
-                UnsatisfiedConstraint);
+                DotSegmentValue);
 
-            Assert.DoesNotContain(DotSegmentValue, exception.Message, StringComparison.Ordinal);
+            Assert.False(RouteConstraint.Find(constraint)!.IsSatisfiedBy(dotSegment), constraint);
+            Assert.DoesNotContain(UnsatisfiedConstraint, exception.Message, StringComparison.Ordinal);
         }
     }
 

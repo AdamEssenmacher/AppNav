@@ -27,7 +27,10 @@ namespace AdamE.AppNav.Routing;
 /// <c>-</c> and ASCII digits within the type's range; <c>decimal</c> also accepts one <c>.</c>; <c>bool</c> accepts
 /// <c>true</c> or <c>false</c> in any ASCII case; <c>guid</c> accepts only 32 hex digits, in either case, with
 /// hyphens in the 8-4-4-4-12 form; and <c>alpha</c> accepts one or more Unicode letters. The captured value is the
-/// decoded text, unchanged.
+/// decoded text, unchanged. A template mapped on a <see cref="RouteTableBuilder"/> can also name a constraint added
+/// to that builder with <see cref="RouteTableBuilder.AddConstraint(string, Func{string, bool})"/>;
+/// <see cref="Parse(string)"/> knows only the built-in ones, so the <see cref="Value"/> of such a template, read from
+/// <see cref="RouteTable.Definitions"/>, cannot be given to it.
 /// </para>
 /// <para>
 /// A parameter written <c>{name?}</c> or <c>{name:constraint?}</c> is optional: it matches one segment or none. The
@@ -149,12 +152,14 @@ public sealed class RouteTemplate
     /// <paramref name="value"/> is empty or consists only of white space or does not start with <c>/</c>; a segment
     /// contains a control character or a lone surrogate; a parameter contains <c>*</c> other than as its first
     /// character, contains <c>?</c> other than as its last character, has an invalid name, repeats the name of an
-    /// earlier parameter, ignoring case, contains more than one <c>:</c>, or has an empty or unknown constraint; a
-    /// catch-all parameter is optional or has a constraint; a literal segment starts or ends with white space, or
-    /// contains <c>{</c>, <c>}</c>, <c>?</c> or <c>#</c>; a literal segment is a dot segment, <c>.</c> or <c>..</c>
-    /// once decoded; a literal or a parameter that is not optional, including a catch-all parameter, follows an
-    /// optional parameter; or any segment follows a catch-all parameter. Apart from the dot segment, which no encoding
-    /// avoids, these checks apply to the text as written, before percent-decoding.
+    /// earlier parameter, ignoring case, contains more than one <c>:</c>, or has an empty constraint or one that is not
+    /// built in, since a constraint added with
+    /// <see cref="RouteTableBuilder.AddConstraint(string, Func{string, bool})"/> is known only to the templates mapped
+    /// on that builder; a catch-all parameter is optional or has a constraint; a literal segment starts or ends with
+    /// white space, or contains <c>{</c>, <c>}</c>, <c>?</c> or <c>#</c>; a literal segment is a dot segment, <c>.</c>
+    /// or <c>..</c> once decoded; a literal or a parameter that is not optional, including a catch-all parameter,
+    /// follows an optional parameter; or any segment follows a catch-all parameter. Apart from the dot segment, which
+    /// no encoding avoids, these checks apply to the text as written, before percent-decoding.
     /// </para>
     /// <para>
     /// The rules for names and constraints apply to a parameter with a first <c>*</c> and a final <c>?</c> removed, so
@@ -169,19 +174,20 @@ public sealed class RouteTemplate
     /// </exception>
     public static RouteTemplate Parse(string value)
     {
-        return Parse(value, nameof(value));
+        return Parse(value, nameof(value), resolveAdded: null);
     }
 
     // Parses a template that a public method received under another name, so that its exceptions name that argument
-    // with the same messages, rather than value.
-    internal static RouteTemplate Parse(string value, string paramName)
+    // with the same messages, rather than value. A builder passes resolveAdded, as RouteTemplateParser.Parse describes,
+    // so that its templates can name the constraints it adds.
+    internal static RouteTemplate Parse(string value, string paramName, Func<string, RouteConstraint>? resolveAdded)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(value, paramName);
 
         if (!value.StartsWith('/'))
             throw new ArgumentException("Route templates must start with '/'.", paramName);
 
-        return new RouteTemplate(value, RouteTemplateParser.Parse(value, paramName));
+        return new RouteTemplate(value, RouteTemplateParser.Parse(value, paramName, resolveAdded));
     }
 
     /// <summary>
@@ -226,6 +232,11 @@ public sealed class RouteTemplate
     /// </para>
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="path"/> is <see langword="null"/>.</exception>
+    /// <exception cref="Exception">
+    /// Any exception that the function of a constraint added with
+    /// <see cref="RouteTableBuilder.AddConstraint(string, Func{string, bool})"/> throws, unchanged, for a template
+    /// mapped on that builder, such as one read from <see cref="RouteTable.Definitions"/>.
+    /// </exception>
     public IReadOnlyDictionary<string, string>? Match(string path)
     {
         ArgumentNullException.ThrowIfNull(path);
@@ -330,34 +341,86 @@ public sealed class RouteTemplate
         return 0;
     }
 
-    // Returns a path that both this template and another of the same shape match, or null when none does, which is
-    // when the constraints at some required position accept no text in common. The path has only the required
-    // segments, because a path that leaves out every optional parameter and the catch-all matches both whatever their
-    // constraints. Every position is checked before the path is built, because most templates of one shape in a table
-    // differ in a constraint that keeps them apart, and those comparisons then allocate nothing.
-    internal string? FindCommonPath(RouteTemplate other)
+    // Says whether this template and another of the same shape can both match a path, from their required positions
+    // alone, because a path that leaves out every optional parameter and the catch-all matches both whatever their
+    // constraints. They are disjoint when the constraints at some required position accept no text in common, which
+    // only two built-in constraints can be known to do. Otherwise, path is one that both match, with only the required
+    // segments, when a common segment is known at every required position; when one is not, which only an added
+    // constraint causes, the templates may overlap, path is null and position is the first required position whose
+    // segment is not known. Every position is checked before the path is built, because most templates of one shape in
+    // a table differ in a constraint that keeps them apart, and those comparisons then allocate nothing.
+    internal ConstraintOverlap FindCommonPath(RouteTemplate other, out string? path, out int position)
     {
         Debug.Assert(SameTemplateComparer.SameShape.Equals(this, other), "Only templates of one shape are compared.");
 
+        path = null;
+        position = -1;
         for (var i = 0; i < _requiredCount; i++)
         {
-            if (CommonSegment(other, i) is null)
-                return null;
+            ConstraintOverlap overlap = CommonSegment(other, i, out _);
+            if (overlap == ConstraintOverlap.Disjoint)
+            {
+                position = -1;
+                return ConstraintOverlap.Disjoint;
+            }
+
+            if (overlap == ConstraintOverlap.MayOverlap && position < 0)
+                position = i;
         }
 
+        if (position >= 0)
+            return ConstraintOverlap.MayOverlap;
+
         if (_requiredCount == 0)
-            return "/";
+        {
+            path = "/";
+            return ConstraintOverlap.CommonValue;
+        }
 
-        var path = new StringBuilder();
+        var builder = new StringBuilder();
         for (var i = 0; i < _requiredCount; i++)
-            path.Append('/').Append(CommonSegment(other, i));
+        {
+            CommonSegment(other, i, out string? segment);
+            builder.Append('/').Append(segment);
+        }
 
-        return path.ToString();
+        path = builder.ToString();
+        return ConstraintOverlap.CommonValue;
+    }
+
+    // Whether this template or another of the same shape has an added constraint at a required position, or, when
+    // required is false, at a position after them, where only optional parameters have constraints, so that a message
+    // does not offer constraints as a way to keep them apart where an added constraint is involved.
+    internal bool HasAddedConstraint(RouteTemplate other, bool required)
+    {
+        Debug.Assert(SameTemplateComparer.SameShape.Equals(this, other), "Only templates of one shape are compared.");
+
+        int start = required ? 0 : _requiredCount;
+        int end = required ? _requiredCount : _segments.Length;
+        for (int i = start; i < end; i++)
+        {
+            if (_segments[i].Constraint is { IsBuiltIn: false } ||
+                other._segments[i].Constraint is { IsBuiltIn: false })
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // The constraints of this template and another of the same shape at a position, for a message that names them.
+    internal (RouteConstraint Constraint, RouteConstraint OtherConstraint) ConstraintsAt(
+        RouteTemplate other,
+        int position)
+    {
+        return (_segments[position].Constraint!, other._segments[position].Constraint!);
     }
 
     // Whether two templates of the same shape have the same required segments, so that only their optional
     // parameters, which never keep templates apart, distinguish them, and a message must not advise changing their
-    // constraints. Literals are already the same within a shape, so only the constraints are compared.
+    // constraints. Literals are already the same within a shape, so only the constraints are compared, by reference,
+    // which holds for added constraints too, since a builder has one instance for each name.
     internal bool HasSameRequiredSegments(RouteTemplate other)
     {
         Debug.Assert(SameTemplateComparer.SameShape.Equals(this, other), "Only templates of one shape are compared.");
@@ -373,18 +436,25 @@ public sealed class RouteTemplate
 
     // The text of a path segment that both templates accept at a required position: a literal as Format writes it,
     // which is the same for both, a letter for parameters without a constraint, which take any text, or a value both
-    // constraints accept, if there is one.
-    private string? CommonSegment(RouteTemplate other, int position)
+    // constraints accept, if one is known. Within a shape, one parameter has a constraint exactly when the other does.
+    private ConstraintOverlap CommonSegment(RouteTemplate other, int position, out string? text)
     {
         RouteSegment segment = _segments[position];
         if (!segment.IsParameter)
-            return segment.EncodedText;
+        {
+            text = segment.EncodedText;
+            return ConstraintOverlap.CommonValue;
+        }
 
         RouteConstraint? constraint = segment.Constraint;
         RouteConstraint? otherConstraint = other._segments[position].Constraint;
-        return constraint is null || otherConstraint is null
-            ? "x"
-            : RouteConstraint.FindCommonValue(constraint, otherConstraint);
+        if (constraint is null || otherConstraint is null)
+        {
+            text = "x";
+            return ConstraintOverlap.CommonValue;
+        }
+
+        return RouteConstraint.FindCommonValue(constraint, otherConstraint, out text);
     }
 
     // The rank of a position, from the kind and the constraint of its segment, or Ended past the last one. It is
@@ -457,13 +527,18 @@ public sealed class RouteTemplate
     /// A parameter that is not optional or catch-all has no entry in <paramref name="pathValues"/>; a parameter has no
     /// entry under its name as written and more than one whose key equals it ignoring case; a parameter's value is
     /// <see langword="null"/>, empty, not valid UTF-16 (it contains a lone surrogate, which cannot be percent-encoded
-    /// and read back unchanged), does not satisfy the parameter's constraint, or is <c>.</c> or <c>..</c>; a catch-all
+    /// and read back unchanged), is <c>.</c> or <c>..</c>, or does not satisfy the parameter's constraint; a catch-all
     /// parameter's value starts or ends with <c>/</c>, contains <c>//</c>, or has <c>.</c> or <c>..</c> as a part
     /// between slashes; or an optional parameter has a value although an earlier optional parameter was left out, so
     /// its segment cannot be written. These rules apply to optional and catch-all parameters that have an entry
     /// exactly as to other parameters: a <see langword="null"/> or empty value does not leave a parameter out. The
     /// first parameter in template order that cannot be formatted is the one reported. When a parameter has more than
     /// one problem, which one is reported is not specified.
+    /// </exception>
+    /// <exception cref="Exception">
+    /// Any exception that the function of a constraint added with
+    /// <see cref="RouteTableBuilder.AddConstraint(string, Func{string, bool})"/> throws, unchanged, for a template
+    /// mapped on that builder, such as one read from <see cref="RouteTable.Definitions"/>.
     /// </exception>
     public string Format(IReadOnlyDictionary<string, string> pathValues)
     {
@@ -617,13 +692,15 @@ public sealed class RouteTemplate
             return PathValueProblem.EmptyPart;
         }
 
-        if (parameter.Constraint is { } constraint && !constraint.IsSatisfiedBy(value))
-            return PathValueProblem.ConstraintNotSatisfied;
-
-        // Checked last, so that every other problem is reported first. No constraint accepts a dot segment, so for a
-        // parameter with one, the constraint has already rejected it.
+        // Checked before the constraint, as Match checks a segment, so that a constraint is never asked about a dot
+        // segment, which an added constraint's function need not expect, and a dot segment is reported as one even for
+        // a parameter whose constraint would reject it too.
         if (parameter.IsCatchAll ? RouteText.HasDotSegmentPart(value) : RouteText.IsDotSegment(value))
             return PathValueProblem.DotSegment;
+
+        // Checked last, so that every other problem is reported first.
+        if (parameter.Constraint is { } constraint && !constraint.IsSatisfiedBy(value))
+            return PathValueProblem.ConstraintNotSatisfied;
 
         return null;
     }

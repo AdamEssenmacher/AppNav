@@ -281,7 +281,8 @@ public sealed class RouteMatchContextTypedPathTests
         }
     }
 
-    // There is no constraint for the types that only the typed reads support, so a template naming one is invalid.
+    // There is no constraint for the types that only the typed reads support, so a template naming one is invalid. The
+    // names are reserved, so a builder cannot add them either, and Map rejects them at once.
     [Theory]
     [InlineData("sbyte")]
     [InlineData("byte")]
@@ -301,8 +302,10 @@ public sealed class RouteMatchContextTypedPathTests
 
         Assert.Equal("value", parse.ParamName);
         Assert.Contains($"unknown constraint '{type}'", parse.Message, StringComparison.Ordinal);
+        Assert.Contains("is reserved", parse.Message, StringComparison.Ordinal);
         Assert.Equal("template", map.ParamName);
         Assert.Contains($"unknown constraint '{type}'", map.Message, StringComparison.Ordinal);
+        Assert.Contains("is reserved", map.Message, StringComparison.Ordinal);
         Assert.Null(RouteConstraint.Find(type));
     }
 
@@ -1235,13 +1238,13 @@ public sealed class RouteMatchContextTypedPathTests
     [Fact]
     public void NoConstraintIsNamedAfterEnums()
     {
-        RouteTableBuilder builder = new RouteTableBuilder().AddEnumValueCodec<Status>();
+        RouteTableBuilder builder = new RouteTableBuilder()
+            .AddEnumValueCodec<Status>()
+            .Map("/orders/{status:enum}", _ => new SettingsRoute());
 
-        ArgumentException exception = Assert.Throws<ArgumentException>(
-            () => builder.Map("/orders/{status:enum}", _ => new SettingsRoute()));
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(builder.Build);
 
-        Assert.Equal("template", exception.ParamName);
-        Assert.Contains("unknown constraint 'enum'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("names the constraint 'enum'", exception.Message, StringComparison.Ordinal);
         Assert.Null(RouteConstraint.Find("enum"));
     }
 
@@ -1622,13 +1625,11 @@ public sealed class RouteMatchContextTypedPathTests
     [Fact]
     public void NoConstraintIsNamedAfterACustomType()
     {
-        RouteTableBuilder builder = Custom.Builder();
+        RouteTableBuilder builder = Custom.Builder().Map("/p/{id:productid}", _ => new SettingsRoute());
 
-        ArgumentException exception = Assert.Throws<ArgumentException>(
-            () => builder.Map("/p/{id:productid}", _ => new SettingsRoute()));
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(builder.Build);
 
-        Assert.Equal("template", exception.ParamName);
-        Assert.Contains("unknown constraint 'productid'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("names the constraint 'productid'", exception.Message, StringComparison.Ordinal);
     }
 
     // A read of a struct with a codec passes the value through the codec as the struct itself, so it costs less than

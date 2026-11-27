@@ -1,6 +1,7 @@
 using System.Collections.Frozen;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Text;
 
 namespace AdamE.AppNav.Routing;
 
@@ -148,7 +149,10 @@ public sealed class RouteTable
     /// </para>
     /// <para>
     /// A URI that no template matches is not an error. The table itself does not throw for the content of a URI; an
-    /// exception other than <see cref="RouteValueException"/> that a create function throws propagates to the caller.
+    /// exception other than <see cref="RouteValueException"/> that a create function throws propagates to the caller,
+    /// and so does any exception, a <see cref="RouteValueException"/> included, that the function of a constraint
+    /// added with <see cref="RouteTableBuilder.AddConstraint(string, Func{string, bool})"/> throws, since it runs
+    /// while a template is chosen, before any create function is called.
     /// </para>
     /// <para>
     /// The table checks neither the scheme nor the host, so <c>https://other.example/account</c> and
@@ -163,6 +167,9 @@ public sealed class RouteTable
     /// <exception cref="Exception">
     /// Any exception other than <see cref="RouteValueException"/> that the create function of the definition that
     /// matched throws, unchanged.
+    /// <para>-or-</para>
+    /// Any exception, <see cref="RouteValueException"/> included, that the function of a constraint added with
+    /// <see cref="RouteTableBuilder.AddConstraint(string, Func{string, bool})"/> throws, unchanged.
     /// </exception>
     // A rejected value is thrown in the application's create function and caught here, so a debugger that breaks on
     // user-unhandled exceptions would stop on every rejected link. The attribute stops that for this method, and for
@@ -320,9 +327,10 @@ public sealed class RouteTable
     /// parameter or by giving one of them a literal of its own.
     /// </exception>
     /// <exception cref="Exception">
-    /// Any exception that a value function throws, that a list of query values throws while it is enumerated, or that
+    /// Any exception that a value function throws, that a list of query values throws while it is enumerated, that
     /// a codec registered with <see cref="RouteTableBuilder.AddValueCodec{TValue}"/> throws while it writes a value or
-    /// reads back the text it wrote, unchanged.
+    /// reads back the text it wrote, or that the function of a constraint added with
+    /// <see cref="RouteTableBuilder.AddConstraint(string, Func{string, bool})"/> throws, unchanged.
     /// </exception>
     public string Format(AppRoute route)
     {
@@ -426,9 +434,10 @@ public sealed class RouteTable
     /// <see cref="ArgumentException.ParamName"/> and message.
     /// </exception>
     /// <exception cref="Exception">
-    /// Any exception that a value function throws, that a list of query values throws while it is enumerated, or that
+    /// Any exception that a value function throws, that a list of query values throws while it is enumerated, that
     /// a codec registered with <see cref="RouteTableBuilder.AddValueCodec{TValue}"/> throws while it writes a value or
-    /// reads back the text it wrote, unchanged.
+    /// reads back the text it wrote, or that the function of a constraint added with
+    /// <see cref="RouteTableBuilder.AddConstraint(string, Func{string, bool})"/> throws, unchanged.
     /// </exception>
     public Uri FormatUri(AppRoute route, Uri baseUri)
     {
@@ -716,10 +725,14 @@ public sealed class RouteTable
     // so the definitions are grouped by shape and each is compared with the earlier members of its group only. The
     // members of a group are kept apart in pairs, or Build has already thrown, so a group holds at most one member for
     // each combination of mutually disjoint constraints at its constrained required positions: up to 3^k for k such
-    // positions with the built-ins, one for each class of constraints that overlap (the numbers, bool and alpha, and
-    // guid). The check is linear for tables whose groups are small, which is every realistic table, and quadratic in
-    // the size of a group. previous chains each group from its latest member back to its first, and the earliest member
-    // that conflicts is the one reported, so the error does not change from one build to the next.
+    // positions, one for each class of built-in constraints that overlap (the numbers, bool and alpha, and guid). An
+    // added constraint is never disjoint from any, so it keeps no pair apart and does not raise that bound. The check
+    // is linear for tables whose groups are small, which is every realistic table, and quadratic in the size of a
+    // group.
+    // previous chains each group from its latest member back to its first. Among the built-in constraints, at most one
+    // earlier member of a group can conflict with a new one, because they overlap in classes; an added constraint
+    // overlaps every constraint, so several can, and the earliest of them is the one reported, so that the error does
+    // not change from one build to the next.
     private static void ThrowIfAmbiguous(RouteDefinition[] definitions)
     {
         var latest = new Dictionary<RouteTemplate, int>(definitions.Length, SameTemplateComparer.SameShape);
@@ -729,36 +742,90 @@ public sealed class RouteTable
             RouteTemplate template = definitions[i].Template;
             int earliest = -1;
             string? commonPath = null;
+            int unknownPosition = -1;
             previous[i] = latest.TryGetValue(template, out int last) ? last : -1;
-            // The built-in constraints overlap in classes, so at most one earlier member of a group can conflict with a
-            // new one, and which is reported cannot be observed today. The loop still reports the earliest, so that
-            // the documented behaviour holds for constraints that overlap without forming such classes.
             for (int j = previous[i]; j >= 0; j = previous[j])
             {
-                string? path = definitions[j].Template.FindCommonPath(template);
-                if (path is not null)
-                    (earliest, commonPath) = (j, path);
+                ConstraintOverlap overlap =
+                    definitions[j].Template.FindCommonPath(template, out string? path, out int position);
+                if (overlap != ConstraintOverlap.Disjoint)
+                    (earliest, commonPath, unknownPosition) = (j, path, position);
             }
 
-            if (commonPath is not null)
-                throw Ambiguous(definitions[earliest], definitions[i], commonPath);
+            if (earliest >= 0)
+                throw Ambiguous(definitions[earliest], definitions[i], commonPath, unknownPosition);
 
             latest[template] = i;
         }
     }
 
-    private static InvalidOperationException Ambiguous(RouteDefinition earlier, RouteDefinition later, string path)
+    // With a path, both templates are known to match it. Without one, an added constraint at unknownPosition is the
+    // reason the templates are not known to be apart, and no path is invented, since no text is known that its function
+    // accepts together with the other constraint. The advice depends on the positions it is about: the required ones,
+    // or, when only optional parameters tell the templates apart, those of the alternatives. Where an added constraint
+    // is involved there, constraints are not offered as the way to keep templates apart, since an added constraint
+    // keeps none apart, and the message says why. With built-in constraints alone, the message is as it always was.
+    private static InvalidOperationException Ambiguous(
+        RouteDefinition earlier,
+        RouteDefinition later,
+        string? path,
+        int unknownPosition)
     {
-        return new InvalidOperationException(
-            $"The templates '{earlier.Template.Value}', mapped to route type '{earlier.RouteType}', and " +
-            $"'{later.Template.Value}', mapped to route type '{later.RouteType}', rank equally and both match the " +
-            $"path '{path}', so which route wins would depend on the order they were mapped in. " +
-            (earlier.Template.HasSameRequiredSegments(later.Template)
-                ? "Optional parameters never keep templates apart, because both templates match the path without " +
-                  "them. Map the shorter path and each alternative as its own template with a required parameter, " +
-                  "giving the alternatives constraints that no text satisfies together, or remove one."
+        RouteTemplate template = earlier.Template;
+        bool onlyOptional = template.HasSameRequiredSegments(later.Template);
+        bool added = path is null || template.HasAddedConstraint(later.Template, required: !onlyOptional);
+
+        var message = new StringBuilder();
+        message.Append($"The templates '{template.Value}', mapped to route type '{earlier.RouteType}', and ")
+            .Append($"'{later.Template.Value}', mapped to route type '{later.RouteType}', rank equally and ");
+        if (path is not null)
+        {
+            message.Append($"both match the path '{path}', so which route wins would depend on the order they were ")
+                .Append("mapped in. ");
+        }
+        else
+        {
+            (RouteConstraint constraint, RouteConstraint otherConstraint) =
+                template.ConstraintsAt(later.Template, unknownPosition);
+            int segment = unknownPosition + 1;
+            message.Append("could both match a path, so which route wins would depend on the order they were mapped ")
+                .Append("in: ")
+                .Append(ReferenceEquals(constraint, otherConstraint)
+                    ? $"both have the constraint '{constraint.Name}' at segment {segment}, which is not known to " +
+                      "reject every text. "
+                    : $"the constraints '{constraint.Name}' and '{otherConstraint.Name}' at segment {segment} are " +
+                      "not known to accept no text in common. ");
+        }
+
+        if (added)
+        {
+            message.Append("A constraint added with AddConstraint is treated as overlapping every constraint, itself ")
+                .Append("included, because which text its function accepts cannot be known. ");
+        }
+
+        if (onlyOptional)
+        {
+            message.Append(path is null
+                    ? "Optional parameters never keep templates apart either, because a path that leaves them out " +
+                      "matches both templates whenever it matches one. "
+                    : "Optional parameters never keep templates apart, because both templates match the path " +
+                      "without them. ")
+                .Append(template.HasAddedConstraint(later.Template, required: false)
+                    ? "Map the shorter path and each alternative as its own template, keeping the alternatives " +
+                      "apart with a different literal, or remove one."
+                    : "Map the shorter path and each alternative as its own template with a required parameter, " +
+                      "giving the alternatives constraints that no text satisfies together, or remove one.");
+        }
+        else
+        {
+            message.Append(added
+                ? "Keep them apart at a required position with a different literal, or make them rank differently, " +
+                  "or remove one."
                 : "Keep them apart at a required position, with a different literal or with constraints there that " +
-                  "no text satisfies together, or make them rank differently, or remove one."));
+                  "no text satisfies together, or make them rank differently, or remove one.");
+        }
+
+        return new InvalidOperationException(message.ToString());
     }
 
     // Tells an attached debugger that an exception the create function threw is not handled here, which the attribute
