@@ -71,16 +71,16 @@ The core library's layers, in the order they are built; each builds mainly on th
 
 | Layer | Owns |
 | --- | --- |
-| Routing | Route templates, constraints and value codecs; the route table; matching and formatting; convention routes; route metadata |
-| Navigation state | `NavigationState` and its nodes, structural identity and validation, `NavigationPlan`, metadata lifetimes |
+| Routing | Route templates, constraints and value codecs; the route table; matching and formatting; route metadata |
+| Navigation state | `NavigationState` and its nodes, structural identity, validation when a state is built |
 | Requests, provenance and deferral | `RouterNavigationRequest`, sources, dispositions and provenance; the deferred-request store contract and an in-memory store |
-| Planner contracts and policies | `IAppNavigationPlanner`, request transformers and policies, the access gate |
+| Planner contracts and policies | `NavigationPlan`, `IAppNavigationPlanner`, request transformers and policies, the access gate |
 | Navigation models | Stack and branch-host models, route recipes, the standard planner |
 | Presenter contract and topology | `INavigationPresenter`, presentation context, reconciliation, `NavigationTopology` |
 | Diagnostics | Diagnostic events, data redaction, logging and activity sources |
 | The router | `IRouterNavigator` and its factory: the pipeline, results, fallback routes, history, serialized operations, redirect-loop protection, reconciliation, refresh |
 | Back navigation | `IBackNavigator`, the default back navigator, Back policies, the router's Back operation |
-| Deferred navigation | The versioned request serializer and the replayer |
+| Deferred navigation | Metadata lifetimes, the versioned request serializer and the replayer |
 | Route-entry leases | `RouteEntryLease`, its registry, and its part in the router's commit |
 
 **Deferred navigation** keeps a request for later replay, across sign-in or a process restart. The core defines the store contract and an in-memory store; a host supplies durable storage. The serializer writes a deliberately limited, versioned snapshot of each request: its target formatted as a canonical URI, its source, window, disposition, timestamp, the metadata it is configured to keep, and only the provider name from its provenance. Replay runs when the application asks for it, for example after sign-in: the replayer submits stored requests to the router in order and removes each one that navigates. A request that fails stays queued, and when to retry is left to the host.
@@ -112,7 +112,7 @@ A presenter **must not**:
 
 - **Operations are serialized.** The router runs navigation, Back, reconciliation and refresh one at a time.
 - **Presentation precedes commit.** A failed or cancelled operation leaves state and history unchanged.
-- **State is immutable and validated.** Navigation state is made of immutable records, and the router validates its initial state when it is created and every state before it commits it, whether the state comes from a plan or a reconciliation. A reconciliation whose state fails validation throws and commits nothing; when the presenter raised it as an event, the failure is reported as a diagnostic event instead.
+- **State is immutable and valid.** Navigation state is made of immutable values that compare by content. A state that breaks a rule of the tree cannot be built, because its constructors refuse it, so the router's initial state and every state a plan or a reconciliation carries is a valid one.
 - **Stale reconciliations are rejected.** A reconciliation commits only against the exact state it was observed from.
 - **Back does not traverse history.** History records what was committed; Back plans from the current state.
 - **Diagnostics never change outcomes.** The result or exception of an operation is authoritative; diagnostic events only observe it.
