@@ -10,6 +10,7 @@ public sealed class RouteTableFormatRequestTests
     private const string NoFormat = "none of its mappings has a format function";
     private const string TrailingSpace = "the last value written ends with a space";
     private const string SchemeChanges = "does not keep the link as written";
+    private const string MatchedFirst = "is matched first by the template";
 
     // Text that stands for a secret a metadata value can carry, distinctive enough that finding it in a message is
     // not a coincidence.
@@ -454,6 +455,65 @@ public sealed class RouteTableFormatRequestTests
 
         Assert.Equal("baseUri", exception.ParamName);
         Assert.Contains(SchemeChanges, exception.Message, StringComparison.Ordinal);
+    }
+
+    // A request whose route writes a path that a higher-ranked template matches first cannot be written, and the
+    // exception names the request, since it is the argument of the method called.
+    [Fact]
+    public void APathMatchedFirstByAHigherRankedTemplateNamesTheRequest()
+    {
+        RouteTable table = new RouteTableBuilder()
+            .Map("/names/new", _ => new ItemRoute(0))
+            .Map("/names/{name}", c => new NameRoute(c.Path("name")), f => f.Path("name", r => r.Name))
+            .AddQueryMetadata(Campaign)
+            .Build();
+        AppRouteRequest request = new AppRouteRequest(new NameRoute("new")).WithMetadata(Campaign, Secret);
+        var baseUri = new Uri("https://example.com");
+
+        ArgumentException format = Assert.Throws<ArgumentException>(() => table.Format(request));
+        ArgumentException formatUri = Assert.Throws<ArgumentException>(() => table.FormatUri(request, baseUri));
+
+        foreach (ArgumentException exception in new[] { format, formatUri })
+        {
+            Assert.Equal("request", exception.ParamName);
+            Assert.Contains(MatchedFirst, exception.Message, StringComparison.Ordinal);
+            Assert.Contains("which ranks higher", exception.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain(Secret, exception.Message, StringComparison.Ordinal);
+        }
+
+        Assert.Equal("/names/old?campaign=x", table.Format(new AppRouteRequest(new NameRoute("old"))
+            .WithMetadata(Campaign, "x")));
+    }
+
+    // So does one whose path an equally ranked template mapped earlier matches first, which only a false declaration
+    // that constraints are disjoint allows: five or more lowercase letters, and five or more letters of either case.
+    [Fact]
+    public void APathMatchedFirstByAnEquallyRankedTemplateNamesTheRequest()
+    {
+        RouteTable table = new RouteTableBuilder()
+            .AddConstraint("lower", value => value.Length >= 5 && value.All(char.IsAsciiLetterLower))
+            .AddConstraint("word", value => value.Length >= 5 && value.All(char.IsAsciiLetter))
+            .DeclareDisjointConstraints("lower", "word")
+            .Map("/p/{a:lower}", c => new ItemRoute(c.Path("a").Length))
+            .Map("/p/{b:word}", c => new NameRoute(c.Path("b")), f => f.Path("b", r => r.Name))
+            .AddQueryMetadata(Campaign)
+            .Build();
+        AppRouteRequest request = new AppRouteRequest(new NameRoute("hello")).WithMetadata(Campaign, Secret);
+        var baseUri = new Uri("https://example.com");
+
+        ArgumentException format = Assert.Throws<ArgumentException>(() => table.Format(request));
+        ArgumentException formatUri = Assert.Throws<ArgumentException>(() => table.FormatUri(request, baseUri));
+
+        foreach (ArgumentException exception in new[] { format, formatUri })
+        {
+            Assert.Equal("request", exception.ParamName);
+            Assert.Contains(MatchedFirst, exception.Message, StringComparison.Ordinal);
+            Assert.Contains("which ranks equally and was mapped first", exception.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain(Secret, exception.Message, StringComparison.Ordinal);
+        }
+
+        Assert.Equal("/p/Hello?campaign=x", table.Format(new AppRouteRequest(new NameRoute("Hello"))
+            .WithMetadata(Campaign, "x")));
     }
 
     private static RouteTableBuilder ItemsBuilder()
