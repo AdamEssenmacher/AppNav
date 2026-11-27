@@ -312,6 +312,36 @@ public sealed class RouteTableAmbiguousDisjointConstraintTests
         Assert.DoesNotContain("DeclareDisjointConstraints", exception.Message, StringComparison.Ordinal);
     }
 
+    // Optional parameters keep no templates apart, so finding these templates ambiguous asks no function at their
+    // optional positions about a sample, and neither does writing the error: a function that would throw for one
+    // does not replace the error, and the declaration is offered there without knowing what the samples would show.
+    [Theory]
+    [InlineData("/a/{x:fragile?}", "/a/{y:int?}")]
+    [InlineData("/a/{y:int?}", "/a/{x:fragile?}")]
+    [InlineData("/a/{x:fragile?}", "/a/{y:lower?}")]
+    public void WritingTheErrorAsksNoFunctionAtAnOptionalPosition(string first, string second)
+    {
+        var calls = 0;
+        RouteTableBuilder builder = Builder()
+            .AddConstraint("fragile", _ =>
+            {
+                calls++;
+                throw new InvalidTimeZoneException();
+            })
+            .Map(first, _ => new SettingsRoute())
+            .Map(second, _ => new FileRoute(null));
+
+        string message = Assert.Throws<InvalidOperationException>(builder.Build).Message;
+
+        Assert.Equal(0, calls);
+        Assert.Contains(Ambiguous, message, StringComparison.Ordinal);
+        Assert.Contains("'/a'", message, StringComparison.Ordinal);
+        Assert.Contains(OptionalAdvice, message, StringComparison.Ordinal);
+        Assert.Contains(LiteralForAlternatives, message, StringComparison.Ordinal);
+        Assert.Contains(DeclareCall, message, StringComparison.Ordinal);
+        Assert.Contains("at segment 2", message, StringComparison.Ordinal);
+    }
+
     private static RouteTableBuilder Builder()
     {
         var builder = new RouteTableBuilder();

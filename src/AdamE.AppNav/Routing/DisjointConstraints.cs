@@ -10,14 +10,19 @@ internal sealed class DisjointConstraints
 {
     private readonly HashSet<(RouteConstraint, RouteConstraint)> _pairs = [];
 
-    // No pair declared, for a builder that declared none.
-    public static DisjointConstraints None { get; } = new();
-
-    public void Add(RouteConstraint x, RouteConstraint y)
+    // The pairs are given once and never added to, so that None, which every builder without a declaration shares,
+    // can never come to hold a pair of one builder.
+    public DisjointConstraints(ReadOnlySpan<(RouteConstraint First, RouteConstraint Second)> pairs)
     {
-        _pairs.Add((x, y));
-        _pairs.Add((y, x));
+        foreach ((RouteConstraint first, RouteConstraint second) in pairs)
+        {
+            _pairs.Add((first, second));
+            _pairs.Add((second, first));
+        }
     }
+
+    // No pair declared, for a builder that declared none.
+    public static DisjointConstraints None { get; } = new([]);
 
     public bool Contains(RouteConstraint x, RouteConstraint y)
     {

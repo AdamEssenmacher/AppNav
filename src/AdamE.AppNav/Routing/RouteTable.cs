@@ -815,7 +815,13 @@ public sealed class RouteTable
             onlyOptional && template.HasOnlyDeclaredAddedConstraints(later.Template, disjoint, required: false);
         bool added = path is null ||
                      (template.HasAddedConstraint(later.Template, required: !onlyOptional) && !declaredAlternatives);
-        string? declare = added ? DeclareAdvice(template, later.Template, disjoint, required: !onlyOptional) : null;
+        // The declaration is looked for only where the advice that offers it is written, since at a required position
+        // looking for it asks the functions about the samples.
+        bool addedAlternatives =
+            onlyOptional && !declaredAlternatives && template.HasAddedConstraint(later.Template, required: false);
+        string? declare = (onlyOptional ? addedAlternatives : added)
+            ? DeclareAdvice(template, later.Template, disjoint, required: !onlyOptional)
+            : null;
 
         var message = new StringBuilder();
         message.Append($"The templates '{template.Value}', mapped to route type '{earlier.RouteType}', and ")
@@ -857,7 +863,7 @@ public sealed class RouteTable
                     ? "Map the shorter path and each alternative as its own template with a required parameter, " +
                       "where the constraints already declared disjoint with DeclareDisjointConstraints keep the " +
                       "alternatives apart, or keep them apart with a different literal, or remove one."
-                    : template.HasAddedConstraint(later.Template, required: false)
+                    : addedAlternatives
                     ? "Map the shorter path and each alternative as its own template, keeping the alternatives " +
                       $"apart with a different literal{declare}, or remove one."
                     : "Map the shorter path and each alternative as its own template with a required parameter, " +

@@ -528,8 +528,9 @@ public sealed class RouteTableBuilder
     /// <para>
     /// <see cref="Build"/> checks each declared pair against the sample texts <c>0</c>, <c>a</c>, <c>true</c> and
     /// <c>00000000-0000-0000-0000-000000000000</c>: it passes each sample text to the function of each constraint of
-    /// a declared pair, once for each build however many pairs name the constraint, and throws when both constraints
-    /// of a pair accept one of them. That check catches a declaration that is false for one of
+    /// a declared pair, once for that check however many pairs name the constraint, and throws when both
+    /// constraints of a pair accept one of them. Comparing the templates can then pass a function the same texts
+    /// again. That check catches a declaration that is false for one of
     /// those texts, and so every false declaration about two built-in constraints, such as <c>int</c> and
     /// <c>long</c>, which both accept <c>0</c>; a declaration about two built-in constraints that accept no text in
     /// common, such as <c>int</c> and <c>guid</c>, is true and changes nothing. Beyond that check the declaration is
@@ -772,7 +773,6 @@ public sealed class RouteTableBuilder
             AskAboutSamples(second, accepted);
         }
 
-        var disjoint = new DisjointConstraints();
         foreach ((RouteConstraint first, RouteConstraint second) in resolved)
         {
             bool[] byFirst = accepted[first];
@@ -789,11 +789,9 @@ public sealed class RouteTableBuilder
                     "declaration is false. Remove the declaration, or change a constraint so that the two accept no " +
                     "text in common.");
             }
-
-            disjoint.Add(first, second);
         }
 
-        return disjoint;
+        return new DisjointConstraints(resolved);
     }
 
     // Records which samples a constraint accepts, asking its function about each of them unless an earlier pair

@@ -441,10 +441,10 @@ public sealed class RouteTemplate
     }
 
     // The first position where this template and another of the same shape have two different constraints, one of them
-    // added, that are neither declared disjoint nor known to accept a text in common, so that declaring them disjoint
-    // would keep the templates apart, or -1 when there is none. The positions are the required ones or, when required
-    // is false, those after them, as for HasAddedConstraint. A constraint with itself can never be declared disjoint,
-    // so a position where both templates have the same constraint is never given.
+    // added, that are neither declared disjoint nor, at a required position, known to accept a text in common, so that
+    // declaring them disjoint could keep the templates apart, or -1 when there is none. The positions are the required
+    // ones or, when required is false, those after them, as for HasAddedConstraint. A constraint with itself can never
+    // be declared disjoint, so a position where both templates have the same constraint is never given.
     internal int FindUndeclaredPosition(RouteTemplate other, DisjointConstraints disjoint, bool required)
     {
         Debug.Assert(SameTemplateComparer.SameShape.Equals(this, other), "Only templates of one shape are compared.");
@@ -461,8 +461,16 @@ public sealed class RouteTemplate
                 continue;
             }
 
-            if (RouteConstraint.FindCommonValue(constraint, otherConstraint, out _) == ConstraintOverlap.MayOverlap)
+            // Finding the templates ambiguous has already asked the functions at the required positions about the
+            // samples, so asking again there can throw nothing new. It never asks those at the optional positions,
+            // which keep no templates apart, so they are not asked here either: an exception one of them threw would
+            // replace the error being written. A pair there is offered without knowing whether a sample satisfies
+            // both, and Build checks the declaration if it is then made.
+            if (!required ||
+                RouteConstraint.FindCommonValue(constraint, otherConstraint, out _) == ConstraintOverlap.MayOverlap)
+            {
                 return i;
+            }
         }
 
         return -1;
