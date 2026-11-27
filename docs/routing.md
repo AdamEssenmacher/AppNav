@@ -1,6 +1,6 @@
 # Routing
 
-A [route](architecture.md#the-central-idea) is a typed value that names a destination in application terms. A [route template](#route-templates) is the path pattern a route answers to, and the [route table](#the-route-table) maps templates to route types, so that matching a URI gives you a typed route.
+A [route](architecture.md#the-central-idea) is a typed value that names a destination in application terms. A [route template](#route-templates) is the path pattern a route answers to, and the [route table](#the-route-table) maps templates to route types, so that matching a URI gives you a typed route. [Route metadata](#route-metadata) carries values that travel with a route but are not part of its identity.
 
 ## Route templates
 
@@ -1051,3 +1051,34 @@ The other way is a scheme under which `System.Uri` changes the path or the query
 ### Threads
 
 A built table is immutable and safe to use from several threads at once, for `Match`, `Format` and `FormatUri` alike. Mapping more routes or registering more codecs on the builder does not change a table it has already built; call `Build` again for a table that includes them. A builder itself is not thread-safe, and a create function, a value function of a format function, or a function of a codec registered with `AddValueCodec`, that runs on several threads must be safe to call that way.
+
+## Route metadata
+
+Route metadata is the values that travel with a route but are not part of its identity, such as a campaign code on a link. A `RouteMetadataKey<TValue>` names an entry and fixes the type of its value, and a `RouteMetadata` is an immutable collection of entries. Start from `RouteMetadata.Empty`, add entries with `With`, remove them with `Without` and read them with `TryGet`:
+
+```csharp
+using AdamE.AppNav;
+
+RouteMetadataKey<string> campaign = new("campaign");
+RouteMetadataKey<int> step = new("step");
+
+RouteMetadata metadata = RouteMetadata.Empty
+    .With(campaign, "spring")
+    .With(step, 2);
+
+Console.WriteLine(metadata.TryGet(campaign, out string? code)); // True
+Console.WriteLine(code);                                         // spring
+Console.WriteLine(metadata.Without(step).Count);                 // 1
+Console.WriteLine(metadata.Count);                               // 2: the collection is unchanged
+```
+
+- A key's name is any text that is not empty. `null` throws `ArgumentNullException` and the empty string throws `ArgumentException`, both with the `ParamName` `name`.
+- `TValue` cannot be the nullable form of a value type, such as `int?`, because an absent entry is how metadata says that there is no value. The constructor throws `ArgumentException` whose `ParamName` is `TValue` and whose message names the type and says to use its underlying type instead.
+- Two keys are equal when their names are equal, compared ordinally and case-sensitively, and they have the same `TValue`; `==` and `!=` agree with `Equals`. A key's `ToString` is its name.
+- An entry is identified by its key, name and value type alike. `new RouteMetadataKey<int>("n")` and `new RouteMetadataKey<string>("n")` name two entries, which can both be present, and neither reads the other's value; nor does a key of `object` read the entry of a key of `string`. A value is only ever stored under a key of its own type.
+- `With` sets the entry for a key, replacing an entry for an equal key. `Without` removes it, and when there is no such entry the result equals the collection it was called on. Both return a collection and leave the one they are called on unchanged.
+- `TryGet` returns `true` and the value when there is an entry for the key, and `false` and the default value of `TValue` when there is not.
+- A `null` key throws `ArgumentNullException` whose `ParamName` is `key`, and a `null` value given to `With` throws one whose `ParamName` is `value`. An entry never holds `null`.
+- Two collections are equal when they hold the same entries, with equal keys and values equal by `EqualityComparer<TValue>.Default`, whatever order the entries were added in, and equal collections have equal hash codes; `==` and `!=` agree with `Equals`. A value of a type that compares by reference, such as an array or a list, makes two collections equal only when that entry holds the same instance, so prefer values with value equality: strings, numbers, enums and records.
+- Equal collections can hold values that differ in ways their type's equality ignores, such as the scale of a `decimal` or the offset of a `DateTimeOffset`. `With` always stores the value it is given, even when the entry already holds an equal one, so `TryGet` reads `1.00` after `With(key, 1.0m).With(key, 1.00m)`. `With`, `Without` and `TryGet` find an entry by its key alone and never call the value's `Equals` or `GetHashCode`; only comparing collections does.
+- Keys and collections are immutable and safe to share across threads.

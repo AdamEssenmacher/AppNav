@@ -2,6 +2,16 @@
 AdamE.AppNav.AppRoute
 AdamE.AppNav.AppRoute.AppRoute() -> void
 AdamE.AppNav.AppRoute.AppRoute(AdamE.AppNav.AppRoute! original) -> void
+AdamE.AppNav.RouteMetadata
+AdamE.AppNav.RouteMetadata.Count.get -> int
+AdamE.AppNav.RouteMetadata.Equals(AdamE.AppNav.RouteMetadata? other) -> bool
+AdamE.AppNav.RouteMetadata.TryGet<TValue>(AdamE.AppNav.RouteMetadataKey<TValue>! key, out TValue value) -> bool
+AdamE.AppNav.RouteMetadata.With<TValue>(AdamE.AppNav.RouteMetadataKey<TValue>! key, TValue value) -> AdamE.AppNav.RouteMetadata!
+AdamE.AppNav.RouteMetadata.Without<TValue>(AdamE.AppNav.RouteMetadataKey<TValue>! key) -> AdamE.AppNav.RouteMetadata!
+AdamE.AppNav.RouteMetadataKey<TValue>
+AdamE.AppNav.RouteMetadataKey<TValue>.Equals(AdamE.AppNav.RouteMetadataKey<TValue>? other) -> bool
+AdamE.AppNav.RouteMetadataKey<TValue>.Name.get -> string!
+AdamE.AppNav.RouteMetadataKey<TValue>.RouteMetadataKey(string! name) -> void
 AdamE.AppNav.Routing.RouteDefinition
 AdamE.AppNav.Routing.RouteDefinition.RouteType.get -> System.Type!
 AdamE.AppNav.Routing.RouteDefinition.Template.get -> AdamE.AppNav.Routing.RouteTemplate!
@@ -60,8 +70,18 @@ const AdamE.AppNav.Routing.RouteDiagnosticCodes.ValueInvalid = "route.value.inva
 override AdamE.AppNav.AppRoute.Equals(object? obj) -> bool
 override AdamE.AppNav.AppRoute.GetHashCode() -> int
 override AdamE.AppNav.AppRoute.ToString() -> string!
+override AdamE.AppNav.RouteMetadata.Equals(object? obj) -> bool
+override AdamE.AppNav.RouteMetadata.GetHashCode() -> int
+override AdamE.AppNav.RouteMetadataKey<TValue>.Equals(object? obj) -> bool
+override AdamE.AppNav.RouteMetadataKey<TValue>.GetHashCode() -> int
+override AdamE.AppNav.RouteMetadataKey<TValue>.ToString() -> string!
 static AdamE.AppNav.AppRoute.operator !=(AdamE.AppNav.AppRoute? left, AdamE.AppNav.AppRoute? right) -> bool
 static AdamE.AppNav.AppRoute.operator ==(AdamE.AppNav.AppRoute? left, AdamE.AppNav.AppRoute? right) -> bool
+static AdamE.AppNav.RouteMetadata.Empty.get -> AdamE.AppNav.RouteMetadata!
+static AdamE.AppNav.RouteMetadata.operator !=(AdamE.AppNav.RouteMetadata? left, AdamE.AppNav.RouteMetadata? right) -> bool
+static AdamE.AppNav.RouteMetadata.operator ==(AdamE.AppNav.RouteMetadata? left, AdamE.AppNav.RouteMetadata? right) -> bool
+static AdamE.AppNav.RouteMetadataKey<TValue>.operator !=(AdamE.AppNav.RouteMetadataKey<TValue>? left, AdamE.AppNav.RouteMetadataKey<TValue>? right) -> bool
+static AdamE.AppNav.RouteMetadataKey<TValue>.operator ==(AdamE.AppNav.RouteMetadataKey<TValue>? left, AdamE.AppNav.RouteMetadataKey<TValue>? right) -> bool
 static AdamE.AppNav.Routing.RouteTemplate.Parse(string! value) -> AdamE.AppNav.Routing.RouteTemplate!
 virtual AdamE.AppNav.AppRoute.EqualityContract.get -> System.Type!
 virtual AdamE.AppNav.AppRoute.Equals(AdamE.AppNav.AppRoute? other) -> bool
