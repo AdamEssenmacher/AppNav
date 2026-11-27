@@ -809,10 +809,10 @@ public sealed class RouteTable
     {
         RouteTemplate template = earlier.Template;
         bool onlyOptional = template.HasSameRequiredSegments(later.Template);
-        // Alternatives whose added constraints are all in pairs already declared disjoint need no word on how added
-        // constraints are treated, only to be mapped as templates of their own, which those declarations keep apart.
-        bool declaredAlternatives =
-            onlyOptional && template.HasOnlyDeclaredAddedConstraints(later.Template, disjoint, required: false);
+        // Alternatives whose first position is already declared disjoint need no word on how added constraints are
+        // treated when a path is known, only to be mapped as templates of their own, which that declaration keeps
+        // apart.
+        bool declaredAlternatives = onlyOptional && template.HasDeclaredFirstAlternative(later.Template, disjoint);
         bool added = path is null ||
                      (template.HasAddedConstraint(later.Template, required: !onlyOptional) && !declaredAlternatives);
         // The declaration is looked for only where the advice that offers it is written, since at a required position

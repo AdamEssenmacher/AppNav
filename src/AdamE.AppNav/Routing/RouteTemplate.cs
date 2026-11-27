@@ -414,30 +414,20 @@ public sealed class RouteTemplate
         return false;
     }
 
-    // Whether this template and another of the same shape have an added constraint at some position in the range that
-    // HasAddedConstraint takes, and at every such position two different constraints declared disjoint, so that the
-    // templates, once mapped with those positions required, would be kept apart.
-    internal bool HasOnlyDeclaredAddedConstraints(RouteTemplate other, DisjointConstraints disjoint, bool required)
+    // Whether this template and another of the same shape have, at their first position after the required ones, two
+    // constraints declared disjoint. Mapping each alternative as its own template makes that position required in
+    // every one of them, so it alone keeps them apart, whatever follows it; and when it does not, the two shortest of
+    // them still conflict there, whatever is declared for a later position.
+    internal bool HasDeclaredFirstAlternative(RouteTemplate other, DisjointConstraints disjoint)
     {
         Debug.Assert(SameTemplateComparer.SameShape.Equals(this, other), "Only templates of one shape are compared.");
 
-        int start = required ? 0 : _requiredCount;
-        int end = required ? _requiredCount : _segments.Length;
-        var any = false;
-        for (int i = start; i < end; i++)
-        {
-            RouteConstraint? constraint = _segments[i].Constraint;
-            RouteConstraint? otherConstraint = other._segments[i].Constraint;
-            if (constraint is not { IsBuiltIn: false } && otherConstraint is not { IsBuiltIn: false })
-                continue;
+        if (_requiredCount == _segments.Length)
+            return false;
 
-            if (constraint is null || otherConstraint is null || !disjoint.Contains(constraint, otherConstraint))
-                return false;
-
-            any = true;
-        }
-
-        return any;
+        RouteConstraint? constraint = _segments[_requiredCount].Constraint;
+        RouteConstraint? otherConstraint = other._segments[_requiredCount].Constraint;
+        return constraint is not null && otherConstraint is not null && disjoint.Contains(constraint, otherConstraint);
     }
 
     // The first position where this template and another of the same shape have two different constraints, one of them

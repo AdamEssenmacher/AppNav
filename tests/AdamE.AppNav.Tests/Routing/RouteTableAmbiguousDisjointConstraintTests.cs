@@ -162,14 +162,16 @@ public sealed class RouteTableAmbiguousDisjointConstraintTests
     }
 
     // Optional parameters never keep templates apart, so a declaration about the alternatives does not either: a path
-    // that leaves them out matches both. When every added constraint among the alternatives is in a declared pair, the
-    // message does not say how added constraints are treated, as though the pair were not declared, and says that the
-    // declarations keep the alternatives apart once each is mapped as its own template.
+    // that leaves them out matches both. When the first of the alternatives' positions has a declared pair, which
+    // keeps every alternative apart once each is mapped as its own template, whatever follows it, the message does
+    // not say how added constraints are treated, as though the pair were not declared, and says that the
+    // declarations keep the alternatives apart.
     [Theory]
     [InlineData("/p/{a:lower?}", "/p/{b:upper?}", "/p")]
     [InlineData("/p/{a:upper?}", "/p/{b:int?}", "/p")]
     [InlineData("/p/{a:int}/{o:upper?}", "/p/{b:int}/{q:bang?}", "/p/0")]
     [InlineData("/p/{a:upper?}/{o:int?}", "/p/{b:bang?}/{q:long?}", "/p")]
+    [InlineData("/p/{a:upper?}/{o:upper?}", "/p/{b:int?}/{q:upper?}", "/p")]
     public void ADeclarationDoesNotKeepOptionalAlternativesApart(string first, string second, string path)
     {
         foreach ((string earlier, string later) in new[] { (first, second), (second, first) })
@@ -193,17 +195,21 @@ public sealed class RouteTableAmbiguousDisjointConstraintTests
         }
     }
 
-    // Alternatives with an added constraint in a pair not declared, or with itself, keep the advice for added
-    // constraints, even beside a declared pair.
+    // Alternatives whose first position has no declared pair keep the advice for added constraints, even with a
+    // declared pair at a later position: mapped as their own templates, the two shortest would still conflict at the
+    // first, as /p/{x:int} and /p/{x:long} do.
     [Theory]
     [InlineData("/p/{a:upper?}", "/p/{b:long?}")]
-    [InlineData("/p/{a:upper?}/{o:upper?}", "/p/{b:int?}/{q:upper?}")]
+    [InlineData("/p/{a:upper?}/{o:upper?}", "/p/{b:upper?}/{q:int?}")]
+    [InlineData("/p/{x:int?}/{y:lower?}", "/p/{x:long?}/{y:upper?}")]
+    [InlineData("/p/{x:lower?}/{y:lower?}", "/p/{x:lower?}/{y:upper?}")]
     public void AlternativesWithAnUndeclaredAddedConstraintKeepTheAdviceForAddedConstraints(
         string first,
         string second)
     {
         string message = Assert.Throws<InvalidOperationException>(Builder()
             .DeclareDisjointConstraints("upper", "int")
+            .DeclareDisjointConstraints("lower", "upper")
             .Map(first, _ => new SettingsRoute())
             .Map(second, _ => new FileRoute(null))
             .Build).Message;
