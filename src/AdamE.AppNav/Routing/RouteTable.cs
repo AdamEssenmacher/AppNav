@@ -31,9 +31,9 @@ public sealed class RouteTable
     // that is mapped without a format function, and say which fix applies.
     private readonly FrozenSet<Type> _routeTypes;
 
-    // The writer of each key declared with AddQueryMetadata, bound to the codecs above, in the order the keys were
-    // declared, which is the order Format writes their values in.
-    private readonly QueryMetadataWriter[] _queryMetadata;
+    // Each key declared with AddQueryMetadata, bound to the codecs above, in the order the keys were declared, which is
+    // the order Format writes their values in and Match reads them in.
+    private readonly QueryMetadataKey[] _queryMetadata;
 
     // The declared pairs are used only here, to check the templates, and not kept: nothing that matches or writes a
     // path asks about them, and a declaration the builder makes later cannot reach this table.
@@ -41,7 +41,7 @@ public sealed class RouteTable
         RouteDefinition[] definitions,
         FrozenDictionary<Type, object> codecs,
         DisjointConstraints disjoint,
-        QueryMetadataWriter[] queryMetadata)
+        QueryMetadataKey[] queryMetadata)
     {
         ThrowIfSameTemplateTwice(definitions);
         ThrowIfAmbiguous(definitions, disjoint);
@@ -98,10 +98,11 @@ public sealed class RouteTable
     /// URI that is, and for the query, which a create function can read.
     /// </param>
     /// <returns>
-    /// A successful result with the route and its definition when a template matches the path. Otherwise a failed
-    /// result with at least one diagnostic; in this version that is one <see cref="RouteDiagnosticCodes.NotMatched"/>
-    /// diagnostic when no template matches, or one <see cref="RouteDiagnosticCodes.ValueInvalid"/> diagnostic, with
-    /// the definition that matched, when its create function throws a <see cref="RouteValueException"/>.
+    /// A successful result with the route, its definition and the route metadata read from the query when a template
+    /// matches the path. Otherwise a failed result with at least one diagnostic; in this version that is one
+    /// <see cref="RouteDiagnosticCodes.NotMatched"/> diagnostic when no template matches, or one
+    /// <see cref="RouteDiagnosticCodes.ValueInvalid"/> diagnostic, with the definition that matched, when its create
+    /// function throws a <see cref="RouteValueException"/> or a route metadata value in the query is not valid.
     /// </returns>
     /// <remarks>
     /// <para>
@@ -140,8 +141,21 @@ public sealed class RouteTable
     /// <see cref="Uri"/> reports it, and for a relative one, or a file URI read as relative, the original text from
     /// the first <c>?</c> that comes before any <c>#</c>, up to the next <c>#</c>. Some schemes, such as <c>ftp</c>,
     /// have no query in <see cref="Uri"/>, so a <c>?</c> in them is part of the path. The query is read and parsed
-    /// only when a create function first asks for a value, at most once per match, so a URI that matches nothing, and
-    /// a route that reads no query values, pay nothing for it. It never appears in a diagnostic.
+    /// only when a create function first asks for a value, or the route metadata below is read, at most once per
+    /// match, so a URI that matches nothing, and a route that reads no query values in a table that declares no route
+    /// metadata keys, pay nothing for it. It never appears in a diagnostic.
+    /// </para>
+    /// <para>
+    /// For each key declared with <see cref="RouteTableBuilder.AddQueryMetadata{TValue}(RouteMetadataKey{TValue})"/>,
+    /// in the order declared, the table reads the first value of the key's name, after the create function has
+    /// returned the route, by exactly the rules of <see cref="RouteMatchContext.TryGetQuery{T}(string, out T)"/> of
+    /// the key's value type, and puts it in <see cref="RouteMatchResult.Metadata"/>; a query that does not have the
+    /// name gives no entry. A value that is present but not valid fails the match as a value the create function
+    /// rejects does, with a <see cref="RouteDiagnosticCodes.ValueInvalid"/> diagnostic and the definition that
+    /// matched, and no later template is tried. A URI that no template matches, and one whose create function rejects
+    /// a value, throws or returns <see langword="null"/>, gives the same result or exception as in a table that
+    /// declares no keys, whatever its query holds. The create function still reads the key's name as an ordinary query
+    /// value.
     /// </para>
     /// <para>
     /// The path is matched as <see cref="RouteTemplate.Match(string)"/> matches it. Definitions are tried by
@@ -160,7 +174,7 @@ public sealed class RouteTable
     /// with a <see cref="RouteDiagnosticCodes.ValueInvalid"/> diagnostic instead of throwing. No later template is
     /// tried, even one that also matches the path: the template that matched owns the URI. A constraint, by contrast,
     /// makes the template not match, so that a later one can. Only an exception thrown by the call to the create
-    /// function of the definition that matched is turned into a result.
+    /// function of the definition that matched, or while the route metadata is read after it, is turned into a result.
     /// </para>
     /// <para>
     /// A URI that no template matches is not an error. The table itself does not throw for the content of a URI; an
@@ -178,10 +192,17 @@ public sealed class RouteTable
     /// <exception cref="ArgumentNullException"><paramref name="uri"/> is <see langword="null"/>.</exception>
     /// <exception cref="InvalidOperationException">
     /// The create function of the definition that matched returned <see langword="null"/>.
+    /// <para>-or-</para>
+    /// The parser of a codec registered with <see cref="RouteTableBuilder.AddValueCodec{TValue}"/> gave
+    /// <see langword="null"/> for a route metadata value it accepted, as for
+    /// <see cref="RouteMatchContext.TryGetQuery{T}(string, out T)"/>.
     /// </exception>
     /// <exception cref="Exception">
     /// Any exception other than <see cref="RouteValueException"/> that the create function of the definition that
     /// matched throws, unchanged.
+    /// <para>-or-</para>
+    /// Any exception other than <see cref="RouteValueException"/> that the parser of a codec registered with
+    /// <see cref="RouteTableBuilder.AddValueCodec{TValue}"/> throws while a route metadata value is read, unchanged.
     /// <para>-or-</para>
     /// Any exception, <see cref="RouteValueException"/> included, that the function of a constraint added with
     /// <see cref="RouteTableBuilder.AddConstraint(string, Func{string, bool})"/> throws, unchanged.
@@ -218,14 +239,22 @@ public sealed class RouteTable
         }
 
         // The first matching definition decides the route, so its create function's exceptions are the application's
-        // to see, and falling through to a later definition would hide them. Only the one the create function throws
-        // to reject a value is caught, by its exact type, around this call alone, so that one from anywhere else, and
-        // every other exception, passes through untouched.
+        // to see, and falling through to a later definition would hide them. Only the one that rejects a value is
+        // caught, by its exact type, around the call to the create function and the reading of the route metadata
+        // after it, so that one from anywhere else, and every other exception, passes through untouched. The metadata
+        // is read only once the create function has returned a route, by the typed read a create function would use,
+        // through the same context, so the query is parsed at most once for both, and a value that is not valid fails
+        // the match exactly as it would had the create function read it. The metadata is the same whichever template
+        // matched, so no later template is tried.
         RouteDefinition definition = _matchOrder[position];
+        var context = new RouteMatchContext(uri, values!, queryStart, _codecs);
         AppRoute? route;
+        RouteMetadata metadata = RouteMetadata.Empty;
         try
         {
-            route = definition.CreateRoute(new RouteMatchContext(uri, values!, queryStart, _codecs));
+            route = definition.CreateRoute(context);
+            if (route is not null)
+                metadata = ReadQueryMetadata(context);
         }
         catch (RouteValueException exception)
         {
@@ -238,11 +267,14 @@ public sealed class RouteTable
             throw;
         }
 
-        return RouteMatchResult.Success(
-            route ?? throw new InvalidOperationException(
+        if (route is null)
+        {
+            throw new InvalidOperationException(
                 $"The create function for route type '{RouteValueTypes.DisplayName(definition.RouteType)}', " +
-                $"mapped to the template '{definition.Template.Value}', returned null; it must return a route."),
-            definition);
+                $"mapped to the template '{definition.Template.Value}', returned null; it must return a route.");
+        }
+
+        return RouteMatchResult.Success(route, definition, metadata);
     }
 
     /// <summary>
@@ -392,8 +424,14 @@ public sealed class RouteTable
     /// metadata has no entry for writes nothing. A request with no metadata is written exactly as its route is.
     /// </para>
     /// <para>
-    /// <see cref="Match(Uri)"/> does not read these values: a create function can read them as query values, but the
-    /// result carries no metadata.
+    /// <see cref="Match(Uri)"/> reads these values back into <see cref="RouteMatchResult.Metadata"/>. When this method
+    /// returns, everything <see cref="Format(AppRoute)"/> promises for the route holds for the text, and each metadata
+    /// value reads back equal through the typed read of its type, for a type with a codec as far as the codec keeps
+    /// its contract, as for a query value of the route: the codec's parser accepts every text its writer wrote, and
+    /// the value it gives back is equal to the one written only when the codec makes it so and the type has value
+    /// equality. So when <see cref="Match(Uri)"/> of the text, as a relative URI, succeeds, its
+    /// <see cref="RouteMatchResult.Metadata"/> equals the request's metadata without the entries for keys this table
+    /// does not declare, which are not written, provided each codec keeps that contract.
     /// </para>
     /// <para>
     /// The table is not changed, and several threads can call this method and the others at once.
@@ -554,7 +592,8 @@ public sealed class RouteTable
     /// writes: the base is checked first, the request is written once, and the link is checked as a whole, metadata
     /// included. So a link whose last value, a metadata value included, ends with a space is refused when the URI
     /// contains a non-ASCII character, and a link with a query, as metadata writes, is refused under a scheme that has
-    /// no query in <see cref="Uri"/>, such as <c>ftp</c>. <see cref="Match(Uri)"/> does not read the metadata values.
+    /// no query in <see cref="Uri"/>, such as <c>ftp</c>. <see cref="Match(Uri)"/> of the result reads the metadata
+    /// values back, as it does those of the text that <see cref="Format(AppRouteRequest)"/> returns.
     /// </para>
     /// </remarks>
     /// <exception cref="ArgumentNullException">
@@ -807,7 +846,7 @@ public sealed class RouteTable
         RouteDefinition[] definitions,
         int[] positions,
         FrozenDictionary<Type, object> codecs,
-        QueryMetadataWriter[] queryMetadata)
+        QueryMetadataKey[] queryMetadata)
     {
         // Every second format function is reported before anything is bound, so that it is reported even when a
         // format function also writes a type that has no codec: registering one would not make the table valid, and
@@ -851,7 +890,7 @@ public sealed class RouteTable
     // that a key has is reported. A mapping without a format function declares no query names.
     private static void ThrowIfQueryMetadataNameTaken(
         RouteDefinition[] definitions,
-        QueryMetadataWriter[] queryMetadata)
+        QueryMetadataKey[] queryMetadata)
     {
         if (queryMetadata.Length == 0)
             return;
@@ -863,16 +902,16 @@ public sealed class RouteTable
 
             foreach (string name in definition.Formatter.QueryNames)
             {
-                foreach (QueryMetadataWriter writer in queryMetadata)
+                foreach (QueryMetadataKey key in queryMetadata)
                 {
-                    if (!StringComparer.OrdinalIgnoreCase.Equals(writer.Name, name))
+                    if (!StringComparer.OrdinalIgnoreCase.Equals(key.Name, name))
                         continue;
 
-                    string spelling = StringComparer.Ordinal.Equals(writer.Name, name)
+                    string spelling = StringComparer.Ordinal.Equals(key.Name, name)
                         ? ""
                         : $", as '{RouteText.EscapeForMessage(name)}'";
                     throw new InvalidOperationException(
-                        $"The {writer.Subject}, declared with AddQueryMetadata, has the name of a query value that " +
+                        $"The {key.Subject}, declared with AddQueryMetadata, has the name of a query value that " +
                         $"the format function of route type '{RouteValueTypes.DisplayName(definition.RouteType)}', " +
                         $"mapped to the template '{definition.Template.Value}', declares{spelling}, so a link to it " +
                         "would write the name twice; names that differ only by case are the same name. Give the key " +
@@ -882,13 +921,40 @@ public sealed class RouteTable
         }
     }
 
-    // Binds the writer of each declared key to the table's codecs, in the order the keys were declared, which reports
+    // Reads the entry of each declared key whose name the query has, in the order the keys were declared, into one
+    // array, which is allocated at the first entry found and trimmed once when some key has none. Distinct declared
+    // keys give distinct entries, as RouteMetadata.FromEntries needs: no two declared names are equal ignoring case,
+    // so none are equal ordinally, and a key equals another only with an ordinally equal name. A table that declares
+    // no keys, or a query with none of their names, gives the empty metadata and allocates nothing here.
+    private RouteMetadata ReadQueryMetadata(RouteMatchContext context)
+    {
+        RouteMetadataEntry[]? entries = null;
+        var count = 0;
+        foreach (QueryMetadataKey key in _queryMetadata)
+        {
+            if (!key.TryRead(context, out RouteMetadataEntry? entry))
+                continue;
+
+            entries ??= new RouteMetadataEntry[_queryMetadata.Length];
+            entries[count++] = entry;
+        }
+
+        if (entries is null)
+            return RouteMetadata.Empty;
+
+        if (count < entries.Length)
+            Array.Resize(ref entries, count);
+
+        return RouteMetadata.FromEntries(entries);
+    }
+
+    // Binds each declared key to the table's codecs, in the order the keys were declared, which reports
     // the first key whose type is not built in and has no codec.
-    private static QueryMetadataWriter[] BindQueryMetadata(
-        QueryMetadataWriter[] queryMetadata,
+    private static QueryMetadataKey[] BindQueryMetadata(
+        QueryMetadataKey[] queryMetadata,
         FrozenDictionary<Type, object> codecs)
     {
-        var bound = new QueryMetadataWriter[queryMetadata.Length];
+        var bound = new QueryMetadataKey[queryMetadata.Length];
         for (var i = 0; i < bound.Length; i++)
             bound[i] = queryMetadata[i].Bind(codecs);
 
