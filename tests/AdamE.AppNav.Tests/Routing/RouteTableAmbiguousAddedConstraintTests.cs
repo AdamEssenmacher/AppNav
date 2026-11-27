@@ -197,9 +197,9 @@ public sealed class RouteTableAmbiguousAddedConstraintTests
 
         Assert.Contains(Ambiguous, exception.Message, StringComparison.Ordinal);
         AssertInOrder(exception.Message, $"'/p/{{x:{earliest}}}'", "'/p/{x:any}'");
-        AssertInOrder(exception.Message, $"'{typeof(SettingsRoute).FullName}'", $"'{typeof(FileRoute).FullName}'");
+        AssertInOrder(exception.Message, $"'{nameof(SettingsRoute)}'", $"'{nameof(FileRoute)}'");
         Assert.DoesNotContain($"'/p/{{x:{between}}}'", exception.Message, StringComparison.Ordinal);
-        Assert.DoesNotContain(typeof(ProductRoute).FullName!, exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain($"'{nameof(ProductRoute)}'", exception.Message, StringComparison.Ordinal);
         Assert.Contains($"'{path}'", exception.Message, StringComparison.Ordinal);
     }
 
@@ -217,6 +217,20 @@ public sealed class RouteTableAmbiguousAddedConstraintTests
         AssertInOrder(exception.Message, "'/p/{x:int}'", "'/p/{x:upper}'");
         Assert.DoesNotContain("'/p/{x:alpha}'", exception.Message, StringComparison.Ordinal);
         Assert.Contains("the constraints 'int' and 'upper'", exception.Message, StringComparison.Ordinal);
+    }
+
+    // The message without a path names the route types as the one with a path does.
+    [Fact]
+    public void SameNamedRouteTypesOfTwoNamespacesAreWrittenWithTheirNamespacesWhenNoPathIsKnown()
+    {
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() => new RouteTableBuilder()
+            .AddConstraint("upper", Added[2].IsSatisfiedBy)
+            .Map("/p/{x:int}", _ => new Orders.DetailRoute())
+            .Map("/p/{x:upper}", _ => new Catalog.DetailRoute())
+            .Build());
+
+        Assert.Contains(MayOverlap, exception.Message, StringComparison.Ordinal);
+        AssertInOrder(exception.Message, $"'{RouteTypeNames.OrdersDetail}'", $"'{RouteTypeNames.CatalogDetail}'");
     }
 
     // Build asks the function about the samples the built-in constraints are compared with, and about nothing else.
