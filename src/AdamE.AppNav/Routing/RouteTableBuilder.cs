@@ -22,6 +22,14 @@ public sealed class RouteTableBuilder
     // is the same in every culture.
     private readonly Dictionary<string, RouteConstraint> _constraints = new(StringComparer.OrdinalIgnoreCase);
 
+    // The pairs of constraint names that DeclareDisjointConstraints declared disjoint, in lower case, each once, in the
+    // order they were first declared, which is the order Build checks them in. The names are kept, not constraints,
+    // because a name may be added after it is declared, and a built-in constraint is shared by every builder.
+    private readonly List<(string First, string Second)> _disjointPairs = [];
+
+    // The same pairs, each with its names in ordinal order, so that declaring a pair again in either order is found.
+    private readonly HashSet<(string, string)> _disjointKeys = [];
+
     // The resolver passed to the template parser, made once.
     private Func<string, RouteConstraint>? _resolveConstraint;
 
@@ -398,11 +406,12 @@ public sealed class RouteTableBuilder
     /// called by <see cref="RouteTable.Match(Uri)"/> for the segment in the parameter's position, unless the segment is
     /// <c>.</c> or <c>..</c> once decoded; by <see cref="RouteTable.Format(AppRoute)"/> and
     /// <see cref="RouteTable.FormatUri(AppRoute, Uri)"/>, to check the value written, unless it is <c>.</c> or
-    /// <c>..</c>, and when checking whether a template that ranks higher would match the path written; by
+    /// <c>..</c>, and when checking whether another template would match the path written first; by
     /// <see cref="RouteTemplate.Match(string)"/> and
     /// <see cref="RouteTemplate.Format(IReadOnlyDictionary{string, string})"/> of a template mapped on this builder,
     /// such as one read from <see cref="RouteTable.Definitions"/>, as the table's own methods call it; and by
-    /// <see cref="Build"/>, with sample texts, when it checks that templates can be told apart. It must be safe to call
+    /// <see cref="Build"/>, with sample texts, when it checks that templates can be told apart and when it checks a
+    /// pair declared with <see cref="DeclareDisjointConstraints(ReadOnlySpan{string})"/>. It must be safe to call
     /// from several threads at once, since a built table is. An exception it throws, a
     /// <see cref="RouteValueException"/> included, propagates unchanged from each of them.
     /// </param>
@@ -429,7 +438,10 @@ public sealed class RouteTableBuilder
     /// A parameter with an added constraint ranks as one with a built-in constraint does. Which text the function
     /// accepts cannot be known, so <see cref="Build"/> treats an added constraint as overlapping every constraint,
     /// itself included: it cannot keep apart two templates that otherwise rank equally, and such a pair is rejected
-    /// as templates that cannot be told apart. Keep them apart with a different literal instead.
+    /// as templates that cannot be told apart. Only a pair declared with
+    /// <see cref="DeclareDisjointConstraints(ReadOnlySpan{string})"/> is taken to accept no text in common, and a
+    /// constraint can never be declared disjoint from itself. Keep such templates apart with a different literal
+    /// instead, or, when the two constraints accept no text in common, declare that.
     /// </para>
     /// </remarks>
     /// <exception cref="ArgumentNullException">
@@ -487,6 +499,127 @@ public sealed class RouteTableBuilder
     }
 
     /// <summary>
+    /// Declares that no text satisfies any two of the named constraints together, so that <see cref="Build"/> can
+    /// keep apart templates that differ only in them, such as <c>/articles/{slug:slug}</c> and
+    /// <c>/articles/{id:int}</c>.
+    /// </summary>
+    /// <param name="names">
+    /// The names of two or more different constraints, built in, such as <c>int</c>, or added with
+    /// <see cref="AddConstraint(string, Func{string, bool})"/>, such as <c>slug</c>, compared without regard to ASCII
+    /// case. Every two of them are declared disjoint: <c>("slug", "int", "guid")</c> declares <c>slug</c> and
+    /// <c>int</c>, <c>slug</c> and <c>guid</c>, and <c>int</c> and <c>guid</c>, and nothing about any other pair.
+    /// </param>
+    /// <returns>This builder, so that calls can be chained.</returns>
+    /// <remarks>
+    /// <para>
+    /// The library cannot know which text the function of an added constraint accepts, so without a declaration
+    /// <see cref="Build"/> treats an added constraint as overlapping every constraint and rejects two templates that
+    /// rank equally and differ only in such constraints as templates that cannot be told apart. A declared pair is
+    /// taken to accept no text in common instead, so a required position where the two templates have its two
+    /// constraints keeps them apart. A constraint always overlaps itself, which is why a name cannot be given twice.
+    /// </para>
+    /// <para>
+    /// Declaring applies to the whole table, so the order of this call and of the
+    /// <see cref="AddConstraint(string, Func{string, bool})"/> and <c>Map</c> calls does not matter: a name can be
+    /// declared before it is added. Declaring a pair again, with an identical call, with the names in the other order,
+    /// or as part of another list, is allowed and changes nothing. A table already built does not change;
+    /// <see cref="Build"/> builds one that includes the declaration.
+    /// </para>
+    /// <para>
+    /// <see cref="Build"/> checks each declared pair against the sample texts <c>0</c>, <c>a</c>, <c>true</c> and
+    /// <c>00000000-0000-0000-0000-000000000000</c>: it passes each sample text to the function of each constraint of
+    /// a declared pair, once for that check however many pairs name the constraint, and throws when both
+    /// constraints of a pair accept one of them. Comparing the templates can then pass a function the same texts
+    /// again. That check catches a declaration that is false for one of
+    /// those texts, and so every false declaration about two built-in constraints, such as <c>int</c> and
+    /// <c>long</c>, which both accept <c>0</c>; a declaration about two built-in constraints that accept no text in
+    /// common, such as <c>int</c> and <c>guid</c>, is true and changes nothing. Beyond that check the declaration is
+    /// trusted. If it is false, some path is matched by both templates, and for such a path the one mapped first wins,
+    /// so the order the routes were mapped in decides the route. <see cref="RouteTable.Format(AppRoute)"/> and
+    /// <see cref="RouteTable.FormatUri(AppRoute, Uri)"/> then refuse to write a route of the template mapped later
+    /// whose path the earlier one matches, because <see cref="RouteTable.Match(Uri)"/> of it would select the earlier,
+    /// and the message says that the earlier template ranks equally and was mapped first.
+    /// </para>
+    /// <para>
+    /// When this method throws, the builder is not changed.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentNullException">
+    /// One of <paramref name="names"/> is <see langword="null"/>, wherever it is in the list and however many names
+    /// there are; this is checked before anything else. The exception's <see cref="ArgumentException.ParamName"/> is
+    /// <c>names</c>.
+    /// </exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="names"/> has fewer than two names, which includes an array that is <see langword="null"/>; or
+    /// one of them is not an ASCII letter followed by ASCII letters, digits, <c>-</c> or <c>_</c>; or one is reserved
+    /// for a later built-in constraint, as <see cref="AddConstraint(string, Func{string, bool})"/> describes, and so
+    /// can never be a constraint; or one is the same as an earlier one, ignoring case. The number of names is checked
+    /// first; then each name in turn, its form, then whether it is reserved, then whether it repeats an earlier one,
+    /// and the first failure is reported, naming the name. The exception's <see cref="ArgumentException.ParamName"/>
+    /// is <c>names</c>.
+    /// </exception>
+    public RouteTableBuilder DeclareDisjointConstraints(params ReadOnlySpan<string> names)
+    {
+        // A null name is a mistake in the call rather than in a name, so it is reported before anything else.
+        foreach (string name in names)
+            ArgumentNullException.ThrowIfNull(name, nameof(names));
+
+        if (names.Length < 2)
+        {
+            throw new ArgumentException(
+                "DeclareDisjointConstraints takes two or more constraint names, every two of which are declared to " +
+                "accept no text in common.",
+                nameof(names));
+        }
+
+        // Every name is checked before any pair is kept, so that a call that fails leaves the builder as it was.
+        var lower = new string[names.Length];
+        for (var i = 0; i < names.Length; i++)
+        {
+            string name = names[i];
+            if (!RouteConstraint.IsAddableName(name))
+            {
+                throw new ArgumentException(
+                    $"The constraint name '{RouteText.EscapeForMessage(name)}' is not valid; the name of a " +
+                    "constraint is an ASCII letter followed by ASCII letters, digits, '-' or '_'.",
+                    nameof(names));
+            }
+
+            lower[i] = name.ToLowerInvariant();
+            if (RouteConstraint.IsReserved(name))
+            {
+                throw new ArgumentException(
+                    $"The constraint name '{lower[i]}' is reserved, so that a later built-in constraint can have it, " +
+                    "and no constraint has it yet.",
+                    nameof(names));
+            }
+
+            // A constraint always accepts what it accepts, so it can never be disjoint from itself.
+            if (Array.IndexOf(lower, lower[i], 0, i) >= 0)
+            {
+                throw new ArgumentException(
+                    $"The constraint name '{lower[i]}' is given twice, ignoring case, but a constraint always " +
+                    "overlaps itself.",
+                    nameof(names));
+            }
+        }
+
+        for (var i = 0; i < lower.Length; i++)
+        {
+            for (int j = i + 1; j < lower.Length; j++)
+            {
+                (string, string) key = string.CompareOrdinal(lower[i], lower[j]) < 0
+                    ? (lower[i], lower[j])
+                    : (lower[j], lower[i]);
+                if (_disjointKeys.Add(key))
+                    _disjointPairs.Add((lower[i], lower[j]));
+            }
+        }
+
+        return this;
+    }
+
+    /// <summary>
     /// Builds a route table from the mappings made so far.
     /// </summary>
     /// <returns>
@@ -520,8 +653,9 @@ public sealed class RouteTableBuilder
     /// different route types of the same name are written in full: with their namespace where they have one, or as
     /// <see cref="Type.ToString()"/> writes them when that still leaves them alike. A constraint added with
     /// <see cref="AddConstraint(string, Func{string, bool})"/> is treated as overlapping every constraint, so two such
-    /// templates are reported even when no text is known that both match; the message then names no path, but the
-    /// constraints at the first required position where no common text is known. The same template twice is
+    /// templates are reported even when no text is known that both match, unless the two constraints are declared
+    /// disjoint with <see cref="DeclareDisjointConstraints(ReadOnlySpan{string})"/>; the message then names no path,
+    /// but the constraints at the first required position where no common text is known. The same template twice is
     /// looked for first, across the whole table, so it is reported even when two other mappings that conflict in this
     /// way come earlier. Templates that rank differently can match the same path, because precedence decides between
     /// them.
@@ -538,21 +672,38 @@ public sealed class RouteTableBuilder
     /// <see cref="AddValueCodec{TValue}"/>. The message names the route type, the template, the path parameter or query
     /// value, the type and the method that registers it: <see cref="AddEnumValueCodec{TEnum}"/> for an enum, which it
     /// says can also be given a codec of its own, and <see cref="AddValueCodec{TValue}"/> for any other type.
+    /// <para>-or-</para>
+    /// A name given to <see cref="DeclareDisjointConstraints(ReadOnlySpan{string})"/> is neither built in nor added
+    /// with <see cref="AddConstraint(string, Func{string, bool})"/>. The message names the constraint, says that
+    /// <see cref="DeclareDisjointConstraints(ReadOnlySpan{string})"/> named it, and, for a misspelled built-in name,
+    /// names the built-in constraint it resembles. The first such name, in the order the names were first declared, is
+    /// reported.
+    /// <para>-or-</para>
+    /// Both constraints of a pair declared disjoint with <see cref="DeclareDisjointConstraints(ReadOnlySpan{string})"/>
+    /// accept one of the sample texts <c>0</c>, <c>a</c>, <c>true</c> and
+    /// <c>00000000-0000-0000-0000-000000000000</c>, so the declaration is false. The message names both constraints
+    /// and the sample text. Build passes each sample text to the function of each constraint of a declared pair
+    /// before it reports any pair, so which texts a function receives does not depend on the order of the names or of
+    /// the declarations. The first such pair, in the order the pairs were first declared, is reported, with the first
+    /// sample, in that order, that both accept.
     /// <para/>
-    /// The constraints the templates name are checked first, then the templates, then that no route type has two
-    /// format functions, then the types the format functions write, each in the order the routes were mapped. In every
-    /// case, the builder is not changed.
+    /// The constraints the templates name are checked first, then the names declared disjoint, then the declared pairs
+    /// against the samples, then the templates, then that no route type has two format functions, then the types the
+    /// format functions write, each in the order the routes were mapped or the names declared. In every case, the
+    /// builder is not changed.
     /// </exception>
     /// <exception cref="Exception">
     /// Any exception that the function of a constraint added with
-    /// <see cref="AddConstraint(string, Func{string, bool})"/> throws when it is called with a sample text, unchanged.
+    /// <see cref="AddConstraint(string, Func{string, bool})"/> throws when it is called with a sample text, to check a
+    /// declared pair or to compare two templates, unchanged.
     /// </exception>
     public RouteTable Build()
     {
         ThrowIfConstraintNotAdded();
+        DisjointConstraints disjoint = ResolveDisjointConstraints();
 
         // The codecs themselves never change, so tables can share them; only the dictionary is copied.
-        return new RouteTable(_definitions.ToArray(), _codecs.ToFrozenDictionary());
+        return new RouteTable(_definitions.ToArray(), _codecs.ToFrozenDictionary(), disjoint);
     }
 
     // The resolver that lets the parser leave a name that is not built in to this builder, made on first use so that
@@ -599,6 +750,89 @@ public sealed class RouteTableBuilder
                     $"it with AddConstraint(\"{name}\", ...) on this builder, before or after the Map call.");
             }
         }
+    }
+
+    // Resolves the declared pairs to the constraints of this builder, made anew for each table so that a later
+    // declaration cannot reach a table already built. Every name is resolved before any function is called, as for the
+    // templates. Then each constraint of a declared pair is asked about every sample, once, in the order the
+    // constraints were first declared and with no answer skipped, so that which texts a function receives, and so
+    // whether an exception it throws for one propagates, depends neither on the order of the names in a declaration
+    // nor on which declaration came first. Only then is each pair checked, in the order declared: the samples can
+    // prove a declaration false but never true, and past that it is trusted.
+    private DisjointConstraints ResolveDisjointConstraints()
+    {
+        if (_disjointPairs.Count == 0)
+            return DisjointConstraints.None;
+
+        var resolved = new (RouteConstraint First, RouteConstraint Second)[_disjointPairs.Count];
+        for (var i = 0; i < resolved.Length; i++)
+        {
+            (string first, string second) = _disjointPairs[i];
+            resolved[i] = (ResolveDeclared(first), ResolveDeclared(second));
+        }
+
+        var accepted = new Dictionary<RouteConstraint, bool[]>();
+        foreach ((RouteConstraint first, RouteConstraint second) in resolved)
+        {
+            AskAboutSamples(first, accepted);
+            AskAboutSamples(second, accepted);
+        }
+
+        foreach ((RouteConstraint first, RouteConstraint second) in resolved)
+        {
+            bool[] byFirst = accepted[first];
+            bool[] bySecond = accepted[second];
+            for (var i = 0; i < byFirst.Length; i++)
+            {
+                if (!(byFirst[i] && bySecond[i]))
+                    continue;
+
+                // The sample is the library's own text, not a value from a route, so it can be quoted.
+                throw new InvalidOperationException(
+                    $"The constraints '{first.Name}' and '{second.Name}' are declared disjoint by " +
+                    $"DeclareDisjointConstraints, but both accept the text '{RouteConstraint.Samples[i]}', so the " +
+                    "declaration is false. Remove the declaration, or change a constraint so that the two accept no " +
+                    "text in common.");
+            }
+        }
+
+        return new DisjointConstraints(resolved);
+    }
+
+    // Records which samples a constraint accepts, asking its function about each of them unless an earlier pair
+    // already has.
+    private static void AskAboutSamples(RouteConstraint constraint, Dictionary<RouteConstraint, bool[]> accepted)
+    {
+        if (accepted.ContainsKey(constraint))
+            return;
+
+        ReadOnlySpan<string> samples = RouteConstraint.Samples;
+        var answers = new bool[samples.Length];
+        for (var i = 0; i < samples.Length; i++)
+            answers[i] = constraint.IsSatisfiedBy(samples[i]);
+
+        accepted.Add(constraint, answers);
+    }
+
+    // The constraint a declared name names: a built-in one, or one added on this builder, which a template that failed
+    // to map may have left unbound. The name is already in lower case.
+    private RouteConstraint ResolveDeclared(string name)
+    {
+        if (RouteConstraint.Find(name) is { } builtIn)
+            return builtIn;
+
+        if (_constraints.TryGetValue(name, out RouteConstraint? constraint) && constraint.IsBound)
+            return constraint;
+
+        string? similar = RouteConstraint.FindSimilarBuiltIn(name);
+        throw new InvalidOperationException(
+            $"The constraint '{name}', named by DeclareDisjointConstraints, is neither built in nor added on this " +
+            $"builder. The built-in constraints are {RouteConstraint.SupportedNames}, ignoring case. " +
+            (similar is null
+                ? "If one of them was meant, correct the call. Otherwise add "
+                : $"If '{similar}' was meant, correct the call. Otherwise add ") +
+            $"it with AddConstraint(\"{name}\", ...) on this builder, before or after the DeclareDisjointConstraints " +
+            "call.");
     }
 
     // A second codec for a type would make which one a table reads and writes it with depend on the order of the

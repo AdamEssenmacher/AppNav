@@ -40,6 +40,7 @@ AdamE.AppNav.Routing.RouteTableBuilder.AddConstraint(string! name, System.Func<s
 AdamE.AppNav.Routing.RouteTableBuilder.AddEnumValueCodec<TEnum>() -> AdamE.AppNav.Routing.RouteTableBuilder!
 AdamE.AppNav.Routing.RouteTableBuilder.AddValueCodec<TValue>(AdamE.AppNav.Routing.RouteValueParser<TValue>! tryParse, System.Func<TValue, string?>! format) -> AdamE.AppNav.Routing.RouteTableBuilder!
 AdamE.AppNav.Routing.RouteTableBuilder.Build() -> AdamE.AppNav.Routing.RouteTable!
+AdamE.AppNav.Routing.RouteTableBuilder.DeclareDisjointConstraints(params System.ReadOnlySpan<string!> names) -> AdamE.AppNav.Routing.RouteTableBuilder!
 AdamE.AppNav.Routing.RouteTableBuilder.Map<TRoute>(string! template, System.Func<AdamE.AppNav.Routing.RouteMatchContext!, TRoute!>! createRoute) -> AdamE.AppNav.Routing.RouteTableBuilder!
 AdamE.AppNav.Routing.RouteTableBuilder.Map<TRoute>(string! template, System.Func<AdamE.AppNav.Routing.RouteMatchContext!, TRoute!>! createRoute, System.Action<AdamE.AppNav.Routing.RouteFormatBuilder<TRoute!>!>! format) -> AdamE.AppNav.Routing.RouteTableBuilder!
 AdamE.AppNav.Routing.RouteTableBuilder.RouteTableBuilder() -> void
