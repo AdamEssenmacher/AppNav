@@ -10,6 +10,13 @@ namespace AdamE.AppNav.Routing;
 /// </remarks>
 public sealed class RouteTableBuilder
 {
+    // Written for a key of a type that cannot be written; the list of supported types goes between.
+    private const string UnsupportedMetadata = "A route metadata value cannot be written";
+
+    private const string UnsupportedMetadataTail =
+        ". A collection is not one of them: a key declared with AddQueryMetadata is written as one query value; wrap " +
+        "the collection in a type of your own and register a codec for that type.";
+
     private readonly List<RouteDefinition> _definitions = [];
 
     // The codecs registered so far, each under the type it reads: an enum of AddEnumValueCodec and its nullable form
@@ -29,6 +36,10 @@ public sealed class RouteTableBuilder
 
     // The same pairs, each with its names in ordinal order, so that declaring a pair again in either order is found.
     private readonly HashSet<(string, string)> _disjointKeys = [];
+
+    // The writer of each key declared with AddQueryMetadata, in the order declared, which is the order Format writes
+    // their values in. No two have names that are equal ignoring case.
+    private readonly List<QueryMetadataWriter> _queryMetadata = [];
 
     // The resolver passed to the template parser, made once.
     private Func<string, RouteConstraint>? _resolveConstraint;
@@ -618,6 +629,104 @@ public sealed class RouteTableBuilder
     }
 
     /// <summary>
+    /// Declares that the route metadata entry of a key travels in a link as a query value whose name is the key's
+    /// name, for every table this builder builds from then on.
+    /// </summary>
+    /// <typeparam name="TValue">
+    /// The type of the key's value, one of those that
+    /// <see cref="RouteFormatBuilder{TRoute}.Query{TValue}(string, Func{TRoute, TValue})"/> writes: a built-in type,
+    /// an enum registered with <see cref="AddEnumValueCodec{TEnum}"/> or a type registered with
+    /// <see cref="AddValueCodec{TValue}"/>, before <see cref="Build"/>, before or after this call. A collection is not
+    /// one of them, since a key's value is written as one query value.
+    /// </typeparam>
+    /// <param name="key">
+    /// The key. Its name is the name of the query value, compared with the other query names ordinally without regard
+    /// to case, as the query reads compare them.
+    /// </param>
+    /// <returns>This builder, so that calls can be chained.</returns>
+    /// <remarks>
+    /// <para>
+    /// <see cref="RouteTable.Format(AppRouteRequest)"/> and <see cref="RouteTable.FormatUri(AppRouteRequest, Uri)"/>
+    /// then write the value of the request's entry for the key, when it has one, after the route's own query values,
+    /// in the order the keys were declared, as <c>name=value</c>, by exactly the rules of a query value of
+    /// <typeparamref name="TValue"/> declared with
+    /// <see cref="RouteFormatBuilder{TRoute}.Query{TValue}(string, Func{TRoute, TValue})"/>. An entry for a key that is
+    /// not declared is not written. <see cref="RouteTable.Match(Uri)"/> does not read the values.
+    /// </para>
+    /// <para>
+    /// Declaring applies to the whole table, so the order of this call and of the <c>Map</c>,
+    /// <see cref="AddValueCodec{TValue}"/> and <see cref="AddEnumValueCodec{TEnum}"/> calls does not matter, and
+    /// declaring an equal key again does nothing. A table already built does not change; <see cref="Build"/> builds
+    /// one that includes the declaration.
+    /// </para>
+    /// <para>
+    /// A <see cref="char"/>, which can have no codec, is reported by <see cref="Build"/>, as for a query value of that
+    /// type, as is any other type that is not built in and has no codec by then. <see cref="Build"/> also reports a
+    /// key whose name, ignoring case, is the name of a query value that a format function declares with
+    /// <see cref="RouteFormatBuilder{TRoute}.Query{TValue}(string, Func{TRoute, TValue})"/> or
+    /// <see cref="RouteFormatBuilder{TRoute}.QueryValues{TValue}(string, Func{TRoute, IEnumerable{TValue}})"/>.
+    /// </para>
+    /// <para>
+    /// When this method throws, the builder is not changed.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentNullException"><paramref name="key"/> is <see langword="null"/>.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// <typeparamref name="TValue"/> is a collection, such as <c>string[]</c>, which no codec can write; the message
+    /// lists the supported types.
+    /// </exception>
+    /// <exception cref="ArgumentException">
+    /// The key's name contains a lone surrogate, which cannot be percent-encoded and read back unchanged, as for the
+    /// name of a query value; or a key with the same name ignoring case is already declared on this builder and is not
+    /// equal to this one, because its name differs by case or its value type differs. The exception's
+    /// <see cref="ArgumentException.ParamName"/> is <c>key</c>.
+    /// </exception>
+    public RouteTableBuilder AddQueryMetadata<TValue>(RouteMetadataKey<TValue> key)
+        where TValue : notnull
+    {
+        ArgumentNullException.ThrowIfNull(key);
+
+        // Checked before the name, as Query checks the type first, and for the same reason only a collection is
+        // rejected here: any other type can be given a codec, before or after this call, so Build reports one that
+        // has none, as it reports char, which can never have one.
+        if (RouteValueTypes.IsCollection<TValue>())
+            throw RouteValueTypes.UnsupportedType<TValue>(UnsupportedMetadata, UnsupportedMetadataTail);
+
+        string encodedName = QueryBuilder.EncodeName(key.Name, "route metadata key name", nameof(key));
+        foreach (QueryMetadataWriter writer in _queryMetadata)
+        {
+            if (!StringComparer.OrdinalIgnoreCase.Equals(writer.Name, key.Name))
+                continue;
+
+            if (writer is TypedQueryMetadataWriter<TValue> typed && typed.Key.Equals(key))
+                return this;
+
+            // A link has one value for a name, ignoring case, so two keys of one name could not both travel in it.
+            // Two value types are named as the ambiguity messages name two route types, in full where their short
+            // names are alike.
+            string quoted = RouteText.EscapeForMessage(key.Name);
+            string why;
+            if (StringComparer.Ordinal.Equals(writer.Name, key.Name))
+            {
+                (string declared, string given) = RouteValueTypes.DisplayNames(writer.ValueType, typeof(TValue));
+                why = $"with the value type '{declared}', and this key has the value type '{given}'";
+            }
+            else
+            {
+                why = $"as '{RouteText.EscapeForMessage(writer.Name)}'";
+            }
+
+            throw new ArgumentException(
+                $"A route metadata key named '{quoted}' is already declared with AddQueryMetadata, {why}; each name " +
+                "is declared once, and names that differ only by case are the same name.",
+                nameof(key));
+        }
+
+        _queryMetadata.Add(new TypedQueryMetadataWriter<TValue>(key, encodedName));
+        return this;
+    }
+
+    /// <summary>
     /// Builds a route table from the mappings made so far.
     /// </summary>
     /// <returns>
@@ -687,11 +796,25 @@ public sealed class RouteTableBuilder
     /// before it reports any pair, so which texts a function receives does not depend on the order of the names or of
     /// the declarations. The first such pair, in the order the pairs were first declared, is reported, with the first
     /// sample, in that order, that both accept.
+    /// <para>-or-</para>
+    /// A key declared with <see cref="AddQueryMetadata{TValue}(RouteMetadataKey{TValue})"/> has the name, ignoring
+    /// case, of a query value that a format function declares with
+    /// <see cref="RouteFormatBuilder{TRoute}.Query{TValue}(string, Func{TRoute, TValue})"/> or
+    /// <see cref="RouteFormatBuilder{TRoute}.QueryValues{TValue}(string, Func{TRoute, IEnumerable{TValue}})"/>. The
+    /// message names the key, the template and the route type. The first mapping, in the order the routes were
+    /// mapped, and then its first such query value, in the order declared, is reported.
+    /// <para>-or-</para>
+    /// A key declared with <see cref="AddQueryMetadata{TValue}(RouteMetadataKey{TValue})"/> has a value type that is
+    /// not built in and has no codec: an enum not registered with <see cref="AddEnumValueCodec{TEnum}"/> or
+    /// <see cref="AddValueCodec{TValue}"/>, <see cref="char"/>, or any other type not registered with
+    /// <see cref="AddValueCodec{TValue}"/>. The message names the key, the type and the method that registers it, as
+    /// for a format function. The first such key, in the order the keys were declared, is reported.
     /// <para/>
     /// The constraints the templates name are checked first, then the names declared disjoint, then the declared pairs
-    /// against the samples, then the templates, then that no route type has two format functions, then the types the
-    /// format functions write, each in the order the routes were mapped or the names declared. In every case, the
-    /// builder is not changed.
+    /// against the samples, then the templates, then that no route type has two format functions, then that no
+    /// declared metadata key has the name of a query value, then the types the format functions write, then the types
+    /// of the declared metadata keys, each in the order the routes were mapped or the names or keys declared. In every
+    /// case, the builder is not changed.
     /// </exception>
     /// <exception cref="Exception">
     /// Any exception that the function of a constraint added with
@@ -704,7 +827,11 @@ public sealed class RouteTableBuilder
         DisjointConstraints disjoint = ResolveDisjointConstraints();
 
         // The codecs themselves never change, so tables can share them; only the dictionary is copied.
-        return new RouteTable(_definitions.ToArray(), _codecs.ToFrozenDictionary(), disjoint);
+        return new RouteTable(
+            _definitions.ToArray(),
+            _codecs.ToFrozenDictionary(),
+            disjoint,
+            _queryMetadata.ToArray());
     }
 
     // The resolver that lets the parser leave a name that is not built in to this builder, made on first use so that

@@ -30,7 +30,7 @@ internal sealed class ListQueryWriter<TRoute, TValue> : QueryWriter<TRoute>
         _codec = codec;
     }
 
-    public override string NoTextReason => TypedValueWriter<TRoute, TValue>.NoTextReasonOf(_codec);
+    public override string NoTextReason => TypedValueText<TValue>.NoTextReasonOf(_codec);
 
     public override QueryWriter<TRoute> Bind(FrozenDictionary<Type, object> codecs, RouteTemplate template)
     {
@@ -55,13 +55,10 @@ internal sealed class ListQueryWriter<TRoute, TValue> : QueryWriter<TRoute>
             if (value is null)
                 return QueryValueProblem.NullElement;
 
-            ValueTextProblem problem = TypedValueWriter<TRoute, TValue>.Write(value, _codec, out string? text);
-            if (problem != ValueTextProblem.None)
-                return ProblemOf(problem);
-
-            // A value that is not null always has a text when it can be written.
-            if (!query.TryAppend(EncodedName, text!))
-                return QueryValueProblem.LoneSurrogate;
+            ValueTextProblem problem = TypedValueText<TValue>.Write(value, _codec, out string? text);
+            QueryValueProblem appended = query.AppendValue(EncodedName, problem, text);
+            if (appended != QueryValueProblem.None)
+                return appended;
         }
 
         return QueryValueProblem.None;

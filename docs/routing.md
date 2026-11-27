@@ -1108,3 +1108,67 @@ public sealed record ItemRoute(int Id) : AppRoute;
 - Two requests are equal when their routes are equal and their metadata are equal, and equal requests have equal hash codes; `==` and `!=` agree with `Equals`.
 - A request's `ToString` prints its route with all of the route's values, but not the values of its metadata, which prints only its full type name.
 - A request is immutable and safe to share across threads, provided its route is immutable too, as a route whose members cannot be set is.
+
+### Writing metadata as query values
+
+Metadata is not part of a link unless the table says so. `AddQueryMetadata(key)` declares, for the whole table, that the entry of a key travels in a link as a query value whose name is the key's name. `Format(request)` and `FormatUri(request, baseUri)` then write a request: its route, exactly as `Format(route)` and `FormatUri(route, baseUri)` write it, followed by one query value for each declared key that the request's metadata has an entry for.
+
+```csharp
+using AdamE.AppNav;
+using AdamE.AppNav.Routing;
+
+RouteMetadataKey<string> campaign = new("campaign");
+RouteMetadataKey<int> step = new("step");
+
+RouteTable table = new RouteTableBuilder()
+    .Map("/items/{id:int}",
+        c => new ItemRoute(c.Path<int>("id")),
+        format => format.Path("id", r => r.Id))
+    .Map("/products",
+        c => new ProductsRoute(c.TryGetQuery("page", out int page) ? page : null),
+        format => format.Query("page", r => r.Page))
+    .AddQueryMetadata(campaign)
+    .AddQueryMetadata(step)
+    .Build();
+
+AppRouteRequest request = new AppRouteRequest(new ItemRoute(42))
+    .WithMetadata(step, 2)
+    .WithMetadata(campaign, "spring sale");
+
+Console.WriteLine(table.Format(request));       // /items/42?campaign=spring%20sale&step=2
+Console.WriteLine(table.Format(request.Route)); // /items/42
+
+AppRouteRequest products = new AppRouteRequest(new ProductsRoute(2)).WithMetadata(campaign, "");
+Console.WriteLine(table.Format(products));      // /products?page=2&campaign=
+
+Uri link = table.FormatUri(request, new Uri("myapp:///"));
+Console.WriteLine(link.AbsoluteUri);            // myapp:///items/42?campaign=spring%20sale&step=2
+Console.WriteLine(table.Match(link).Route);     // ItemRoute { Id = 42 }
+
+public sealed record ItemRoute(int Id) : AppRoute;
+
+public sealed record ProductsRoute(int? Page) : AppRoute;
+```
+
+`Match` does not read these values: a create function can read them as query values, but the result carries no metadata.
+
+Declaring a key:
+
+- Declaring applies to the whole table, so `AddQueryMetadata` can come before or after the `Map`, `AddValueCodec` and `AddEnumValueCodec` calls. A table already built does not change; `Build` builds one that includes the declaration.
+- A `null` key throws `ArgumentNullException` whose `ParamName` is `key`.
+- Declaring an equal key again, with the same name and the same value type, does nothing. A key whose name equals an already declared key's name ignoring case, compared ordinally as the query reads compare names, but which is not an equal key, because its name differs by case or its value type differs, throws `ArgumentException` whose `ParamName` is `key`, and the builder is not changed. A link has one value for a name, so two keys of one name could not both travel in it.
+- The name must be one that can be written as a query name: a name with a lone surrogate throws `ArgumentException` whose `ParamName` is `key`, as `Query` throws for such a name.
+- The value type is one that `Query` writes: a built-in type, a registered enum or a type with a codec. As for `Query`, a collection, such as `string[]`, throws `InvalidOperationException` at the call, since no codec can write it as one value. Any other type can be given a codec before or after the call, so `Build` throws `InvalidOperationException` for a type that has none by then, naming the key, the type and the method that registers it; `char`, which can have no codec, is reported there too, with a message that says to write it as a string.
+- `Build` also throws `InvalidOperationException` when a key's name equals, ignoring case, a name that some format function declares with `Query` or `QueryValues`, since a link to that route would write the name twice. The message names the key, the template and the route type. The check covers the format function of every mapping, so declaring a key whose name a mapping already writes as a query value makes `Build` throw even if no request for that route would carry the key. A mapping without a format function declares no query names, so it never collides, whatever its create function reads.
+- The checks run in a fixed order, so the error does not change from one build to the next: after the checks of the templates and of a second format function, the names that collide, the first mapping in the order mapped and then its first query name in the order declared; then the types the format functions write; then the types of the keys, in the order declared.
+
+Writing a request:
+
+- `Format(route)` and `FormatUri(route, baseUri)` write no metadata, and behave exactly as `Format(new AppRouteRequest(route))` and `FormatUri(new AppRouteRequest(route), baseUri)`, whatever keys the table declares.
+- A `null` request throws `ArgumentNullException` whose `ParamName` is `request`. `FormatUri` keeps its rules for the base, which it checks before anything is written.
+- The metadata values are written after every query value of the route, a list's included, in the order the keys were declared, whatever order the entries were added in. With no query values of the route, the query starts with the metadata: `/items/42?campaign=spring`.
+- Each value is written as a single `name=value`, by exactly the rules of a value of its type declared with `Query`: the same canonical text, the same codec, read back by the codec's parser, and the same percent-encoding of the name and the value. An empty string is a value and is written as `name=`, as `Query` writes it, which reads back as the empty string.
+- An entry for a key that is not declared is not written, and is no error. Neither is an entry for a key with a declared name but another value type, which is a different key. A declared key that the metadata has no entry for writes nothing.
+- A value that cannot be written makes `Format` throw `ArgumentException`, as a query value that cannot be written does: one with no text, such as a `double` that is NaN, an enum value that no member has, or a value for which a codec's `format` returns `null`; one whose codec writes a text that its own parser does not accept; and one whose text contains a lone surrogate. The message names the route type, the template and the key, as in `The route type 'ItemRoute' cannot be written by the template '/items/{id:int}': route metadata key 'ratio' has a value that cannot be written: ...`, and never quotes the value or the text. For a request, the `ParamName` of every `ArgumentException` that `Format(route)` gives `route` is `request`.
+- A route whose mapping has no format function still cannot be written, with or without metadata, and throws as `Format(route)` does.
+- `FormatUri` checks the whole link, metadata included: a link whose last value, a metadata value included, ends with a space is refused when the URI contains a non-ASCII character, and a link with a query, which metadata adds, is refused under a scheme that has no query in `System.Uri`, such as `ftp`.

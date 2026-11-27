@@ -5,6 +5,7 @@ namespace AdamE.AppNav.Routing;
 
 // The formatter for routes of type TRoute: a writer for every parameter of the template, in template order, and a
 // writer for every query declaration, in the order they were declared, each with its name already percent-encoded.
+// The table passes in the writers of the metadata keys it declares, which come after them.
 internal sealed class TypedRouteFormatter<TRoute> : RouteFormatter
     where TRoute : AppRoute
 {
@@ -22,6 +23,7 @@ internal sealed class TypedRouteFormatter<TRoute> : RouteFormatter
     private readonly RouteTemplate _template;
     private readonly ValueWriter<TRoute>[] _pathWriters;
     private readonly QueryWriter<TRoute>[] _queryWriters;
+    private readonly string[] _queryNames;
 
     public TypedRouteFormatter(
         RouteTemplate template,
@@ -31,7 +33,12 @@ internal sealed class TypedRouteFormatter<TRoute> : RouteFormatter
         _template = template;
         _pathWriters = pathWriters;
         _queryWriters = queryWriters;
+        _queryNames = new string[queryWriters.Length];
+        for (var i = 0; i < queryWriters.Length; i++)
+            _queryNames[i] = queryWriters[i].Name;
     }
+
+    public override ReadOnlySpan<string> QueryNames => _queryNames;
 
     public override RouteFormatter Bind(FrozenDictionary<Type, object> codecs)
     {
@@ -51,8 +58,14 @@ internal sealed class TypedRouteFormatter<TRoute> : RouteFormatter
     // functions are called. The path texts go through the template's own checks before any query function is called,
     // so that a path this writes is one the template writes, and matches it, and a path that cannot be written stops
     // the calls as a value without text does. The dictionary compares keys as a template does, so the template's
-    // lookup of each name never has to search it.
-    public override string Format(AppRoute route, out string path)
+    // lookup of each name never has to search it. The metadata values come after every query value of the route, so
+    // that a link with metadata starts with the link of the route alone.
+    public override string Format(
+        AppRoute route,
+        RouteMetadata metadata,
+        QueryMetadataWriter[] metadataWriters,
+        string paramName,
+        out string path)
     {
         var typed = (TRoute)route;
         var texts = new Dictionary<string, string>(_pathWriters.Length, StringComparer.OrdinalIgnoreCase);
@@ -60,43 +73,68 @@ internal sealed class TypedRouteFormatter<TRoute> : RouteFormatter
         {
             ValueTextProblem problem = writer.Write(typed, out string? text);
             if (problem != ValueTextProblem.None)
-                throw NotWritten(writer.Subject, Describe(problem, writer.NoTextReason));
+                throw NotWritten(writer.Subject, Describe(problem, writer.NoTextReason), paramName);
 
             if (text is not null)
                 texts.Add(writer.Name, text);
         }
 
         if (!_template.TryFormat(texts, out string? written, out PathFormatFailure failure))
-            throw NotWritten($"path parameter '{failure.Parameter.Text}'", Describe(failure));
+            throw NotWritten($"path parameter '{failure.Parameter.Text}'", Describe(failure), paramName);
 
         path = written;
-        return _queryWriters.Length == 0 ? written : AppendQuery(typed, written);
+
+        // Metadata with no entries writes nothing whatever the table declares, so its writers are not walked, and a
+        // route with no query of its own then returns its path as it is.
+        if (metadata.Count == 0)
+            metadataWriters = [];
+
+        if (_queryWriters.Length == 0 && metadataWriters.Length == 0)
+            return written;
+
+        return AppendQuery(typed, written, metadata, metadataWriters, paramName);
     }
 
     // Each declaration appends its own pairs, so the pairs of a list stay where the list was declared among the
-    // others. A declaration that cannot write its value stops the calls, as a path value does.
-    private string AppendQuery(TRoute route, string path)
+    // others, and then each declared metadata key its one pair. Every pair goes into the one builder. A value that
+    // cannot be written stops the writing, as a path value does. The two kinds of writer read from different sources,
+    // the route and the metadata, so they are walked in two loops; each reads the writer's reason for a value with no
+    // text only once it has a problem to report.
+    private string AppendQuery(
+        TRoute route,
+        string path,
+        RouteMetadata metadata,
+        QueryMetadataWriter[] metadataWriters,
+        string paramName)
     {
         var query = new QueryBuilder(path);
         foreach (QueryWriter<TRoute> writer in _queryWriters)
         {
             QueryValueProblem problem = writer.Write(route, ref query);
             if (problem != QueryValueProblem.None)
-                throw NotWritten(writer.Subject, Describe(problem, writer.NoTextReason));
+                throw NotWritten(writer.Subject, Describe(problem, writer.NoTextReason), paramName);
+        }
+
+        foreach (QueryMetadataWriter writer in metadataWriters)
+        {
+            QueryValueProblem problem = writer.Write(metadata, ref query);
+            if (problem != QueryValueProblem.None)
+                throw NotWritten(writer.Subject, Describe(problem, writer.NoTextReason), paramName);
         }
 
         return query.ToString();
     }
 
     // Route values can be secrets, such as a sign-in token, and messages tend to be logged, so every message here
-    // names the route type, the template and the path parameter or query value, and says in fixed words what is
-    // wrong, but never quotes or describes the value, and the exception has no inner exception that could.
-    private ArgumentException NotWritten(string subject, string problem)
+    // names the route type, the template and the path parameter, query value or route metadata key, and says in fixed
+    // words what is wrong, but never quotes or describes the value, and the exception has no inner exception that
+    // could.
+    private ArgumentException NotWritten(string subject, string problem, string paramName)
     {
         return new ArgumentException(
             $"The route type '{RouteValueTypes.DisplayName(typeof(TRoute))}' cannot be written by the template " +
             $"'{_template.Value}': {subject} {problem}.",
-            "route");
+            paramName);
     }
 
     private static string Describe(ValueTextProblem problem, string noTextReason)

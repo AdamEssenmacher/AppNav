@@ -212,11 +212,10 @@ public sealed class RouteFormatBuilder<TRoute>
         if (RouteValueTypes.IsCollection<TValue>())
             throw RouteValueTypes.UnsupportedType<TValue>(UnsupportedQuery, UnsupportedCollectionTail);
 
+        string encodedName = QueryBuilder.EncodeName(name, "query value name", nameof(name));
         string subject = QuerySubject(name);
         _queryWriters.Add(
-            new ValueQueryWriter<TRoute>(
-                new TypedValueWriter<TRoute, TValue>(name, subject, value),
-                Uri.EscapeDataString(name)));
+            new ValueQueryWriter<TRoute>(new TypedValueWriter<TRoute, TValue>(name, subject, value), encodedName));
         return this;
     }
 
@@ -335,8 +334,8 @@ public sealed class RouteFormatBuilder<TRoute>
                 $"is never absent, so write it as type '{RouteValueTypes.DisplayName(underlying)}' instead{register}.");
         }
 
-        _queryWriters.Add(
-            new ListQueryWriter<TRoute, TValue>(name, QuerySubject(name), Uri.EscapeDataString(name), values));
+        string encodedName = QueryBuilder.EncodeName(name, "query value name", nameof(name));
+        _queryWriters.Add(new ListQueryWriter<TRoute, TValue>(name, QuerySubject(name), encodedName, values));
         return this;
     }
 
@@ -388,21 +387,14 @@ public sealed class RouteFormatBuilder<TRoute>
         }
     }
 
-    // Checks a query name against the rules that Query and QueryValues share, and returns the subject that messages
-    // call its declaration. One name has one declaration, whichever method made it: the single-value reads take the
-    // first value of a name, ignoring case, and the list reads take all of them, so a second declaration would write
-    // values that its read never returns, or that the other declaration's read would return as its own.
+    // Checks that a query name, which QueryBuilder.EncodeName has accepted, is not declared twice, and returns the
+    // subject that messages call its declaration. One name has one declaration, whichever method made it: the
+    // single-value reads take the first value of a name, ignoring case, and the list reads take all of them, so a
+    // second declaration would write values that its read never returns, or that the other declaration's read would
+    // return as its own.
     private string QuerySubject(string name)
     {
         string quoted = RouteText.EscapeForMessage(name);
-        if (RouteText.ContainsLoneSurrogate(name))
-        {
-            throw new ArgumentException(
-                $"The query value name '{quoted}' is not valid UTF-16: it contains a lone surrogate, which cannot be " +
-                "percent-encoded and read back unchanged.",
-                nameof(name));
-        }
-
         foreach (QueryWriter<TRoute> writer in _queryWriters)
         {
             if (StringComparer.OrdinalIgnoreCase.Equals(writer.Name, name))

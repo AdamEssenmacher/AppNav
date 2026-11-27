@@ -31,12 +31,17 @@ public sealed class RouteTable
     // that is mapped without a format function, and say which fix applies.
     private readonly FrozenSet<Type> _routeTypes;
 
+    // The writer of each key declared with AddQueryMetadata, bound to the codecs above, in the order the keys were
+    // declared, which is the order Format writes their values in.
+    private readonly QueryMetadataWriter[] _queryMetadata;
+
     // The declared pairs are used only here, to check the templates, and not kept: nothing that matches or writes a
     // path asks about them, and a declaration the builder makes later cannot reach this table.
     internal RouteTable(
         RouteDefinition[] definitions,
         FrozenDictionary<Type, object> codecs,
-        DisjointConstraints disjoint)
+        DisjointConstraints disjoint,
+        QueryMetadataWriter[] queryMetadata)
     {
         ThrowIfSameTemplateTwice(definitions);
         ThrowIfAmbiguous(definitions, disjoint);
@@ -66,7 +71,8 @@ public sealed class RouteTable
         // A read-only wrapper, so that a caller cannot cast Definitions back to the array and change the table.
         Definitions = Array.AsReadOnly(definitions);
         _codecs = codecs;
-        _formatters = BindFormatters(definitions, positions, codecs);
+        _formatters = BindFormatters(definitions, positions, codecs, queryMetadata);
+        _queryMetadata = BindQueryMetadata(queryMetadata, codecs);
 
         var routeTypes = new HashSet<Type>(definitions.Length);
         foreach (RouteDefinition definition in definitions)
@@ -305,6 +311,11 @@ public sealed class RouteTable
     /// rather than return it.
     /// </para>
     /// <para>
+    /// This method writes no route metadata, whatever keys the table declares with
+    /// <see cref="RouteTableBuilder.AddQueryMetadata{TValue}(RouteMetadataKey{TValue})"/>, and returns what
+    /// <see cref="Format(AppRouteRequest)"/> returns for a request of the route with no metadata.
+    /// </para>
+    /// <para>
     /// The table is not changed, and several threads can call this method and <see cref="Match(Uri)"/> at once.
     /// </para>
     /// </remarks>
@@ -351,7 +362,68 @@ public sealed class RouteTable
     {
         ArgumentNullException.ThrowIfNull(route);
 
-        return Write(route, out _);
+        return Write(route, RouteMetadata.Empty, nameof(route), out _);
+    }
+
+    /// <summary>
+    /// Writes a route request as a relative URI: its route, exactly as <see cref="Format(AppRoute)"/> writes it,
+    /// followed by the value of each metadata entry that this table writes as a query value.
+    /// </summary>
+    /// <param name="request">The request to write.</param>
+    /// <returns>
+    /// The text that <see cref="Format(AppRoute)"/> returns for the request's route, followed, for each key declared
+    /// with <see cref="RouteTableBuilder.AddQueryMetadata{TValue}(RouteMetadataKey{TValue})"/> that the request's
+    /// metadata has an entry for, by one query value <c>name=value</c>, such as <c>/items/42?campaign=spring</c> or
+    /// <c>/products?page=2&amp;campaign=spring</c>.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// The metadata values are written after every query value of the route, in the order the keys were declared,
+    /// whatever order the entries were added in. Each is written under the key's name, as one value, by exactly the
+    /// rules of a query value of its type declared with
+    /// <see cref="RouteFormatBuilder{TRoute}.Query{TValue}(string, Func{TRoute, TValue})"/>: the same canonical text,
+    /// the same codec, read back by the codec's parser, and the same percent-encoding, so an empty string is written
+    /// as <c>name=</c>. The <c>?</c> is written when the route or the metadata writes at least one value.
+    /// </para>
+    /// <para>
+    /// An entry is written only when this table declares its key. An entry for a key that is not declared is not
+    /// written and is no error, since metadata is part of a link only when the table says so, and neither is an entry
+    /// for a key of a declared name but another value type, which is a different key. A declared key that the
+    /// metadata has no entry for writes nothing. A request with no metadata is written exactly as its route is.
+    /// </para>
+    /// <para>
+    /// <see cref="Match(Uri)"/> does not read these values: a create function can read them as query values, but the
+    /// result carries no metadata.
+    /// </para>
+    /// <para>
+    /// The table is not changed, and several threads can call this method and the others at once.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentNullException"><paramref name="request"/> is <see langword="null"/>.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown as by <see cref="Format(AppRoute)"/>, for the request's route; or the parser of a codec, reading back a
+    /// text its writer wrote for a metadata value, gave <see langword="null"/>.
+    /// </exception>
+    /// <exception cref="ArgumentException">
+    /// A value of the route cannot be written, or the path written for it is matched first by the template of another
+    /// mapping, as for <see cref="Format(AppRoute)"/>; or a metadata value cannot be written, for any reason a query
+    /// value of its type cannot: it has no text, such as a <see cref="double"/> that is NaN, an enum value that is
+    /// not the value of a member, or a value for which its codec gives <see langword="null"/>; its codec writes a
+    /// text that its own parser does not accept; or its text contains a lone surrogate. The exception's
+    /// <see cref="ArgumentException.ParamName"/> is <c>request</c>. Its message names the route type and the template,
+    /// and the path parameter, query value or route metadata key, as for <see cref="Format(AppRoute)"/>, but never
+    /// quotes a value or the text written for it.
+    /// </exception>
+    /// <exception cref="Exception">
+    /// Any exception that <see cref="Format(AppRoute)"/> lets through, or that a codec registered with
+    /// <see cref="RouteTableBuilder.AddValueCodec{TValue}"/> throws while it writes a metadata value or reads back the
+    /// text it wrote, unchanged.
+    /// </exception>
+    public string Format(AppRouteRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        return Write(request.Route, request.Metadata, nameof(request), out _);
     }
 
     /// <summary>
@@ -459,8 +531,64 @@ public sealed class RouteTable
         ArgumentNullException.ThrowIfNull(route);
         ArgumentNullException.ThrowIfNull(baseUri);
 
+        return WriteUri(route, RouteMetadata.Empty, baseUri, nameof(route));
+    }
+
+    /// <summary>
+    /// Writes a route request as an absolute URI, behind the scheme and authority of a base URI: its route, and the
+    /// value of each metadata entry that this table writes as a query value.
+    /// </summary>
+    /// <param name="request">The request to write.</param>
+    /// <param name="baseUri">
+    /// The absolute URI whose scheme, user information, host and port the link is written behind, by the rules of
+    /// <see cref="FormatUri(AppRoute, Uri)"/>.
+    /// </param>
+    /// <returns>
+    /// An absolute URI of the scheme, user information, host and port of <paramref name="baseUri"/>, followed by
+    /// exactly the text that <see cref="Format(AppRouteRequest)"/> returns for the request, such as
+    /// <c>https://example.com/items/42?campaign=spring</c>.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// This method is <see cref="FormatUri(AppRoute, Uri)"/> for the text that <see cref="Format(AppRouteRequest)"/>
+    /// writes: the base is checked first, the request is written once, and the link is checked as a whole, metadata
+    /// included. So a link whose last value, a metadata value included, ends with a space is refused when the URI
+    /// contains a non-ASCII character, and a link with a query, as metadata writes, is refused under a scheme that has
+    /// no query in <see cref="Uri"/>, such as <c>ftp</c>. <see cref="Match(Uri)"/> does not read the metadata values.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="request"/> or <paramref name="baseUri"/> is <see langword="null"/>.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown as by <see cref="Format(AppRouteRequest)"/>.
+    /// </exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="baseUri"/> cannot be used, or the link is refused under its scheme, as for
+    /// <see cref="FormatUri(AppRoute, Uri)"/>, and the exception's <see cref="ArgumentException.ParamName"/> is
+    /// <c>baseUri</c>.
+    /// <para>-or-</para>
+    /// The last value written ends with a space and the URI contains a non-ASCII character, or a value cannot be
+    /// written, or the path is matched first by another template, as for <see cref="Format(AppRouteRequest)"/>. The
+    /// exception's <see cref="ArgumentException.ParamName"/> is <c>request</c>.
+    /// </exception>
+    /// <exception cref="Exception">
+    /// Any exception that <see cref="Format(AppRouteRequest)"/> lets through, unchanged.
+    /// </exception>
+    public Uri FormatUri(AppRouteRequest request, Uri baseUri)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(baseUri);
+
+        return WriteUri(request.Route, request.Metadata, baseUri, nameof(request));
+    }
+
+    // Writes the route and the metadata behind the base as FormatUri describes; paramName is the parameter that holds
+    // the route, which an exception about a value names.
+    private Uri WriteUri(AppRoute route, RouteMetadata metadata, Uri baseUri, string paramName)
+    {
         string authority = ReadAuthority(baseUri);
-        string text = Write(route, out RouteDefinition owner);
+        string text = Write(route, metadata, paramName, out RouteDefinition owner);
         // No base that passes the checks above, and no text Format writes, is known to give a link that Uri cannot
         // parse. Should one, it is refused in its own words, so that a UriFormatException never escapes and the
         // message does not blame a scheme that may be fine.
@@ -494,7 +622,7 @@ public sealed class RouteTable
                 "would be read back differently. Write a value that does not end with a space, or use the relative " +
                 "text that Format returns. A base whose host and user information are ASCII avoids this only when " +
                 "nothing else in the link is non-ASCII.",
-                nameof(route));
+                paramName);
         }
 
         throw SchemeChangesLink(baseUri);
@@ -510,8 +638,11 @@ public sealed class RouteTable
             nameof(baseUri));
     }
 
-    // Writes the route as Format describes, and gives the definition that wrote it, for a message about the text.
-    private string Write(AppRoute route, out RouteDefinition owner)
+    // Writes the route and the metadata as Format describes, and gives the definition that wrote it, for a message
+    // about the text. Format of a route alone passes empty metadata, so both overloads take this one path, and one
+    // with no metadata is written exactly as its route is. paramName is the parameter that holds the route, which an
+    // exception about a value names.
+    private string Write(AppRoute route, RouteMetadata metadata, string paramName, out RouteDefinition owner)
     {
         Type type = route.GetType();
         if (!_formatters.TryGetValue(type, out (RouteFormatter Formatter, int Position) writer))
@@ -529,7 +660,7 @@ public sealed class RouteTable
         // Every value function has been called, and every value that cannot be written reported, before the path is
         // checked here, so that this check reports a table that needs fixing only for a route that is otherwise valid.
         // A query value never changes which template matches, so only the path is checked.
-        string text = writer.Formatter.Format(route, out string path);
+        string text = writer.Formatter.Format(route, metadata, _queryMetadata, paramName, out string path);
 
         // A definition ranked first has none above it that could match the path first, so it pays nothing more.
         owner = _matchOrder[writer.Position];
@@ -552,7 +683,7 @@ public sealed class RouteTable
                 "matched by that template instead. That can happen only when constraints declared disjoint with " +
                 "DeclareDisjointConstraints both accept a text, so a declaration about the constraints of the two " +
                 "templates is false. Correct or remove that declaration.",
-                nameof(route));
+                paramName);
         }
 
         throw new ArgumentException(
@@ -561,7 +692,7 @@ public sealed class RouteTable
             $"'{first.Template.Value}', which ranks higher, so a link to it would be matched by that template " +
             "instead. Change the templates so that they cannot match the same path, for example by constraining a " +
             "parameter or by giving one of them a literal of its own.",
-            nameof(route));
+            paramName);
     }
 
     // Returns the scheme, user information, host and port of a base, as the start of an absolute URI that a link's
@@ -675,7 +806,8 @@ public sealed class RouteTable
     private static FrozenDictionary<Type, (RouteFormatter Formatter, int Position)> BindFormatters(
         RouteDefinition[] definitions,
         int[] positions,
-        FrozenDictionary<Type, object> codecs)
+        FrozenDictionary<Type, object> codecs,
+        QueryMetadataWriter[] queryMetadata)
     {
         // Every second format function is reported before anything is bound, so that it is reported even when a
         // format function also writes a type that has no codec: registering one would not make the table valid, and
@@ -698,6 +830,10 @@ public sealed class RouteTable
             owners.Add(definition.RouteType, definition);
         }
 
+        // A name that both a format function and a metadata key write would be written twice in one link, so it is
+        // reported before any type is bound, as a second format function is: no codec would make the table valid.
+        ThrowIfQueryMetadataNameTaken(definitions, queryMetadata);
+
         var formatters = new Dictionary<Type, (RouteFormatter Formatter, int Position)>(owners.Count);
         for (var i = 0; i < definitions.Length; i++)
         {
@@ -707,6 +843,56 @@ public sealed class RouteTable
         }
 
         return formatters.ToFrozenDictionary();
+    }
+
+    // The query reads take the first value of a name, ignoring case, so a key whose name a format function also
+    // declares, with Query or QueryValues, would have its value read as the route's, or the route's read as its own.
+    // The first mapping, in the order the routes were mapped, and then its first query name, in the order declared,
+    // that a key has is reported. A mapping without a format function declares no query names.
+    private static void ThrowIfQueryMetadataNameTaken(
+        RouteDefinition[] definitions,
+        QueryMetadataWriter[] queryMetadata)
+    {
+        if (queryMetadata.Length == 0)
+            return;
+
+        foreach (RouteDefinition definition in definitions)
+        {
+            if (definition.Formatter is null)
+                continue;
+
+            foreach (string name in definition.Formatter.QueryNames)
+            {
+                foreach (QueryMetadataWriter writer in queryMetadata)
+                {
+                    if (!StringComparer.OrdinalIgnoreCase.Equals(writer.Name, name))
+                        continue;
+
+                    string spelling = StringComparer.Ordinal.Equals(writer.Name, name)
+                        ? ""
+                        : $", as '{RouteText.EscapeForMessage(name)}'";
+                    throw new InvalidOperationException(
+                        $"The {writer.Subject}, declared with AddQueryMetadata, has the name of a query value that " +
+                        $"the format function of route type '{RouteValueTypes.DisplayName(definition.RouteType)}', " +
+                        $"mapped to the template '{definition.Template.Value}', declares{spelling}, so a link to it " +
+                        "would write the name twice; names that differ only by case are the same name. Give the key " +
+                        "or the query value another name.");
+                }
+            }
+        }
+    }
+
+    // Binds the writer of each declared key to the table's codecs, in the order the keys were declared, which reports
+    // the first key whose type is not built in and has no codec.
+    private static QueryMetadataWriter[] BindQueryMetadata(
+        QueryMetadataWriter[] queryMetadata,
+        FrozenDictionary<Type, object> codecs)
+    {
+        var bound = new QueryMetadataWriter[queryMetadata.Length];
+        for (var i = 0; i < bound.Length; i++)
+            bound[i] = queryMetadata[i].Bind(codecs);
+
+        return bound;
     }
 
     // Like the path, the name and the reason can carry text from the URI, so they are only in Data. The exception

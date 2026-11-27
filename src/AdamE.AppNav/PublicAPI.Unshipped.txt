@@ -100,3 +100,6 @@ virtual AdamE.AppNav.AppRoute.EqualityContract.get -> System.Type!
 virtual AdamE.AppNav.AppRoute.Equals(AdamE.AppNav.AppRoute? other) -> bool
 virtual AdamE.AppNav.AppRoute.PrintMembers(System.Text.StringBuilder! builder) -> bool
 virtual AdamE.AppNav.Routing.RouteValueParser<TValue>.Invoke(string! text, out TValue? value) -> bool
+AdamE.AppNav.Routing.RouteTable.Format(AdamE.AppNav.AppRouteRequest! request) -> string!
+AdamE.AppNav.Routing.RouteTable.FormatUri(AdamE.AppNav.AppRouteRequest! request, System.Uri! baseUri) -> System.Uri!
+AdamE.AppNav.Routing.RouteTableBuilder.AddQueryMetadata<TValue>(AdamE.AppNav.RouteMetadataKey<TValue>! key) -> AdamE.AppNav.Routing.RouteTableBuilder!
