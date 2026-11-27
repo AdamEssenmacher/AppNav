@@ -136,6 +136,33 @@ internal static class RouteValueTypes
         return NestedName(type, arguments, arguments.Length);
     }
 
+    // The names for a message that names two route types, as the same-template and ambiguity errors of a table do.
+    // A message that names one type can rely on what surrounds it, but the reader of one that names two must be able
+    // to tell the mappings apart, so when two different types have the same short name, both are written with their
+    // namespace. Two types of the same namespace can still share it, when they differ only in generic arguments
+    // whose own short names are the same, as GenericRoute<X> closed over X of two namespaces; the namespace does not
+    // help there, so both are then written as Type.ToString() writes them, which names every namespace involved.
+    public static (string First, string Second) DisplayNames(Type first, Type second)
+    {
+        string firstName = DisplayName(first);
+        string secondName = DisplayName(second);
+        if (first == second || !string.Equals(firstName, secondName, StringComparison.Ordinal))
+            return (firstName, secondName);
+
+        firstName = QualifiedName(first, firstName);
+        secondName = QualifiedName(second, secondName);
+        return string.Equals(firstName, secondName, StringComparison.Ordinal)
+            ? (first.ToString(), second.ToString())
+            : (firstName, secondName);
+    }
+
+    // The short name after the namespace, which for a nested type is that of the outermost type it is declared in. A
+    // type in the global namespace has none, so its name is left as it is.
+    private static string QualifiedName(Type type, string name)
+    {
+        return type.Namespace is null ? name : $"{type.Namespace}.{name}";
+    }
+
     // A nested type has the generic arguments of the types it is declared in before its own, outermost first, so
     // each level shows only those after the ones of the level outside it, as Outer<Int32>.Inner<String>.
     private static string NestedName(Type type, Type[] arguments, int count)
