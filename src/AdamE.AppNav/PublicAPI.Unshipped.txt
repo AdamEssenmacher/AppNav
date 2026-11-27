@@ -104,3 +104,14 @@ AdamE.AppNav.Routing.RouteTable.Format(AdamE.AppNav.AppRouteRequest! request) ->
 AdamE.AppNav.Routing.RouteTable.FormatUri(AdamE.AppNav.AppRouteRequest! request, System.Uri! baseUri) -> System.Uri!
 AdamE.AppNav.Routing.RouteTableBuilder.AddQueryMetadata<TValue>(AdamE.AppNav.RouteMetadataKey<TValue>! key) -> AdamE.AppNav.Routing.RouteTableBuilder!
 AdamE.AppNav.Routing.RouteMatchResult.Metadata.get -> AdamE.AppNav.RouteMetadata!
+AdamE.AppNav.State.RouteEntry
+AdamE.AppNav.State.RouteEntry.Equals(AdamE.AppNav.State.RouteEntry? other) -> bool
+AdamE.AppNav.State.RouteEntry.Id.get -> string!
+AdamE.AppNav.State.RouteEntry.Metadata.get -> AdamE.AppNav.RouteMetadata!
+AdamE.AppNav.State.RouteEntry.Route.get -> AdamE.AppNav.AppRoute!
+AdamE.AppNav.State.RouteEntry.RouteEntry(string! id, AdamE.AppNav.AppRoute! route) -> void
+AdamE.AppNav.State.RouteEntry.RouteEntry(string! id, AdamE.AppNav.AppRoute! route, AdamE.AppNav.RouteMetadata! metadata) -> void
+override AdamE.AppNav.State.RouteEntry.Equals(object? obj) -> bool
+override AdamE.AppNav.State.RouteEntry.GetHashCode() -> int
+static AdamE.AppNav.State.RouteEntry.operator !=(AdamE.AppNav.State.RouteEntry? left, AdamE.AppNav.State.RouteEntry? right) -> bool
+static AdamE.AppNav.State.RouteEntry.operator ==(AdamE.AppNav.State.RouteEntry? left, AdamE.AppNav.State.RouteEntry? right) -> bool
