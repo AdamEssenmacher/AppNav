@@ -10,11 +10,14 @@ namespace AdamE.AppNav.Routing;
 /// exception is for a value that the template accepted but the create function cannot use, such as a number out of
 /// the range the route allows, or a query value of the wrong shape. When the create function of the definition that
 /// matched throws it, <see cref="RouteTable.Match(Uri)"/> returns a failed result with one
-/// <see cref="RouteDiagnosticCodes.ValueInvalid"/> diagnostic, and no later template is tried.
+/// <see cref="RouteDiagnosticCodes.ValueInvalid"/> diagnostic, and no later template is tried. The table returns
+/// the same result when a query value is not valid for a route metadata key it declares, which it reads once the
+/// create function has returned, so such a result does not always come from the create function.
 /// </para>
 /// <para>
-/// Only an exception thrown while the table is calling that create function is turned into a result. Thrown anywhere
-/// else, it is an ordinary exception. The table reads only <see cref="ValueName"/> and
+/// Only an exception thrown while the table is calling that create function, or reading the route metadata after
+/// it, as a codec's parser can throw one, is turned into a result. Thrown anywhere else, it is an ordinary exception.
+/// The table reads only <see cref="ValueName"/> and
 /// <see cref="Exception.Message"/>; the message goes into the diagnostic's <see cref="RouteDiagnostic.Data"/>, so
 /// what it says is the application's choice, and a message that quotes the value can carry a secret from the URI.
 /// </para>

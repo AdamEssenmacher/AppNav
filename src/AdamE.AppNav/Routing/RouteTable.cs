@@ -207,10 +207,10 @@ public sealed class RouteTable
     /// Any exception, <see cref="RouteValueException"/> included, that the function of a constraint added with
     /// <see cref="RouteTableBuilder.AddConstraint(string, Func{string, bool})"/> throws, unchanged.
     /// </exception>
-    // A rejected value is thrown in the application's create function and caught here, so a debugger that breaks on
-    // user-unhandled exceptions would stop on every rejected link. The attribute stops that for this method, and for
-    // every other exception that passes through it too, so the call to the create function hands each of those back
-    // to the debugger itself.
+    // A rejected value is thrown in the application's create function, or by the read of the route metadata after it,
+    // and caught here, so a debugger that breaks on user-unhandled exceptions would stop on every rejected link. The
+    // attribute stops that for this method, and for every other exception that passes through it too, so the call to
+    // the create function and the metadata read hand each of those back to the debugger themselves.
     [DebuggerDisableUserUnhandledExceptions]
     public RouteMatchResult Match(Uri uri)
     {
@@ -1156,9 +1156,10 @@ public sealed class RouteTable
                $"DeclareDisjointConstraints(\"{constraint.Name}\", \"{otherConstraint.Name}\")";
     }
 
-    // Tells an attached debugger that an exception the create function threw is not handled here, which the attribute
-    // on Match would otherwise keep it from stopping on. The debugger takes that only from a method that has the
-    // attribute, so this one has it too. It always declines the exception, and without a debugger it does nothing.
+    // Tells an attached debugger that an exception the create function or the metadata read threw is not handled
+    // here, which the attribute on Match would otherwise keep it from stopping on. The debugger takes that only from
+    // a method that has the attribute, so this one has it too. It always declines the exception, and without a
+    // debugger it does nothing.
     [DebuggerDisableUserUnhandledExceptions]
     private static bool BreakInDebugger(Exception exception)
     {

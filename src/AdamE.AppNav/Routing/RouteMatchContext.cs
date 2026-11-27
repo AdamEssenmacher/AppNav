@@ -17,7 +17,8 @@ namespace AdamE.AppNav.Routing;
 public sealed class RouteMatchContext
 {
     // Where the route table found the query, -1 for Uri.Query, and its values once a create function first asks for
-    // one, so that a match whose create function never asks pays nothing for the query.
+    // one or the table reads the route metadata it declares, so that a match whose create function never asks, on a
+    // table that declares no keys, pays nothing for the query.
     private readonly int _queryStart;
     private IReadOnlyDictionary<string, IReadOnlyList<string>>? _queryValues;
 

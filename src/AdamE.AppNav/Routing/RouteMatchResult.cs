@@ -9,7 +9,7 @@ namespace AdamE.AppNav.Routing;
 /// When <see cref="IsSuccess"/> is <see langword="true"/>, <see cref="Route"/> and <see cref="Definition"/> are not
 /// <see langword="null"/>. When it is <see langword="false"/>, <see cref="Route"/> is <see langword="null"/>,
 /// <see cref="Diagnostics"/> has at least one entry, and <see cref="Definition"/> is the definition whose template
-/// matched when there was one, as for a value that its create function rejected, or <see langword="null"/>.
+/// matched when there was one, as for a value that is not valid, or <see langword="null"/>.
 /// <see cref="Metadata"/> is never <see langword="null"/>, and has no entries when the match failed.
 /// </remarks>
 public sealed class RouteMatchResult
