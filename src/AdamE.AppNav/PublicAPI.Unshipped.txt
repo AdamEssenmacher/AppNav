@@ -103,3 +103,4 @@ virtual AdamE.AppNav.Routing.RouteValueParser<TValue>.Invoke(string! text, out T
 AdamE.AppNav.Routing.RouteTable.Format(AdamE.AppNav.AppRouteRequest! request) -> string!
 AdamE.AppNav.Routing.RouteTable.FormatUri(AdamE.AppNav.AppRouteRequest! request, System.Uri! baseUri) -> System.Uri!
 AdamE.AppNav.Routing.RouteTableBuilder.AddQueryMetadata<TValue>(AdamE.AppNav.RouteMetadataKey<TValue>! key) -> AdamE.AppNav.Routing.RouteTableBuilder!
+AdamE.AppNav.Routing.RouteMatchResult.Metadata.get -> AdamE.AppNav.RouteMetadata!

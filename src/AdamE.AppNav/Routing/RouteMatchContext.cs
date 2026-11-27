@@ -17,7 +17,8 @@ namespace AdamE.AppNav.Routing;
 public sealed class RouteMatchContext
 {
     // Where the route table found the query, -1 for Uri.Query, and its values once a create function first asks for
-    // one, so that a match whose create function never asks pays nothing for the query.
+    // one or the table reads the route metadata it declares, so that a match whose create function never asks, on a
+    // table that declares no keys, pays nothing for the query.
     private readonly int _queryStart;
     private IReadOnlyDictionary<string, IReadOnlyList<string>>? _queryValues;
 
@@ -342,6 +343,28 @@ public sealed class RouteMatchContext
             out IBoxedValueCodec? boxed,
             out string typeName);
 
+        return TryGetQuery(name, codec, boxed, typeName, out value);
+    }
+
+    // The typed query read of a type whose codec, or null for a built-in type, the caller has found already, as a
+    // route metadata key bound to the table's codecs has. It reads exactly as TryGetQuery<T> does once the codec is
+    // found.
+    internal bool TryGetQuery<T>(
+        string name,
+        ValueCodec<T>? codec,
+        string typeName,
+        [MaybeNullWhen(false)] out T value)
+    {
+        return TryGetQuery(name, codec, null, typeName, out value);
+    }
+
+    private bool TryGetQuery<T>(
+        string name,
+        ValueCodec<T>? codec,
+        IBoxedValueCodec? boxed,
+        string typeName,
+        [MaybeNullWhen(false)] out T value)
+    {
         if (!TryGetQuery(name, out string? text))
         {
             value = default;

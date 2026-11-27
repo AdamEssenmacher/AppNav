@@ -37,9 +37,9 @@ public sealed class RouteTableBuilder
     // The same pairs, each with its names in ordinal order, so that declaring a pair again in either order is found.
     private readonly HashSet<(string, string)> _disjointKeys = [];
 
-    // The writer of each key declared with AddQueryMetadata, in the order declared, which is the order Format writes
-    // their values in. No two have names that are equal ignoring case.
-    private readonly List<QueryMetadataWriter> _queryMetadata = [];
+    // Each key declared with AddQueryMetadata, in the order declared, which is the order Format writes their values in
+    // and Match reads them in. No two have names that are equal ignoring case.
+    private readonly List<QueryMetadataKey> _queryMetadata = [];
 
     // The resolver passed to the template parser, made once.
     private Func<string, RouteConstraint>? _resolveConstraint;
@@ -651,7 +651,15 @@ public sealed class RouteTableBuilder
     /// in the order the keys were declared, as <c>name=value</c>, by exactly the rules of a query value of
     /// <typeparamref name="TValue"/> declared with
     /// <see cref="RouteFormatBuilder{TRoute}.Query{TValue}(string, Func{TRoute, TValue})"/>. An entry for a key that is
-    /// not declared is not written. <see cref="RouteTable.Match(Uri)"/> does not read the values.
+    /// not declared is not written.
+    /// </para>
+    /// <para>
+    /// <see cref="RouteTable.Match(Uri)"/> reads the value back: after a template has matched and its create function
+    /// has returned the route, the first value of the key's name in the query, when it has the name, is read by exactly
+    /// the rules of <see cref="RouteMatchContext.TryGetQuery{T}(string, out T)"/> of <typeparamref name="TValue"/>,
+    /// and the entry is in <see cref="RouteMatchResult.Metadata"/>. A value that is present but not valid fails the
+    /// match with a <see cref="RouteDiagnosticCodes.ValueInvalid"/> diagnostic, as it would had the create function
+    /// read it. The create function still sees the value as a query value.
     /// </para>
     /// <para>
     /// Declaring applies to the whole table, so the order of this call and of the <c>Map</c>,
@@ -693,12 +701,12 @@ public sealed class RouteTableBuilder
             throw RouteValueTypes.UnsupportedType<TValue>(UnsupportedMetadata, UnsupportedMetadataTail);
 
         string encodedName = QueryBuilder.EncodeName(key.Name, "route metadata key name", nameof(key));
-        foreach (QueryMetadataWriter writer in _queryMetadata)
+        foreach (QueryMetadataKey existing in _queryMetadata)
         {
-            if (!StringComparer.OrdinalIgnoreCase.Equals(writer.Name, key.Name))
+            if (!StringComparer.OrdinalIgnoreCase.Equals(existing.Name, key.Name))
                 continue;
 
-            if (writer is TypedQueryMetadataWriter<TValue> typed && typed.Key.Equals(key))
+            if (existing is TypedQueryMetadataKey<TValue> typed && typed.Key.Equals(key))
                 return this;
 
             // A link has one value for a name, ignoring case, so two keys of one name could not both travel in it.
@@ -706,14 +714,14 @@ public sealed class RouteTableBuilder
             // names are alike.
             string quoted = RouteText.EscapeForMessage(key.Name);
             string why;
-            if (StringComparer.Ordinal.Equals(writer.Name, key.Name))
+            if (StringComparer.Ordinal.Equals(existing.Name, key.Name))
             {
-                (string declared, string given) = RouteValueTypes.DisplayNames(writer.ValueType, typeof(TValue));
+                (string declared, string given) = RouteValueTypes.DisplayNames(existing.ValueType, typeof(TValue));
                 why = $"with the value type '{declared}', and this key has the value type '{given}'";
             }
             else
             {
-                why = $"as '{RouteText.EscapeForMessage(writer.Name)}'";
+                why = $"as '{RouteText.EscapeForMessage(existing.Name)}'";
             }
 
             throw new ArgumentException(
@@ -722,7 +730,7 @@ public sealed class RouteTableBuilder
                 nameof(key));
         }
 
-        _queryMetadata.Add(new TypedQueryMetadataWriter<TValue>(key, encodedName));
+        _queryMetadata.Add(new TypedQueryMetadataKey<TValue>(key, encodedName));
         return this;
     }
 

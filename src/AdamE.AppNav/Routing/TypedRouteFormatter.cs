@@ -5,7 +5,7 @@ namespace AdamE.AppNav.Routing;
 
 // The formatter for routes of type TRoute: a writer for every parameter of the template, in template order, and a
 // writer for every query declaration, in the order they were declared, each with its name already percent-encoded.
-// The table passes in the writers of the metadata keys it declares, which come after them.
+// The table passes in the metadata keys it declares, whose values come after them.
 internal sealed class TypedRouteFormatter<TRoute> : RouteFormatter
     where TRoute : AppRoute
 {
@@ -63,7 +63,7 @@ internal sealed class TypedRouteFormatter<TRoute> : RouteFormatter
     public override string Format(
         AppRoute route,
         RouteMetadata metadata,
-        QueryMetadataWriter[] metadataWriters,
+        QueryMetadataKey[] queryMetadata,
         string paramName,
         out string path)
     {
@@ -84,15 +84,15 @@ internal sealed class TypedRouteFormatter<TRoute> : RouteFormatter
 
         path = written;
 
-        // Metadata with no entries writes nothing whatever the table declares, so its writers are not walked, and a
+        // Metadata with no entries writes nothing whatever the table declares, so its keys are not walked, and a
         // route with no query of its own then returns its path as it is.
         if (metadata.Count == 0)
-            metadataWriters = [];
+            queryMetadata = [];
 
-        if (_queryWriters.Length == 0 && metadataWriters.Length == 0)
+        if (_queryWriters.Length == 0 && queryMetadata.Length == 0)
             return written;
 
-        return AppendQuery(typed, written, metadata, metadataWriters, paramName);
+        return AppendQuery(typed, written, metadata, queryMetadata, paramName);
     }
 
     // Each declaration appends its own pairs, so the pairs of a list stay where the list was declared among the
@@ -104,7 +104,7 @@ internal sealed class TypedRouteFormatter<TRoute> : RouteFormatter
         TRoute route,
         string path,
         RouteMetadata metadata,
-        QueryMetadataWriter[] metadataWriters,
+        QueryMetadataKey[] queryMetadata,
         string paramName)
     {
         var query = new QueryBuilder(path);
@@ -115,11 +115,11 @@ internal sealed class TypedRouteFormatter<TRoute> : RouteFormatter
                 throw NotWritten(writer.Subject, Describe(problem, writer.NoTextReason), paramName);
         }
 
-        foreach (QueryMetadataWriter writer in metadataWriters)
+        foreach (QueryMetadataKey key in queryMetadata)
         {
-            QueryValueProblem problem = writer.Write(metadata, ref query);
+            QueryValueProblem problem = key.Write(metadata, ref query);
             if (problem != QueryValueProblem.None)
-                throw NotWritten(writer.Subject, Describe(problem, writer.NoTextReason), paramName);
+                throw NotWritten(key.Subject, Describe(problem, key.NoTextReason), paramName);
         }
 
         return query.ToString();

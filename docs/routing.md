@@ -337,7 +337,7 @@ A route carries application identity only: the values that name its destination,
 
 ### What is read from a URI
 
-- Only the path decides which route matches. The scheme, user information, host, port and fragment are ignored, and the query is read only by a create function that asks for it, as described in [Query values](#query-values).
+- Only the path decides which route matches. The scheme, user information, host, port and fragment are ignored, and the query is read only by a create function that asks for it, as described in [Query values](#query-values), and by the table for the [route metadata](#metadata-as-query-values) it declares, after the create function returns.
 - The table checks neither the scheme nor the host, so `https://other.example/account` and `file:///account` match exactly as the app's own links do. Deciding which sources to accept belongs to the code that receives the link, before or after matching.
 - For an absolute URI, the path is `Uri.AbsolutePath`, so `https://example.com/settings`, `myapp:///settings` and `myapp:/settings` all have the path `/settings`. A URI whose path is empty, such as `mailto:a@b.c`, is read as the root path, which the template `/` matches.
 - The path of an absolute URI is the one `System.Uri` produces. It decodes percent-encoded unreserved characters (`%41` becomes `A`), percent-encodes spaces and non-ASCII characters, and keeps repeated slashes. In a URI with an authority, even an empty one as in `myapp:///a/../b`, it also removes [dot segments](#dot-segments), so that path is `/b`. In a URI with no authority at all, such as `app:/a/../b`, it keeps them, so that path does not match. `app:x/y` has the path `x/y`, which matches `/x/y`.
@@ -359,7 +359,7 @@ A create function reads the query of the URI with `TryGetQuery(name, out value)`
 - `GetQueryValues` gives every value of a name in order, including repeated and empty values, and an empty list when there are none. The list cannot be changed.
 - `TryGetQuery<T>` and `GetQueryValues<T>` read values as numbers, `bool`, `Guid`, a registered enum or a type with a codec, as described in [Typed query values](#typed-query-values).
 
-The query is read and parsed only when a create function first asks for a value, at most once per match, so a URI that matches nothing, and a route that reads no query values, pay nothing for the query. Nothing limits the size of a query, and the cost of reading it grows linearly with its length. `System.Uri` itself accepts a query of a million characters, absolute or relative, so an app that receives links from outside should bound their length before calling `Match`; nothing else does. Like the path, the query can carry a secret, so it never appears in a diagnostic.
+The query is read and parsed only when a create function first asks for a value, or when the table reads the [route metadata](#metadata-as-query-values) it declares, at most once per match, so a URI that matches nothing, and a route that reads no query values in a table that declares no metadata keys, pay nothing for the query. Nothing limits the size of a query, and the cost of reading it grows linearly with its length. `System.Uri` itself accepts a query of a million characters, absolute or relative, so an app that receives links from outside should bound their length before calling `Match`; nothing else does. Like the path, the query can carry a secret, so it never appears in a diagnostic.
 
 For an absolute URI the query is the one `System.Uri` reports, and the values are decoded from it, which is not always what the link's author wrote:
 
@@ -739,7 +739,7 @@ public sealed record OrderRoute(int Id) : AppRoute;
 - The result has one diagnostic whose `Code` is `RouteDiagnosticCodes.ValueInvalid` (`route.value.invalid`). Its `Data` holds the exception's `ValueName` under `name`, the template as written under `template`, the exception's message under `reason`, and the path as it was matched under `path`, all strings. Its `Message` holds none of them, and the text of the query itself is not included. The exception itself, with its inner exception, is not kept.
 - `Route` is `null`, and `Definition` is the definition whose template matched.
 - No later template is tried, even one that also matches the path: the template that matched owns the URI.
-- Only a `RouteValueException` thrown by the create function of the definition that matched, while `Match` is calling it, is turned into a result. That includes one thrown by the parser of a [codec](#custom-value-types) that a typed read in the create function calls. Every other exception propagates unchanged, and a `RouteValueException` thrown anywhere else is an ordinary exception. A create function that calls `Match` itself gets a result from the inner call, not the exception.
+- Only a `RouteValueException` thrown by the create function of the definition that matched, while `Match` is calling it, or while `Match` reads the [route metadata](#metadata-as-query-values) after it, is turned into a result. That includes one thrown by the parser of a [codec](#custom-value-types) that a typed read in the create function, or of a metadata value, calls. Every other exception propagates unchanged, and a `RouteValueException` thrown anywhere else is an ordinary exception. A create function that calls `Match` itself gets a result from the inner call, not the exception.
 - `reason` is whatever text the app gives as the message. The default message names the value but does not quote it; a message that quotes the value can carry a secret from the URI. Do not pass another exception's `Message`, as in `new RouteValueException("id", e.Message, e)`: many .NET parse methods quote their input, so `int.Parse` on `tok-123` says `The input string 'tok-123' was not in a correct format.` Pass the parse exception as the inner exception if you like; the table does not keep it.
 - If the fallback needs the other captured values, such as the user in `/users/{u}/orders/{id}`, return a fallback route from the create function instead of rejecting, because a failed result carries only the definition and the name of the value.
 
@@ -749,9 +749,9 @@ A route says no in one of two ways. A [constraint](#constraints) makes its templ
 
 A URI that no template matches is not an error. The table itself does not throw for the content of a URI; an exception thrown by a create function, other than a `RouteValueException`, propagates to the caller.
 
-When `IsSuccess` is true, `Route` and `Definition` are not `null`. When it is false, `Route` is `null`, `Diagnostics` has at least one entry, and `Definition` is the definition whose template matched when there was one, as for a [rejected value](#rejecting-a-value), or `null`. A URI that no template matches gives one diagnostic whose `Code` is `RouteDiagnosticCodes.NotMatched` (`route.not_matched`). Its `Message` never contains text from the URI, because a deep-link path can carry a secret, such as a sign-in or reset token, and messages tend to be logged. The path is in `Data` under the key `path`, exactly as it was read, and logging it is the caller's decision. `Data` cannot be changed, even through a cast.
+When `IsSuccess` is true, `Route` and `Definition` are not `null`, and `Metadata` holds the route metadata read from the query for the keys the table declares, as described in [Metadata as query values](#metadata-as-query-values). When it is false, `Route` is `null`, `Metadata` is `RouteMetadata.Empty`, `Diagnostics` has at least one entry, and `Definition` is the definition whose template matched when there was one, as for a [rejected value](#rejecting-a-value) or a route metadata value that is not valid, or `null`. A URI that no template matches gives one diagnostic whose `Code` is `RouteDiagnosticCodes.NotMatched` (`route.not_matched`). Its `Message` never contains text from the URI, because a deep-link path can carry a secret, such as a sign-in or reset token, and messages tend to be logged. The path is in `Data` under the key `path`, exactly as it was read, and logging it is the caller's decision. `Data` cannot be changed, even through a cast.
 
-The diagnostic codes in this version are `route.not_matched`, for a URI that no template matches, and `route.value.invalid`, for a [rejected value](#rejecting-a-value). Codes are lower-case words joined by `_`, grouped by `.` from the general to the specific. A code, once published, does not change meaning, so compare codes rather than messages.
+The diagnostic codes in this version are `route.not_matched`, for a URI that no template matches, and `route.value.invalid`, for a [rejected value](#rejecting-a-value) or a [route metadata value](#metadata-as-query-values) that is not valid. Codes are lower-case words joined by `_`, grouped by `.` from the general to the specific. A code, once published, does not change meaning, so compare codes rather than messages.
 
 ### Formatting a route
 
@@ -1109,9 +1109,9 @@ public sealed record ItemRoute(int Id) : AppRoute;
 - A request's `ToString` prints its route with all of the route's values, but not the values of its metadata, which prints only its full type name.
 - A request is immutable and safe to share across threads, provided its route is immutable too, as a route whose members cannot be set is.
 
-### Writing metadata as query values
+### Metadata as query values
 
-Metadata is not part of a link unless the table says so. `AddQueryMetadata(key)` declares, for the whole table, that the entry of a key travels in a link as a query value whose name is the key's name. `Format(request)` and `FormatUri(request, baseUri)` then write a request: its route, exactly as `Format(route)` and `FormatUri(route, baseUri)` write it, followed by one query value for each declared key that the request's metadata has an entry for.
+Metadata is not part of a link unless the table says so. `AddQueryMetadata(key)` declares, for the whole table, that the entry of a key travels in a link as a query value whose name is the key's name. `Format(request)` and `FormatUri(request, baseUri)` then write a request: its route, exactly as `Format(route)` and `FormatUri(route, baseUri)` write it, followed by one query value for each declared key that the request's metadata has an entry for. `Match` reads the values back into the result's `Metadata`.
 
 ```csharp
 using AdamE.AppNav;
@@ -1143,14 +1143,21 @@ Console.WriteLine(table.Format(products));      // /products?page=2&campaign=
 
 Uri link = table.FormatUri(request, new Uri("myapp:///"));
 Console.WriteLine(link.AbsoluteUri);            // myapp:///items/42?campaign=spring%20sale&step=2
-Console.WriteLine(table.Match(link).Route);     // ItemRoute { Id = 42 }
+
+RouteMatchResult result = table.Match(link);
+Console.WriteLine(result.Route);                                       // ItemRoute { Id = 42 }
+Console.WriteLine(result.Metadata == request.Metadata);                // True
+Console.WriteLine(result.Metadata.TryGet(campaign, out string? code)); // True
+Console.WriteLine(code);                                               // spring sale
+
+RouteMatchResult bad = table.Match(new Uri("/items/42?step=two", UriKind.Relative));
+Console.WriteLine(bad.Diagnostics[0].Code);                            // route.value.invalid
+Console.WriteLine(bad.Diagnostics[0].Data["reason"]);                  // The query value of 'step' is not a valid int.
 
 public sealed record ItemRoute(int Id) : AppRoute;
 
 public sealed record ProductsRoute(int? Page) : AppRoute;
 ```
-
-`Match` does not read these values: a create function can read them as query values, but the result carries no metadata.
 
 Declaring a key:
 
@@ -1172,3 +1179,21 @@ Writing a request:
 - A value that cannot be written makes `Format` throw `ArgumentException`, as a query value that cannot be written does: one with no text, such as a `double` that is NaN, an enum value that no member has, or a value for which a codec's `format` returns `null`; one whose codec writes a text that its own parser does not accept; and one whose text contains a lone surrogate. The message names the route type, the template and the key, as in `The route type 'ItemRoute' cannot be written by the template '/items/{id:int}': route metadata key 'ratio' has a value that cannot be written: ...`, and never quotes the value or the text. For a request, the `ParamName` of every `ArgumentException` that `Format(route)` gives `route` is `request`.
 - A route whose mapping has no format function still cannot be written, with or without metadata, and throws as `Format(route)` does.
 - `FormatUri` checks the whole link, metadata included: a link whose last value, a metadata value included, ends with a space is refused when the URI contains a non-ASCII character, and a link with a query, which metadata adds, is refused under a scheme that has no query in `System.Uri`, such as `ftp`.
+
+Reading a link:
+
+- `Match` reads the metadata only after a template has matched and its create function has returned the route. A URI that no template matches, and one whose create function rejects a value, throws or returns `null`, gives exactly the result or the exception it gives in a table that declares no keys, whatever its query holds.
+- For each declared key, in the order declared, the value is the first value of the key's name in the query, names compared ordinally without regard to case, as the [query reads](#query-values) compare them. A query that does not have the name gives no entry. The query is the one the create function reads, and is parsed at most once for the create function and the keys together.
+- The value is read by exactly the rules of `TryGetQuery<TValue>`, as described in [Typed query values](#typed-query-values): the same decoding, so `+` is a space and `%2B` a `+`, the same texts accepted, so `?step=007` and `?step=%2B7` read as 7 although `Format` writes `step=7`, and the same codec. A name written without a value, as in `?campaign` or `?campaign=`, has the empty value, which gives the empty string for a `string` key, which is what `Format` writes for the empty string, and is not valid for a number, `bool`, `Guid` or enum; the parser of a codec receives it and decides.
+- A value that is present but not valid fails the match exactly as it would had the create function read it with `TryGetQuery<TValue>`: the result has one `route.value.invalid` diagnostic, as for a [rejected value](#rejecting-a-value), whose `Data` holds the key's name under `name`, the template under `template`, the message of the typed read, such as `The query value of 'step' is not a valid int.`, under `reason`, and the path under `path`. Neither its `Message` nor its `Data` holds the value or the query. `Route` is `null`, and `Definition` is the definition whose template matched.
+- The metadata is the same whichever template matched, so a value that is not valid fails the match whichever template matched, and no later template is tried.
+- An exception that the parser of a codec throws propagates out of `Match` unchanged, as it does from a typed read in a create function, and so does the `InvalidOperationException` for a parser that accepts a text but gives `null`. A `RouteValueException` that a parser throws fails the match with a `route.value.invalid` diagnostic, as it does from a typed read in a create function, with the parser's `ValueName` under `name` and its message under `reason`.
+- The create function is unaffected: it reads the name of a declared key as an ordinary query value, through `TryGetQuery`, `TryGetQuery<T>` and `GetQueryValues`, as it would in a table that does not declare the key.
+- `Metadata` has entries only for declared keys; other query names are ignored, as they are by a table that declares no keys. It is `RouteMetadata.Empty` when the match fails, when the table declares no keys and when the query has none of their names.
+- A mapping without a format function gets metadata on a match too, since the declaration is the table's, not the mapping's.
+- A table that declares no keys does not read the query for metadata, so a match on it parses the query only if its create function reads a query value.
+
+Reading back a request:
+
+- When `Format(request)` returns, everything `Format(route)` [promises](#what-a-round-trip-promises) for the route holds for the text, and each metadata value reads back equal through the typed read of its type, which is the read `Match` uses, for a type with a codec as far as the codec keeps its contract, as [What a round trip promises](#what-a-round-trip-promises) describes. So when `Match` of the text as a relative URI, as in `new Uri(text, UriKind.Relative)`, succeeds, its `Route` is the route the create function makes, equal to the request's route provided the create function and the format function agree, and its `Metadata` equals the request's metadata without the entries for keys the table does not declare, which are not written, provided each codec keeps that contract: a type without value equality, such as a class with a codec that does not override `Equals`, reads back as a value with the same text that is not equal to the one written, so the metadata are not equal. An empty string is written as `name=` and reads back as the empty string, and a value that needs encoding reads back unchanged.
+- The same holds for the link that `FormatUri(request, baseUri)` returns, whose path and query `Match` reads exactly as written.

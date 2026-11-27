@@ -45,6 +45,14 @@ public sealed class RouteMetadata : IEquatable<RouteMetadata>
     /// </summary>
     public static RouteMetadata Empty { get; } = new([]);
 
+    // A collection over entries that the caller made for it alone, taking ownership of the array, as the constructor
+    // does. The caller guarantees at most one entry for each key, so no two entries have equal keys; the array is not
+    // checked. The route table reads one entry for each distinct declared key, which meets that.
+    internal static RouteMetadata FromEntries(RouteMetadataEntry[] entries)
+    {
+        return new RouteMetadata(entries);
+    }
+
     /// <summary>
     /// Gets the number of entries in the collection.
     /// </summary>
