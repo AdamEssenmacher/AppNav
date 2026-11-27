@@ -46,8 +46,12 @@ internal sealed class RouteConstraint
     // constraints that accept none of them together accept no text together, which the tests check against a corpus.
     // A new built-in constraint needs a sample here for every overlap it creates, and an entry in the tests' tables of
     // overlapping pairs, disjoint pairs and own values, and values in their corpus that satisfy it. A pair with an
-    // added constraint is tried against the same samples, which can only find a text in common, never rule one out.
+    // added constraint is tried against the same samples, which can only find a text in common, never rule one out,
+    // and so is a pair declared disjoint, which a sample both accept proves false; that check asks about every sample.
     private static readonly string[] SampleValues = ["0", "a", "true", "00000000-0000-0000-0000-000000000000"];
+
+    // The samples, in the order they are tried, for the check of a declared pair, which asks about each of them.
+    public static ReadOnlySpan<string> Samples => SampleValues;
 
     private readonly Func<string, string>? _hintFor;
 
@@ -210,11 +214,13 @@ internal sealed class RouteConstraint
 
     // Says whether some text satisfies both constraints and, when one is known, returns it. Two built-in constraints
     // are disjoint exactly when they accept no sample together. A pair that involves an added constraint is never
-    // disjoint, since what such a constraint accepts cannot be known; it has a common value when both accept a
-    // sample, and may overlap otherwise, even an added constraint with itself, which may accept no text at all. The
-    // same pair gives the same answer and value in either order, so that a message naming it does not depend on which
-    // template was mapped first. The samples are passed to an added constraint's function, and an exception it throws
-    // propagates.
+    // disjoint here, since what such a constraint accepts cannot be known; it has a common value when both accept a
+    // sample, and may overlap otherwise, even an added constraint with itself, which may accept no text at all. Only a
+    // declaration of RouteTableBuilder.DeclareDisjointConstraints, which Build tests with the samples, makes such a
+    // pair disjoint, and it is kept by the builder, not here, because a built-in constraint is shared by every
+    // builder. The same pair gives the same answer and value in either order, so that a message naming it does not
+    // depend on which template was mapped first. The samples are passed to an added constraint's function, stopping at
+    // the first both accept, and an exception it throws propagates.
     public static ConstraintOverlap FindCommonValue(RouteConstraint x, RouteConstraint y, out string? value)
     {
         foreach (string sample in SampleValues)

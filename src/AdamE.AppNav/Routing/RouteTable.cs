@@ -31,14 +31,20 @@ public sealed class RouteTable
     // that is mapped without a format function, and say which fix applies.
     private readonly FrozenSet<Type> _routeTypes;
 
-    internal RouteTable(RouteDefinition[] definitions, FrozenDictionary<Type, object> codecs)
+    // The declared pairs are used only here, to check the templates, and not kept: nothing that matches or writes a
+    // path asks about them, and a declaration the builder makes later cannot reach this table.
+    internal RouteTable(
+        RouteDefinition[] definitions,
+        FrozenDictionary<Type, object> codecs,
+        DisjointConstraints disjoint)
     {
         ThrowIfSameTemplateTwice(definitions);
-        ThrowIfAmbiguous(definitions);
+        ThrowIfAmbiguous(definitions, disjoint);
 
         // Templates that rank equally at every position cannot both match a path, as checked above, so their order
-        // among themselves never decides which route wins. Array.Sort is not stable, so it sorts registration indices
-        // and breaks ties on them only so that the order is the same on every build.
+        // among themselves never decides which route wins, unless a declaration of DeclareDisjointConstraints is
+        // false. Array.Sort is not stable, so it sorts registration indices and breaks ties on them, so that the order
+        // is the same on every build and, for a false declaration, the template mapped first wins, as documented.
         var order = new int[definitions.Length];
         for (var i = 0; i < order.Length; i++)
             order[i] = i;
@@ -137,7 +143,10 @@ public sealed class RouteTable
     /// and at the first position where their ranks differ, the more specific one is tried first, as the "Which route
     /// wins" section of the routing guide sets out. <see cref="RouteTableBuilder.Build"/> rejects templates that rank
     /// equally at every position and can match the same path, so the order the routes were mapped in never decides
-    /// which one wins. The first whose template matches wins; no later one is tried. Its create function is called
+    /// which one wins, unless two constraints declared disjoint with
+    /// <see cref="RouteTableBuilder.DeclareDisjointConstraints(ReadOnlySpan{string})"/> accept some text in common,
+    /// and then the one mapped first wins for a path both match. The first whose template matches wins; no later one
+    /// is tried. Its create function is called
     /// once, and any exception it throws propagates unchanged, except a <see cref="RouteValueException"/>.
     /// </para>
     /// <para>
@@ -270,8 +279,11 @@ public sealed class RouteTable
     /// empty list for a list that was <see langword="null"/>. So the route that matches is equal to the one written
     /// provided the create function and the format function agree, which the table cannot check, and the route type
     /// compares any list it holds by its elements, which a record does not do by default. A path that a template
-    /// ranking higher would match first is not returned: with <c>/products/new</c> and <c>/products/{name}</c> in one
-    /// table, the name <c>new</c> cannot be written, because <c>/products/new</c> would open the other route. Which
+    /// ranking higher would match first is not returned, nor one that a template ranking equally and mapped earlier
+    /// would match first, which only a false declaration of
+    /// <see cref="RouteTableBuilder.DeclareDisjointConstraints(ReadOnlySpan{string})"/> allows: with
+    /// <c>/products/new</c> and <c>/products/{name}</c> in one table, the name <c>new</c> cannot be written, because
+    /// <c>/products/new</c> would open the other route. Which
     /// template a path selects is decided exactly as <see cref="Match(Uri)"/> decides it, by the templates alone, so a
     /// query value never changes it, and no create function is called. That check comes after every other, once every
     /// value function has been called, and calls none. A mapping of the same route type that ranks higher also counts,
@@ -324,7 +336,10 @@ public sealed class RouteTable
     /// function. The exception's <see cref="ArgumentException.ParamName"/> is <c>route</c>, and its message names the
     /// route type and both templates, but neither the route's values nor the path. It has no inner exception. To fix
     /// the table, change the templates so that they cannot match the same path, for example by constraining a
-    /// parameter or by giving one of them a literal of its own.
+    /// parameter or by giving one of them a literal of its own. The same is thrown when that mapping ranks equally
+    /// and was mapped earlier, which only constraints declared disjoint with
+    /// <see cref="RouteTableBuilder.DeclareDisjointConstraints(ReadOnlySpan{string})"/> that both accept a text allow;
+    /// the message then says so, and that the declaration is to be corrected or removed.
     /// </exception>
     /// <exception cref="Exception">
     /// Any exception that a value function throws, that a list of query values throws while it is enumerated, that
@@ -526,6 +541,20 @@ public sealed class RouteTable
         // The capturing template can contain a literal equal to a value, as '/products/new' does for the name 'new',
         // but such a value is text the application wrote into its own template, not a secret. It says which template
         // matches, not which route opens, because that template's create function may still reject the value.
+        // Build rejects templates that rank equally and can match the same path, so an earlier template that ranks
+        // equally and matches it can only come from a pair of constraints declared disjoint that both accept a text.
+        if (first.Template.ComparePrecedence(owner.Template) == 0)
+        {
+            throw new ArgumentException(
+                $"The route type '{RouteValueTypes.DisplayName(type)}' cannot be written by the template " +
+                $"'{owner.Template.Value}': the path it writes is matched first by the template " +
+                $"'{first.Template.Value}', which ranks equally and was mapped first, so a link to it would be " +
+                "matched by that template instead. That can happen only when constraints declared disjoint with " +
+                "DeclareDisjointConstraints both accept a text, so a declaration about the constraints of the two " +
+                "templates is false. Correct or remove that declaration.",
+                nameof(route));
+        }
+
         throw new ArgumentException(
             $"The route type '{RouteValueTypes.DisplayName(type)}' cannot be written by the template " +
             $"'{owner.Template.Value}': the path it writes is matched first by the template " +
@@ -723,17 +752,20 @@ public sealed class RouteTable
     // Two templates that rank equally at every position and both match some path would be tried in registration order,
     // so that order would decide which route wins for that path. Only templates of the same shape can be such a pair,
     // so the definitions are grouped by shape and each is compared with the earlier members of its group only. The
-    // members of a group are kept apart in pairs, or Build has already thrown, so a group holds at most one member for
-    // each combination of mutually disjoint constraints at its constrained required positions: up to 3^k for k such
-    // positions, one for each class of built-in constraints that overlap (the numbers, bool and alpha, and guid). An
-    // added constraint is never disjoint from any, so it keeps no pair apart and does not raise that bound. The check
-    // is linear for tables whose groups are small, which is every realistic table, and quadratic in the size of a
-    // group.
+    // members of a group are kept apart in pairs, or Build has already thrown: every two of them have, at some
+    // constrained required position, constraints that accept no text in common. The built-in constraints overlap in
+    // three classes (the numbers, bool and alpha, and guid), so with them alone a group holds at most 3^k members for k
+    // such positions. Added constraints declared disjoint with DeclareDisjointConstraints form no such classes, and no
+    // fixed bound holds: n added constraints declared pairwise disjoint let n templates share a single position. What
+    // still holds is that two members never have the same constraint at every such position, or they would conflict,
+    // since a constraint is never disjoint from itself, so a group holds at most the product, over those positions, of
+    // the number of different constraints its members have there. The check is linear for tables whose groups are
+    // small, which is every realistic table, and quadratic in the size of a group.
     // previous chains each group from its latest member back to its first. Among the built-in constraints, at most one
-    // earlier member of a group can conflict with a new one, because they overlap in classes; an added constraint
-    // overlaps every constraint, so several can, and the earliest of them is the one reported, so that the error does
-    // not change from one build to the next.
-    private static void ThrowIfAmbiguous(RouteDefinition[] definitions)
+    // earlier member of a group can conflict with a new one, because they overlap in classes; an added constraint can
+    // overlap several earlier members that are disjoint from each other, so several can, and the earliest of them is
+    // the one reported, so that the error does not change from one build to the next.
+    private static void ThrowIfAmbiguous(RouteDefinition[] definitions, DisjointConstraints disjoint)
     {
         var latest = new Dictionary<RouteTemplate, int>(definitions.Length, SameTemplateComparer.SameShape);
         var previous = new int[definitions.Length];
@@ -747,13 +779,13 @@ public sealed class RouteTable
             for (int j = previous[i]; j >= 0; j = previous[j])
             {
                 ConstraintOverlap overlap =
-                    definitions[j].Template.FindCommonPath(template, out string? path, out int position);
+                    definitions[j].Template.FindCommonPath(template, disjoint, out string? path, out int position);
                 if (overlap != ConstraintOverlap.Disjoint)
                     (earliest, commonPath, unknownPosition) = (j, path, position);
             }
 
             if (earliest >= 0)
-                throw Ambiguous(definitions[earliest], definitions[i], commonPath, unknownPosition);
+                throw Ambiguous(definitions[earliest], definitions[i], commonPath, unknownPosition, disjoint);
 
             latest[template] = i;
         }
@@ -764,16 +796,26 @@ public sealed class RouteTable
     // accepts together with the other constraint. The advice depends on the positions it is about: the required ones,
     // or, when only optional parameters tell the templates apart, those of the alternatives. Where an added constraint
     // is involved there, constraints are not offered as the way to keep templates apart, since an added constraint
-    // keeps none apart, and the message says why. With built-in constraints alone, the message is as it always was.
+    // keeps none apart unless declared disjoint, and the message says why. Declaring is offered instead when, at one of
+    // those positions, two different constraints, one of them added, are neither declared disjoint nor known to accept
+    // a text in common; never for a constraint with itself, which no declaration can keep apart. With built-in
+    // constraints alone, the message is as it always was.
     private static InvalidOperationException Ambiguous(
         RouteDefinition earlier,
         RouteDefinition later,
         string? path,
-        int unknownPosition)
+        int unknownPosition,
+        DisjointConstraints disjoint)
     {
         RouteTemplate template = earlier.Template;
         bool onlyOptional = template.HasSameRequiredSegments(later.Template);
-        bool added = path is null || template.HasAddedConstraint(later.Template, required: !onlyOptional);
+        // Alternatives whose added constraints are all in pairs already declared disjoint need no word on how added
+        // constraints are treated, only to be mapped as templates of their own, which those declarations keep apart.
+        bool declaredAlternatives =
+            onlyOptional && template.HasOnlyDeclaredAddedConstraints(later.Template, disjoint, required: false);
+        bool added = path is null ||
+                     (template.HasAddedConstraint(later.Template, required: !onlyOptional) && !declaredAlternatives);
+        string? declare = added ? DeclareAdvice(template, later.Template, disjoint, required: !onlyOptional) : null;
 
         var message = new StringBuilder();
         message.Append($"The templates '{template.Value}', mapped to route type '{earlier.RouteType}', and ")
@@ -800,7 +842,8 @@ public sealed class RouteTable
         if (added)
         {
             message.Append("A constraint added with AddConstraint is treated as overlapping every constraint, itself ")
-                .Append("included, because which text its function accepts cannot be known. ");
+                .Append("included, because which text its function accepts cannot be known; only a pair declared ")
+                .Append("with DeclareDisjointConstraints is taken to accept no text in common. ");
         }
 
         if (onlyOptional)
@@ -810,22 +853,45 @@ public sealed class RouteTable
                       "matches both templates whenever it matches one. "
                     : "Optional parameters never keep templates apart, because both templates match the path " +
                       "without them. ")
-                .Append(template.HasAddedConstraint(later.Template, required: false)
+                .Append(declaredAlternatives
+                    ? "Map the shorter path and each alternative as its own template with a required parameter, " +
+                      "where the constraints already declared disjoint with DeclareDisjointConstraints keep the " +
+                      "alternatives apart, or keep them apart with a different literal, or remove one."
+                    : template.HasAddedConstraint(later.Template, required: false)
                     ? "Map the shorter path and each alternative as its own template, keeping the alternatives " +
-                      "apart with a different literal, or remove one."
+                      $"apart with a different literal{declare}, or remove one."
                     : "Map the shorter path and each alternative as its own template with a required parameter, " +
                       "giving the alternatives constraints that no text satisfies together, or remove one.");
         }
         else
         {
             message.Append(added
-                ? "Keep them apart at a required position with a different literal, or make them rank differently, " +
-                  "or remove one."
+                ? $"Keep them apart at a required position with a different literal{declare}, or make them rank " +
+                  "differently, or remove one."
                 : "Keep them apart at a required position, with a different literal or with constraints there that " +
                   "no text satisfies together, or make them rank differently, or remove one.");
         }
 
         return new InvalidOperationException(message.ToString());
+    }
+
+    // The words that offer DeclareDisjointConstraints for the first position, among those the advice is about, where
+    // a declaration would keep the templates apart, or null when there is none. Only that pair is named, and the
+    // message says it helps only if no text satisfies both, which the library cannot know.
+    private static string? DeclareAdvice(
+        RouteTemplate template,
+        RouteTemplate other,
+        DisjointConstraints disjoint,
+        bool required)
+    {
+        int position = template.FindUndeclaredPosition(other, disjoint, required);
+        if (position < 0)
+            return null;
+
+        (RouteConstraint constraint, RouteConstraint otherConstraint) = template.ConstraintsAt(other, position);
+        return $", or, if no text satisfies both the constraints '{constraint.Name}' and '{otherConstraint.Name}' " +
+               $"at segment {position + 1}, by declaring that with " +
+               $"DeclareDisjointConstraints(\"{constraint.Name}\", \"{otherConstraint.Name}\")";
     }
 
     // Tells an attached debugger that an exception the create function threw is not handled here, which the attribute

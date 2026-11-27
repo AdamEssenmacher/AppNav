@@ -344,12 +344,17 @@ public sealed class RouteTemplate
     // Says whether this template and another of the same shape can both match a path, from their required positions
     // alone, because a path that leaves out every optional parameter and the catch-all matches both whatever their
     // constraints. They are disjoint when the constraints at some required position accept no text in common, which
-    // only two built-in constraints can be known to do. Otherwise, path is one that both match, with only the required
-    // segments, when a common segment is known at every required position; when one is not, which only an added
-    // constraint causes, the templates may overlap, path is null and position is the first required position whose
-    // segment is not known. Every position is checked before the path is built, because most templates of one shape in
-    // a table differ in a constraint that keeps them apart, and those comparisons then allocate nothing.
-    internal ConstraintOverlap FindCommonPath(RouteTemplate other, out string? path, out int position)
+    // two built-in constraints can be known to do, and a pair in disjoint is declared to do. Otherwise, path is one
+    // that both match, with only the required segments, when a common segment is known at every required position;
+    // when one is not, which only an added constraint causes, the templates may overlap, path is null and position is
+    // the first required position whose segment is not known. Every position is checked before the path is built,
+    // because most templates of one shape in a table differ in a constraint that keeps them apart, and those
+    // comparisons then allocate nothing.
+    internal ConstraintOverlap FindCommonPath(
+        RouteTemplate other,
+        DisjointConstraints disjoint,
+        out string? path,
+        out int position)
     {
         Debug.Assert(SameTemplateComparer.SameShape.Equals(this, other), "Only templates of one shape are compared.");
 
@@ -357,7 +362,7 @@ public sealed class RouteTemplate
         position = -1;
         for (var i = 0; i < _requiredCount; i++)
         {
-            ConstraintOverlap overlap = CommonSegment(other, i, out _);
+            ConstraintOverlap overlap = CommonSegment(other, i, disjoint, out _);
             if (overlap == ConstraintOverlap.Disjoint)
             {
                 position = -1;
@@ -380,7 +385,7 @@ public sealed class RouteTemplate
         var builder = new StringBuilder();
         for (var i = 0; i < _requiredCount; i++)
         {
-            CommonSegment(other, i, out string? segment);
+            CommonSegment(other, i, disjoint, out string? segment);
             builder.Append('/').Append(segment);
         }
 
@@ -407,6 +412,60 @@ public sealed class RouteTemplate
         }
 
         return false;
+    }
+
+    // Whether this template and another of the same shape have an added constraint at some position in the range that
+    // HasAddedConstraint takes, and at every such position two different constraints declared disjoint, so that the
+    // templates, once mapped with those positions required, would be kept apart.
+    internal bool HasOnlyDeclaredAddedConstraints(RouteTemplate other, DisjointConstraints disjoint, bool required)
+    {
+        Debug.Assert(SameTemplateComparer.SameShape.Equals(this, other), "Only templates of one shape are compared.");
+
+        int start = required ? 0 : _requiredCount;
+        int end = required ? _requiredCount : _segments.Length;
+        var any = false;
+        for (int i = start; i < end; i++)
+        {
+            RouteConstraint? constraint = _segments[i].Constraint;
+            RouteConstraint? otherConstraint = other._segments[i].Constraint;
+            if (constraint is not { IsBuiltIn: false } && otherConstraint is not { IsBuiltIn: false })
+                continue;
+
+            if (constraint is null || otherConstraint is null || !disjoint.Contains(constraint, otherConstraint))
+                return false;
+
+            any = true;
+        }
+
+        return any;
+    }
+
+    // The first position where this template and another of the same shape have two different constraints, one of them
+    // added, that are neither declared disjoint nor known to accept a text in common, so that declaring them disjoint
+    // would keep the templates apart, or -1 when there is none. The positions are the required ones or, when required
+    // is false, those after them, as for HasAddedConstraint. A constraint with itself can never be declared disjoint,
+    // so a position where both templates have the same constraint is never given.
+    internal int FindUndeclaredPosition(RouteTemplate other, DisjointConstraints disjoint, bool required)
+    {
+        Debug.Assert(SameTemplateComparer.SameShape.Equals(this, other), "Only templates of one shape are compared.");
+
+        int start = required ? 0 : _requiredCount;
+        int end = required ? _requiredCount : _segments.Length;
+        for (int i = start; i < end; i++)
+        {
+            RouteConstraint? constraint = _segments[i].Constraint;
+            RouteConstraint? otherConstraint = other._segments[i].Constraint;
+            if (constraint is null || otherConstraint is null || ReferenceEquals(constraint, otherConstraint) ||
+                (constraint.IsBuiltIn && otherConstraint.IsBuiltIn) || disjoint.Contains(constraint, otherConstraint))
+            {
+                continue;
+            }
+
+            if (RouteConstraint.FindCommonValue(constraint, otherConstraint, out _) == ConstraintOverlap.MayOverlap)
+                return i;
+        }
+
+        return -1;
     }
 
     // The constraints of this template and another of the same shape at a position, for a message that names them.
@@ -437,7 +496,13 @@ public sealed class RouteTemplate
     // The text of a path segment that both templates accept at a required position: a literal as Format writes it,
     // which is the same for both, a letter for parameters without a constraint, which take any text, or a value both
     // constraints accept, if one is known. Within a shape, one parameter has a constraint exactly when the other does.
-    private ConstraintOverlap CommonSegment(RouteTemplate other, int position, out string? text)
+    // A pair declared disjoint is taken at its word, without calling a function: Build has already checked it against
+    // the samples, so none would be found in common.
+    private ConstraintOverlap CommonSegment(
+        RouteTemplate other,
+        int position,
+        DisjointConstraints disjoint,
+        out string? text)
     {
         RouteSegment segment = _segments[position];
         if (!segment.IsParameter)
@@ -452,6 +517,12 @@ public sealed class RouteTemplate
         {
             text = "x";
             return ConstraintOverlap.CommonValue;
+        }
+
+        if (disjoint.Contains(constraint, otherConstraint))
+        {
+            text = null;
+            return ConstraintOverlap.Disjoint;
         }
 
         return RouteConstraint.FindCommonValue(constraint, otherConstraint, out text);
