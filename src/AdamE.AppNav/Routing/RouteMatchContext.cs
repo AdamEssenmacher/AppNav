@@ -85,9 +85,9 @@ public sealed class RouteMatchContext
     /// <see cref="int"/> within their own range. <see cref="double"/> and <see cref="float"/> accept text of the
     /// same shape as <see cref="decimal"/>, not limited to the range of <see cref="decimal"/>, and read the nearest
     /// value of the type; a value that, after rounding, is beyond the largest finite value of the type does not
-    /// convert, rather than being read as infinity. No constraint is named after those types. An enum converts from
-    /// the name of one of its members only, compared ordinally without regard to case, as
-    /// <see cref="RouteTableBuilder.AddEnumValueCodec{TEnum}"/> describes. A type registered with
+    /// convert, rather than being read as infinity. An enum converts from the name of one of its members only,
+    /// compared ordinally without regard to case, as <see cref="RouteTableBuilder.AddEnumValueCodec{TEnum}"/>
+    /// describes. A type registered with
     /// <see cref="RouteTableBuilder.AddValueCodec{TValue}"/> converts exactly when the parser of its codec accepts the
     /// text, to the value it gives, and is found by exactly that type, not by a type it derives from or implements. A
     /// nullable type converts by the rule of its underlying type, to the same value; for a type registered with
@@ -543,12 +543,11 @@ public sealed class RouteMatchContext
     }
 
     // Each type uses the parse method of the constraint of the same name, so that conversion and constraint cannot
-    // disagree, or, for a type that no constraint is named after, the method of the rule it follows. A nullable type
-    // shares the branch of its underlying type, so it reads by exactly that rule. On CoreCLR the JIT removes the cast
-    // through object at every tier when T is that value type or its nullable form, as measured, and a test checks
-    // that a typed read allocates nothing more; another runtime still gives the right value and could differ only in
-    // that allocation. A branch whose test and local ever disagreed would throw InvalidCastException rather than
-    // misread memory.
+    // disagree. A nullable type shares the branch of its underlying type, so it reads by exactly that rule. On CoreCLR
+    // the JIT removes the cast through object at every tier when T is that value type or its nullable form, as
+    // measured, and a test checks that a typed read allocates nothing more; another runtime still gives the right
+    // value and could differ only in that allocation. A branch whose test and local ever disagreed would throw
+    // InvalidCastException rather than misread memory.
     private static bool TryConvert<T>(string text, [MaybeNullWhen(false)] out T value)
     {
         bool converted;

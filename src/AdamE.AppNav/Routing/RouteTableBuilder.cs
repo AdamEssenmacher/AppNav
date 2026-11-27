@@ -449,12 +449,12 @@ public sealed class RouteTableBuilder
     /// </exception>
     /// <exception cref="ArgumentException">
     /// <paramref name="name"/> is not an ASCII letter followed by ASCII letters, digits, <c>-</c> or <c>_</c>; it is
-    /// the name of a built-in constraint, <c>int</c>, <c>long</c>, <c>decimal</c>, <c>bool</c>, <c>guid</c> or
-    /// <c>alpha</c>; it is reserved for a later built-in constraint, as the C# keywords of the other built-in value
-    /// types are: <c>string</c>, <c>char</c>, <c>sbyte</c>, <c>byte</c>, <c>short</c>, <c>ushort</c>, <c>uint</c>,
-    /// <c>ulong</c>, <c>float</c> and <c>double</c>; or a constraint with that name, ignoring case, is already added on
-    /// this builder. The exception's <see cref="ArgumentException.ParamName"/> is <c>name</c>, and the builder is not
-    /// changed.
+    /// the name of a built-in constraint, <c>int</c>, <c>long</c>, <c>decimal</c>, <c>bool</c>, <c>guid</c>,
+    /// <c>alpha</c>, <c>sbyte</c>, <c>byte</c>, <c>short</c>, <c>ushort</c>, <c>uint</c>, <c>ulong</c>, <c>float</c>
+    /// or <c>double</c>; it is reserved, as <c>string</c> and <c>char</c> are, because a template that named one would
+    /// look like a constraint of a type whose values a route reads or writes as text; or a constraint with that name,
+    /// ignoring case, is already added on this builder. The exception's <see cref="ArgumentException.ParamName"/> is
+    /// <c>name</c>, and the builder is not changed.
     /// </exception>
     public RouteTableBuilder AddConstraint(string name, Func<string, bool> isSatisfiedBy)
     {
@@ -481,7 +481,7 @@ public sealed class RouteTableBuilder
         if (RouteConstraint.IsReserved(name))
         {
             throw new ArgumentException(
-                $"The constraint name '{lower}' is reserved, so that a later built-in constraint can have it.",
+                $"The constraint name '{lower}' is reserved: {RouteConstraint.ReservedReason(name)}.",
                 nameof(name));
         }
 
@@ -551,12 +551,11 @@ public sealed class RouteTableBuilder
     /// </exception>
     /// <exception cref="ArgumentException">
     /// <paramref name="names"/> has fewer than two names, which includes an array that is <see langword="null"/>; or
-    /// one of them is not an ASCII letter followed by ASCII letters, digits, <c>-</c> or <c>_</c>; or one is reserved
-    /// for a later built-in constraint, as <see cref="AddConstraint(string, Func{string, bool})"/> describes, and so
-    /// can never be a constraint; or one is the same as an earlier one, ignoring case. The number of names is checked
-    /// first; then each name in turn, its form, then whether it is reserved, then whether it repeats an earlier one,
-    /// and the first failure is reported, naming the name. The exception's <see cref="ArgumentException.ParamName"/>
-    /// is <c>names</c>.
+    /// one of them is not an ASCII letter followed by ASCII letters, digits, <c>-</c> or <c>_</c>; or one is reserved,
+    /// as <see cref="AddConstraint(string, Func{string, bool})"/> describes, and so can never be a constraint; or one
+    /// is the same as an earlier one, ignoring case. The number of names is checked first; then each name in turn, its
+    /// form, then whether it is reserved, then whether it repeats an earlier one, and the first failure is reported,
+    /// naming the name. The exception's <see cref="ArgumentException.ParamName"/> is <c>names</c>.
     /// </exception>
     public RouteTableBuilder DeclareDisjointConstraints(params ReadOnlySpan<string> names)
     {
@@ -589,8 +588,7 @@ public sealed class RouteTableBuilder
             if (RouteConstraint.IsReserved(name))
             {
                 throw new ArgumentException(
-                    $"The constraint name '{lower[i]}' is reserved, so that a later built-in constraint can have it, " +
-                    "and no constraint has it yet.",
+                    $"The constraint name '{lower[i]}' is reserved: {RouteConstraint.ReservedReason(name)}.",
                     nameof(names));
             }
 

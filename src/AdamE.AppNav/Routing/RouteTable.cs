@@ -756,13 +756,13 @@ public sealed class RouteTable
     // so the definitions are grouped by shape and each is compared with the earlier members of its group only. The
     // members of a group are kept apart in pairs, or Build has already thrown: every two of them have, at some
     // constrained required position, constraints that accept no text in common. The built-in constraints overlap in
-    // three classes (the numbers, bool and alpha, and guid), so with them alone a group holds at most 3^k members for k
-    // such positions. Added constraints declared disjoint with DeclareDisjointConstraints form no such classes, and no
-    // fixed bound holds: n added constraints declared pairwise disjoint let n templates share a single position. What
-    // still holds is that two members never have the same constraint at every such position, or they would conflict,
-    // since a constraint is never disjoint from itself, so a group holds at most the product, over those positions, of
-    // the number of different constraints its members have there. The check is linear for tables whose groups are
-    // small, which is every realistic table, and quadratic in the size of a group.
+    // three classes (the eleven numbers, bool and alpha, and guid), so with them alone a group holds at most 3^k
+    // members for k such positions. Added constraints declared disjoint with DeclareDisjointConstraints form no such
+    // classes, and no fixed bound holds: n added constraints declared pairwise disjoint let n templates share a single
+    // position. What still holds is that two members never have the same constraint at every such position, or they
+    // would conflict, since a constraint is never disjoint from itself, so a group holds at most the product, over
+    // those positions, of the number of different constraints its members have there. The check is linear for tables
+    // whose groups are small, which is every realistic table, and quadratic in the size of a group.
     // previous chains each group from its latest member back to its first. Among the built-in constraints, at most one
     // earlier member of a group can conflict with a new one, because they overlap in classes; an added constraint can
     // overlap several earlier members that are disjoint from each other, so several can, and the earliest of them is

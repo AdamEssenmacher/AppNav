@@ -281,8 +281,7 @@ public sealed class RouteMatchContextTypedPathTests
         }
     }
 
-    // There is no constraint for the types that only the typed reads support, so a template naming one is invalid. The
-    // names are reserved, so a builder cannot add them either, and Map rejects them at once.
+    // A constraint is named after every number type, in any case.
     [Theory]
     [InlineData("sbyte")]
     [InlineData("byte")]
@@ -292,7 +291,26 @@ public sealed class RouteMatchContextTypedPathTests
     [InlineData("ulong")]
     [InlineData("float")]
     [InlineData("double")]
-    public void NoConstraintIsNamedAfterATypeOnlyTheTypedReadsSupport(string type)
+    public void AConstraintIsNamedAfterEachNumberType(string type)
+    {
+        foreach (string written in new[] { type, type.ToUpperInvariant() })
+        {
+            RouteTemplate template = RouteTemplate.Parse($"/products/{{x:{written}}}");
+            Assert.Equal("+007", template.Match("/products/+007")?["x"]);
+            Assert.Null(template.Match("/products/x"));
+        }
+
+        Assert.Equal(type, RouteConstraint.Find(type)?.Name);
+        Assert.False(RouteConstraint.IsReserved(type));
+    }
+
+    // string and char have no constraint, a string because it would accept every text and a char because it has no
+    // typed read, so a template naming one is invalid. The names are reserved, so a builder cannot add them either,
+    // and Map rejects them at once.
+    [Theory]
+    [InlineData("string")]
+    [InlineData("char")]
+    public void NoConstraintIsNamedAfterStringOrChar(string type)
     {
         string template = $"/products/{{x:{type}}}";
 
@@ -302,10 +320,10 @@ public sealed class RouteMatchContextTypedPathTests
 
         Assert.Equal("value", parse.ParamName);
         Assert.Contains($"unknown constraint '{type}'", parse.Message, StringComparison.Ordinal);
-        Assert.Contains("is reserved", parse.Message, StringComparison.Ordinal);
+        ReservedConstraintNames.AssertExplained(type, parse.Message);
         Assert.Equal("template", map.ParamName);
         Assert.Contains($"unknown constraint '{type}'", map.Message, StringComparison.Ordinal);
-        Assert.Contains("is reserved", map.Message, StringComparison.Ordinal);
+        ReservedConstraintNames.AssertExplained(type, map.Message);
         Assert.Null(RouteConstraint.Find(type));
     }
 
@@ -331,8 +349,17 @@ public sealed class RouteMatchContextTypedPathTests
     [InlineData("decimal")]
     [InlineData("bool")]
     [InlineData("guid")]
+    [InlineData("sbyte")]
+    [InlineData("byte")]
+    [InlineData("short")]
+    [InlineData("ushort")]
+    [InlineData("uint")]
+    [InlineData("ulong")]
+    [InlineData("float")]
+    [InlineData("double")]
     public void ATextConvertsExactlyWhenItSatisfiesTheConstraintOfTheSameName(string constraint)
     {
+        const NumberStyles Decimal = NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint;
         switch (constraint)
         {
             case "int":
@@ -342,12 +369,34 @@ public sealed class RouteMatchContextTypedPathTests
                 AssertEquivalent(constraint, t => long.Parse(t, NumberStyles.AllowLeadingSign, Invariant));
                 break;
             case "decimal":
-                AssertEquivalent(
-                    constraint,
-                    t => decimal.Parse(t, NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint, Invariant));
+                AssertEquivalent(constraint, t => decimal.Parse(t, Decimal, Invariant));
                 break;
             case "bool":
                 AssertEquivalent(constraint, bool.Parse);
+                break;
+            case "sbyte":
+                AssertEquivalent(constraint, t => sbyte.Parse(t, NumberStyles.AllowLeadingSign, Invariant));
+                break;
+            case "byte":
+                AssertEquivalent(constraint, t => byte.Parse(t, NumberStyles.AllowLeadingSign, Invariant));
+                break;
+            case "short":
+                AssertEquivalent(constraint, t => short.Parse(t, NumberStyles.AllowLeadingSign, Invariant));
+                break;
+            case "ushort":
+                AssertEquivalent(constraint, t => ushort.Parse(t, NumberStyles.AllowLeadingSign, Invariant));
+                break;
+            case "uint":
+                AssertEquivalent(constraint, t => uint.Parse(t, NumberStyles.AllowLeadingSign, Invariant));
+                break;
+            case "ulong":
+                AssertEquivalent(constraint, t => ulong.Parse(t, NumberStyles.AllowLeadingSign, Invariant));
+                break;
+            case "float":
+                AssertEquivalent(constraint, t => float.Parse(t, Decimal, Invariant));
+                break;
+            case "double":
+                AssertEquivalent(constraint, t => double.Parse(t, Decimal, Invariant));
                 break;
             default:
                 AssertEquivalent(constraint, t => System.Guid.ParseExact(t, "D"));
@@ -716,7 +765,10 @@ public sealed class RouteMatchContextTypedPathTests
     [InlineData("/i/{id:long}", "/i/3000000000", "int")]
     [InlineData("/b/{id:int}", "/b/1", "bool")]
     [InlineData("/y/{id:long}", "/y/300", "byte")]
+    [InlineData("/y/{id:int}", "/y/256", "byte")]
+    [InlineData("/y/{id:short}", "/y/-1", "byte")]
     [InlineData("/u/{id:int}", "/u/-1", "uint")]
+    [InlineData("/f/{id:double}", "/f/1000000000000000000000000000000000000000", "float")]
     public void ADifferentConstraintCanLetThroughAValueTheReadRejects(string template, string path, string type)
     {
         RouteTable table = new RouteTableBuilder()
@@ -725,6 +777,7 @@ public sealed class RouteMatchContextTypedPathTests
                 "int" => c.Path<int>("id").ToString(Invariant),
                 "byte" => c.Path<byte>("id").ToString(Invariant),
                 "uint" => c.Path<uint>("id").ToString(Invariant),
+                "float" => c.Path<float>("id").ToString(Invariant),
                 _ => c.Path<bool>("id").ToString(),
             }))
             .Build();
@@ -739,22 +792,57 @@ public sealed class RouteMatchContextTypedPathTests
         Assert.EndsWith($" {type}.", (string?)diagnostic.Data["reason"], StringComparison.Ordinal);
     }
 
-    // A constraint narrower than the type keeps a valid value from the read: the template does not match at all.
+    // A constraint narrower than the type always lets the read succeed: every text that byte accepts is an int, and
+    // every text that float accepts is a double, so the path matches exactly when the constraint accepts the value.
     [Fact]
-    public void AConstraintNarrowerThanTheTypeMakesAValidValueMissTheTemplate()
+    public void AConstraintNarrowerThanTheTypeAlwaysConverts()
+    {
+        RouteConstraint byteRule = RouteConstraint.Find("byte")!;
+        RouteConstraint floatRule = RouteConstraint.Find("float")!;
+        RouteTable table = new RouteTableBuilder()
+            .Map("/i/{n:byte}", c => new ProductRoute(c.Path<int>("n").ToString(Invariant)))
+            .Map("/d/{n:float}", c => new ProductRoute(c.Path<double>("n").ToString(Invariant)))
+            .Build();
+        var converted = 0;
+
+        foreach (string text in TypedValueCorpus.Texts())
+        {
+            string segment = Uri.EscapeDataString(text);
+            RouteMatchResult integer = table.Match(new Uri("/i/" + segment, UriKind.Relative));
+            RouteMatchResult floatingPoint = table.Match(new Uri("/d/" + segment, UriKind.Relative));
+
+            Assert.True(byteRule.IsSatisfiedBy(text) == integer.IsSuccess, $"byte: '{text}'");
+            Assert.True(floatRule.IsSatisfiedBy(text) == floatingPoint.IsSuccess, $"float: '{text}'");
+            Assert.Equal(integer.IsSuccess, integer.Definition is not null);
+            Assert.Equal(floatingPoint.IsSuccess, floatingPoint.Definition is not null);
+            converted += integer.IsSuccess ? 1 : 0;
+        }
+
+        Assert.True(converted > 40, $"{converted}");
+        Assert.Equal(new ProductRoute("7"), table.Match(new Uri("/i/+007", UriKind.Relative)).Route);
+    }
+
+    // long is neither narrower nor wider than ulong: it keeps a valid value above its range from the read, since the
+    // template does not match at all, and lets a negative value through to fail the read.
+    [Fact]
+    public void AConstraintOfAnotherRangeKeepsValidValuesOutAndLetsInvalidOnesThrough()
     {
         const string AboveLong = "/n/9223372036854775808";
-        RouteTable narrow = new RouteTableBuilder()
+        RouteTable longRange = new RouteTableBuilder()
             .Map("/n/{n:long}", c => new ProductRoute(c.Path<ulong>("n").ToString(Invariant)))
             .Build();
         RouteTable wide = new RouteTableBuilder()
             .Map("/n/{n:decimal}", c => new ProductRoute(c.Path<ulong>("n").ToString(Invariant)))
             .Build();
 
-        RouteMatchResult missed = narrow.Match(new Uri(AboveLong, UriKind.Relative));
+        RouteMatchResult missed = longRange.Match(new Uri(AboveLong, UriKind.Relative));
+        RouteMatchResult negative = longRange.Match(new Uri("/n/-1", UriKind.Relative));
 
         Assert.False(missed.IsSuccess);
         Assert.Null(missed.Definition);
+        Assert.False(negative.IsSuccess);
+        Assert.Equal("/n/{n:long}", negative.Definition?.Template.Value);
+        Assert.Equal(RouteDiagnosticCodes.ValueInvalid, Assert.Single(negative.Diagnostics).Code);
         Assert.Equal(
             new ProductRoute("9223372036854775808"),
             wide.Match(new Uri(AboveLong, UriKind.Relative)).Route);
@@ -959,6 +1047,43 @@ public sealed class RouteMatchContextTypedPathTests
         Assert.True(
             typedBytes - parsedBytes < Reads * IntPtr.Size,
             $"{type}: typed {typedBytes} bytes, parsed {parsedBytes} bytes");
+    }
+
+    // Matching a number constraint costs nothing beyond matching the same template without it: int and long call their
+    // parsers directly, and the other types the generic parse methods that the typed reads use, none of which
+    // allocates. A box on each check would make the difference at least one pointer per constrained segment, and the
+    // bound allows less than that in all.
+    [Theory]
+    [InlineData("int", "42")]
+    [InlineData("long", "-42")]
+    [InlineData("decimal", "4.2")]
+    [InlineData("sbyte", "-42")]
+    [InlineData("byte", "+42")]
+    [InlineData("short", "42")]
+    [InlineData("ushort", "42")]
+    [InlineData("uint", "42")]
+    [InlineData("ulong", "18446744073709551615")]
+    [InlineData("float", "4.2")]
+    [InlineData("double", "-.5")]
+    public void MatchingANumberConstraintAllocatesNoMoreThanMatchingWithoutIt(string constraint, string text)
+    {
+        const int Segments = 8;
+        string Template(string suffix) =>
+            "/orders" + string.Concat(Enumerable.Range(0, Segments).Select(i => $"/{{v{i}{suffix}}}"));
+        string id = string.Join('/', Enumerable.Repeat(text, Segments));
+        RouteTable constrained = new RouteTableBuilder()
+            .Map(Template(":" + constraint), _ => new SettingsRoute())
+            .Build();
+        RouteTable unconstrained = new RouteTableBuilder()
+            .Map(Template(""), _ => new SettingsRoute())
+            .Build();
+
+        long constrainedBytes = AllocatedBytesPerMatch(constrained, id);
+        long unconstrainedBytes = AllocatedBytesPerMatch(unconstrained, id);
+
+        Assert.True(
+            constrainedBytes - unconstrainedBytes < Segments * IntPtr.Size,
+            $"{constraint}: constrained {constrainedBytes} bytes, unconstrained {unconstrainedBytes} bytes");
     }
 
     [Theory]

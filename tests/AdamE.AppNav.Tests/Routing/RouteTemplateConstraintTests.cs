@@ -145,6 +145,102 @@ public sealed class RouteTemplateConstraintTests
         AssertRejects("decimal", segment);
     }
 
+    // The other integer types follow the rule of int within their own range, so '-0' and '+5' are values of an unsigned
+    // type too.
+    [Theory]
+    [InlineData("sbyte", "-128")]
+    [InlineData("sbyte", "+127")]
+    [InlineData("sbyte", "-0")]
+    [InlineData("byte", "0")]
+    [InlineData("byte", "255")]
+    [InlineData("byte", "-0")]
+    [InlineData("byte", "+5")]
+    [InlineData("byte", "000255")]
+    [InlineData("byte", "%2B5")]
+    [InlineData("short", "-32768")]
+    [InlineData("short", "32767")]
+    [InlineData("ushort", "65535")]
+    [InlineData("ushort", "-000")]
+    [InlineData("uint", "4294967295")]
+    [InlineData("uint", "-0")]
+    [InlineData("ulong", "18446744073709551615")]
+    [InlineData("ulong", "+018446744073709551615")]
+    public void AnIntegerConstraintAcceptsTheRuleOfIntWithinItsRange(string constraint, string segment)
+    {
+        AssertAccepts(constraint, segment);
+    }
+
+    [Theory]
+    [InlineData("sbyte", "128")]
+    [InlineData("sbyte", "-129")]
+    [InlineData("byte", "256")]
+    [InlineData("byte", "-1")]
+    [InlineData("byte", "1.0")]
+    [InlineData("byte", "%2042")]
+    [InlineData("byte", "0x1F")]
+    [InlineData("byte", "\u0663")]
+    [InlineData("short", "32768")]
+    [InlineData("short", "-32769")]
+    [InlineData("ushort", "65536")]
+    [InlineData("ushort", "-1")]
+    [InlineData("uint", "4294967296")]
+    [InlineData("uint", "-1")]
+    [InlineData("ulong", "18446744073709551616")]
+    [InlineData("ulong", "-1")]
+    [InlineData("ulong", "1e3")]
+    [InlineData("ulong", "+")]
+    public void AnIntegerConstraintRejectsAnythingElse(string constraint, string segment)
+    {
+        AssertRejects(constraint, segment);
+    }
+
+    // float and double have the shape of decimal with their own range: a whole number of 30 digits is beyond the range
+    // of decimal but within theirs, and one of 40 digits is beyond the range of float alone. Digits beyond the
+    // precision of the type round.
+    [Theory]
+    [InlineData("float", "0")]
+    [InlineData("float", "-.5")]
+    [InlineData("float", "5.")]
+    [InlineData("float", "+19.95")]
+    [InlineData("float", "-0")]
+    [InlineData("float", "100000000000000000000000000000")]
+    [InlineData("float", "340282346638528859811704183484516925440")]
+    [InlineData("float", "0.1000000000000000000000000000000000000000000001")]
+    [InlineData("float", "19%2E95")]
+    [InlineData("double", "0")]
+    [InlineData("double", "-.5")]
+    [InlineData("double", "100000000000000000000000000000")]
+    [InlineData("double", "1000000000000000000000000000000000000000")]
+    [InlineData("double", "0.000000000000000000000000000000000000000000000000000000001")]
+    public void AFloatingPointConstraintAcceptsTheShapeOfDecimalWithinItsRange(string constraint, string segment)
+    {
+        AssertAccepts(constraint, segment);
+    }
+
+    [Theory]
+    [InlineData("float", "1000000000000000000000000000000000000000")]
+    [InlineData("float", "-1000000000000000000000000000000000000000")]
+    [InlineData("float", "1e5")]
+    [InlineData("float", "1E5")]
+    [InlineData("float", "NaN")]
+    [InlineData("float", "Infinity")]
+    [InlineData("float", "-Infinity")]
+    [InlineData("float", "1.2.3")]
+    [InlineData("float", "-.")]
+    [InlineData("float", "1,5")]
+    [InlineData("float", "1.5f")]
+    [InlineData("float", "%201.5")]
+    [InlineData("double", "1e-5")]
+    [InlineData("double", "NaN")]
+    [InlineData("double", "\u221E")]
+    [InlineData("double", "0x10")]
+    [InlineData("double", "1.5d")]
+    [InlineData("double", "1,000")]
+    public void AFloatingPointConstraintRejectsAnythingElse(string constraint, string segment)
+    {
+        AssertRejects(constraint, segment);
+    }
+
     [Theory]
     [InlineData("true")]
     [InlineData("false")]
@@ -304,6 +400,14 @@ public sealed class RouteTemplateConstraintTests
     [InlineData("BOOL", "true", "x")]
     [InlineData("Guid", "6f9619ff-8b86-d011-b42d-00cf4fc964ff", "6f9619ff8b86d011b42d00cf4fc964ff")]
     [InlineData("ALPHA", "x", "42")]
+    [InlineData("SByte", "-1", "128")]
+    [InlineData("BYTE", "255", "256")]
+    [InlineData("Short", "-1", "x")]
+    [InlineData("UShort", "65535", "-1")]
+    [InlineData("UINT", "0", "-1")]
+    [InlineData("ULong", "18446744073709551615", "-1")]
+    [InlineData("Float", "1.5", "1e5")]
+    [InlineData("DOUBLE", ".5", "NaN")]
     public void ConstraintNamesAreComparedWithoutRegardToCase(string constraint, string satisfying, string other)
     {
         RouteTemplate template = RouteTemplate.Parse($"/{{v:{constraint}}}");
@@ -359,6 +463,14 @@ public sealed class RouteTemplateConstraintTests
     [InlineData("int")]
     [InlineData("long")]
     [InlineData("decimal")]
+    [InlineData("sbyte")]
+    [InlineData("byte")]
+    [InlineData("short")]
+    [InlineData("ushort")]
+    [InlineData("uint")]
+    [InlineData("ulong")]
+    [InlineData("float")]
+    [InlineData("double")]
     public void AVeryLongNumberIsOutOfRange(string constraint)
     {
         string segment = "1" + new string('0', 1000);

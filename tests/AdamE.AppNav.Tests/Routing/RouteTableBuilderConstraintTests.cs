@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using AdamE.AppNav.Routing;
 using Xunit;
 
@@ -10,7 +11,6 @@ public sealed class RouteTableBuilderConstraintTests
 {
     private const string NotValid = "is not valid";
     private const string BuiltInName = "is the name of a built-in constraint";
-    private const string Reserved = "is reserved";
     private const string AlreadyAdded = "is already added on this builder";
     private const string NotAdded = "neither built in nor added on this builder";
     private const string UnknownConstraint = "unknown constraint";
@@ -99,6 +99,15 @@ public sealed class RouteTableBuilderConstraintTests
     [InlineData("bool")]
     [InlineData("Guid")]
     [InlineData("alpha")]
+    [InlineData("sbyte")]
+    [InlineData("byte")]
+    [InlineData("short")]
+    [InlineData("ushort")]
+    [InlineData("uint")]
+    [InlineData("ulong")]
+    [InlineData("float")]
+    [InlineData("double")]
+    [InlineData("Double")]
     public void ABuiltInNameIsRejected(string name)
     {
         var builder = new RouteTableBuilder();
@@ -113,15 +122,7 @@ public sealed class RouteTableBuilderConstraintTests
     [Theory]
     [InlineData("string")]
     [InlineData("char")]
-    [InlineData("sbyte")]
-    [InlineData("byte")]
-    [InlineData("short")]
-    [InlineData("ushort")]
-    [InlineData("uint")]
-    [InlineData("ulong")]
-    [InlineData("float")]
-    [InlineData("double")]
-    [InlineData("Double")]
+    [InlineData("Char")]
     [InlineData("STRING")]
     public void AReservedNameIsRejected(string name)
     {
@@ -130,7 +131,7 @@ public sealed class RouteTableBuilderConstraintTests
         ArgumentException exception = Assert.Throws<ArgumentException>(() => builder.AddConstraint(name, IsSlug));
 
         Assert.Equal("name", exception.ParamName);
-        Assert.Contains(Reserved, exception.Message, StringComparison.Ordinal);
+        ReservedConstraintNames.AssertExplained(name, exception.Message);
         Assert.Contains($"'{name.ToLowerInvariant()}'", exception.Message, StringComparison.Ordinal);
         AssertSlugCanStillBeAdded(builder);
     }
@@ -245,9 +246,9 @@ public sealed class RouteTableBuilderConstraintTests
     // left for Build; RouteTemplate.Parse says the same.
     [Theory]
     [InlineData("/p/{x:string}", "string")]
-    [InlineData("/p/{x:Double}", "double")]
+    [InlineData("/p/{x:String}", "string")]
     [InlineData("/p/{x:CHAR?}", "char")]
-    [InlineData("/p/{a:int}/{x:ulong}", "ulong")]
+    [InlineData("/p/{a:int}/{x:char}", "char")]
     public void AReservedNameIsRejectedByMapAndByParse(string template, string name)
     {
         ArgumentException map = Assert.Throws<ArgumentException>(
@@ -258,7 +259,7 @@ public sealed class RouteTableBuilderConstraintTests
         Assert.Equal("value", parse.ParamName);
         foreach (ArgumentException exception in new[] { map, parse })
         {
-            Assert.Contains(Reserved, exception.Message, StringComparison.Ordinal);
+            ReservedConstraintNames.AssertExplained(name, exception.Message);
             Assert.Contains($"'{name}'", exception.Message, StringComparison.Ordinal);
         }
     }
@@ -321,7 +322,8 @@ public sealed class RouteTableBuilderConstraintTests
         Assert.Contains($"'{nameof(ProductRoute)}'", exception.Message, StringComparison.Ordinal);
         Assert.Contains("'slug'", exception.Message, StringComparison.Ordinal);
         Assert.Contains(
-            "'int', 'long', 'decimal', 'bool', 'guid' and 'alpha'",
+            "'int', 'long', 'decimal', 'bool', 'guid', 'alpha', 'sbyte', 'byte', 'short', 'ushort', 'uint', 'ulong', " +
+            "'float' and 'double'",
             exception.Message,
             StringComparison.Ordinal);
         Assert.Contains("AddConstraint", exception.Message, StringComparison.Ordinal);
@@ -349,6 +351,30 @@ public sealed class RouteTableBuilderConstraintTests
     [InlineData("UUID", "guid")]
     [InlineData("alpah", "alpha")]
     [InlineData("alfha", "alpha")]
+    [InlineData("unit", "uint")]
+    [InlineData("uin", "uint")]
+    [InlineData("unt", "int")]
+    [InlineData("bytes", "byte")]
+    [InlineData("byt", "byte")]
+    [InlineData("sybte", "sbyte")]
+    [InlineData("sbytes", "sbyte")]
+    [InlineData("shrot", "short")]
+    [InlineData("ushrt", "ushort")]
+    [InlineData("ulnog", "ulong")]
+    [InlineData("flaot", "float")]
+    [InlineData("floats", "float")]
+    [InlineData("doubel", "double")]
+    [InlineData("duble", "double")]
+    [InlineData("Int16", "short")]
+    [InlineData("uint16", "ushort")]
+    [InlineData("UInt32", "uint")]
+    [InlineData("uint64", "ulong")]
+    [InlineData("Single", "float")]
+    [InlineData("float32", "float")]
+    [InlineData("Float64", "double")]
+    [InlineData("int8", "sbyte")]
+    [InlineData("uint8", "byte")]
+    [InlineData("UByte", "byte")]
     public void BuildNamesTheBuiltInConstraintThatAMisspelledNameResembles(string written, string meant)
     {
         RouteTableBuilder builder = new RouteTableBuilder()
@@ -370,6 +396,8 @@ public sealed class RouteTableBuilderConstraintTests
     [InlineData("alphabet")]
     [InlineData("lungs")]
     [InlineData("int-id")]
+    [InlineData("dbl")]
+    [InlineData("real")]
     public void BuildNamesNoBuiltInConstraintForANameThatResemblesNone(string written)
     {
         RouteTableBuilder builder = new RouteTableBuilder()
@@ -380,6 +408,22 @@ public sealed class RouteTableBuilderConstraintTests
         Assert.Contains(NotAdded, exception.Message, StringComparison.Ordinal);
         Assert.Contains("If one of them was meant", exception.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("' was meant", exception.Message, StringComparison.Ordinal);
+    }
+
+    // Several built-in names are one edit from another, as byte is from sbyte and int from uint. A built-in name never
+    // reaches the hint, since it is found first, and it is not taken for a misspelling of another either.
+    [Fact]
+    public void ABuiltInNameIsNotTakenForAMisspellingOfAnother()
+    {
+        string[] names =
+            [.. Regex.Matches(RouteConstraint.SupportedNames, "'([a-z]+)'").Select(match => match.Groups[1].Value)];
+
+        Assert.Equal(14, names.Length);
+        foreach (string name in names)
+        {
+            Assert.NotNull(RouteConstraint.Find(name));
+            Assert.Null(RouteConstraint.FindSimilarBuiltIn(name));
+        }
     }
 
     // The hint is advice only: a name that resembles a built-in one can still be added and used.
