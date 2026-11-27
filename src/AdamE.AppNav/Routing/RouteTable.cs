@@ -225,8 +225,8 @@ public sealed class RouteTable
 
         return RouteMatchResult.Success(
             route ?? throw new InvalidOperationException(
-                $"The create function for route type '{definition.RouteType}', mapped to the template " +
-                $"'{definition.Template.Value}', returned null; it must return a route."),
+                $"The create function for route type '{RouteValueTypes.DisplayName(definition.RouteType)}', " +
+                $"mapped to the template '{definition.Template.Value}', returned null; it must return a route."),
             definition);
     }
 
@@ -712,11 +712,13 @@ public sealed class RouteTable
                 continue;
 
             RouteDefinition earlier = first[definition.Template];
+            (string earlierType, string laterType) =
+                RouteValueTypes.DisplayNames(earlier.RouteType, definition.RouteType);
             throw new InvalidOperationException(
-                $"The templates '{earlier.Template.Value}', mapped to route type '{earlier.RouteType}', and " +
-                $"'{definition.Template.Value}', mapped to route type '{definition.RouteType}', are the same " +
-                "template, so the second could never be matched. Templates are the same when they have the same " +
-                "segments, ignoring parameter names. Remove one mapping or change one of the templates.");
+                $"The templates '{earlier.Template.Value}', mapped to route type '{earlierType}', and " +
+                $"'{definition.Template.Value}', mapped to route type '{laterType}', are the same template, " +
+                "so the second could never be matched. Templates are the same when they have the same segments, " +
+                "ignoring parameter names. Remove one mapping or change one of the templates.");
         }
     }
 
@@ -775,9 +777,10 @@ public sealed class RouteTable
         bool onlyOptional = template.HasSameRequiredSegments(later.Template);
         bool added = path is null || template.HasAddedConstraint(later.Template, required: !onlyOptional);
 
+        (string earlierType, string laterType) = RouteValueTypes.DisplayNames(earlier.RouteType, later.RouteType);
         var message = new StringBuilder();
-        message.Append($"The templates '{template.Value}', mapped to route type '{earlier.RouteType}', and ")
-            .Append($"'{later.Template.Value}', mapped to route type '{later.RouteType}', rank equally and ");
+        message.Append($"The templates '{template.Value}', mapped to route type '{earlierType}', and ")
+            .Append($"'{later.Template.Value}', mapped to route type '{laterType}', rank equally and ");
         if (path is not null)
         {
             message.Append($"both match the path '{path}', so which route wins would depend on the order they were ")

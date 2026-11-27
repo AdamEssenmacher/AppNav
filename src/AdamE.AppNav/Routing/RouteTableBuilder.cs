@@ -506,14 +506,19 @@ public sealed class RouteTableBuilder
     /// segment, the same decoded literal text, compared ordinally and case-sensitively, and the same constraint or
     /// none. Parameter names do not count, so <c>/a/{x}</c> and <c>/a/{y}</c> are the same. The message names both
     /// templates and both route types, the earlier mapping first: the first mapping, in the order the routes were
-    /// mapped, whose template repeats an earlier one is reported, with the mapping it repeats.
+    /// mapped, whose template repeats an earlier one is reported, with the mapping it repeats. When two different route
+    /// types have the same name, the message writes both in full: with their namespace where they have one, or, when
+    /// that still leaves them alike, as for generic types whose arguments share a name, as
+    /// <see cref="Type.ToString()"/> writes them.
     /// <para>-or-</para>
     /// Two mappings have templates that are not the same but rank equally at every position and both match some
     /// path, such as <c>/products/{id:int}</c> and <c>/products/{n:long}</c>, which both match <c>/products/0</c>, or
     /// <c>/a/{x:int?}</c> and <c>/a/{y:alpha?}</c>, which both match <c>/a</c>. The route that won for such a path
     /// would depend on the order of the mappings. The message names both templates and both route types, the earlier
     /// mapping first, and one path that both match: the first mapping, in the order the routes were mapped, that
-    /// conflicts with an earlier one is reported, with the earliest it conflicts with. A constraint added with
+    /// conflicts with an earlier one is reported, with the earliest it conflicts with. As for the same template, two
+    /// different route types of the same name are written in full: with their namespace where they have one, or as
+    /// <see cref="Type.ToString()"/> writes them when that still leaves them alike. A constraint added with
     /// <see cref="AddConstraint(string, Func{string, bool})"/> is treated as overlapping every constraint, so two such
     /// templates are reported even when no text is known that both match; the message then names no path, but the
     /// constraints at the first required position where no common text is known. The same template twice is

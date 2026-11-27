@@ -48,6 +48,62 @@ public sealed class RouteTableDuplicateTemplateTests
     }
 
     [Fact]
+    public void TheSameTemplateMessageWritesANestedRouteTypeAsTheOtherMessagesDo()
+    {
+        AssertSameTemplateWrites<RouteHolder.NestedRoute>(RouteTypeNames.Nested);
+    }
+
+    [Fact]
+    public void TheSameTemplateMessageWritesAGenericRouteTypeAsTheOtherMessagesDo()
+    {
+        AssertSameTemplateWrites<GenericRoute<int>>(RouteTypeNames.Generic);
+    }
+
+    [Fact]
+    public void TheSameTemplateMessageWritesSameNamedRouteTypesOfTwoNamespacesWithTheirNamespaces()
+    {
+        string message = PairMessage<Orders.DetailRoute, Catalog.DetailRoute>();
+
+        AssertInOrder(message, $"'{RouteTypeNames.OrdersDetail}'", $"'{RouteTypeNames.CatalogDetail}'");
+    }
+
+    [Fact]
+    public void TheSameTemplateMessageWritesSameNamedNestedRouteTypesWithTheNamespaceOfTheirOuterTypes()
+    {
+        string message = PairMessage<Orders.Holder.Inner, Catalog.Holder.Inner>();
+
+        AssertInOrder(message, $"'{RouteTypeNames.OrdersInner}'", $"'{RouteTypeNames.CatalogInner}'");
+    }
+
+    [Fact]
+    public void TheSameTemplateMessageWritesARouteTypeOfTheGlobalNamespaceWithoutOne()
+    {
+        string message = PairMessage<global::DetailRoute, Orders.DetailRoute>();
+
+        AssertInOrder(message, $"'{RouteTypeNames.GlobalDetail}'", $"'{RouteTypeNames.OrdersDetail}'");
+    }
+
+    [Fact]
+    public void TheSameTemplateMessageWritesGenericRouteTypesThatOnlyTheirArgumentsTellApartInFull()
+    {
+        string message = PairMessage<GenericRoute<Orders.DetailRoute>, GenericRoute<Catalog.DetailRoute>>();
+
+        AssertInOrder(
+            message,
+            $"'{RouteTypeNames.GenericOfOrdersDetail}'",
+            $"'{RouteTypeNames.GenericOfCatalogDetail}'");
+    }
+
+    [Fact]
+    public void TheSameTemplateMessageWritesTheSameRouteTypeTwiceWithoutItsNamespace()
+    {
+        string message = PairMessage<Orders.DetailRoute, Orders.DetailRoute>();
+
+        AssertInOrder(message, "'DetailRoute'", "'DetailRoute'");
+        Assert.DoesNotContain(RouteTypeNames.OrdersDetail, message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TheSameTemplateForTheSameRouteTypeIsStillRejected()
     {
         var builder = new RouteTableBuilder()
@@ -349,9 +405,37 @@ public sealed class RouteTableDuplicateTemplateTests
             $"{second} does not follow {first} in: {message}");
     }
 
+    private static void AssertSameTemplateWrites<TRoute>(string name)
+        where TRoute : AppRoute, new()
+    {
+        var builder = new RouteTableBuilder()
+            .Map("/settings", _ => new TRoute())
+            .Map("/settings", _ => new TRoute());
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(builder.Build);
+
+        Assert.Contains(SameTemplate, exception.Message, StringComparison.Ordinal);
+        RouteTypeNames.AssertWrittenAsInTheUnboundConstraintError<TRoute>(exception.Message, name);
+    }
+
+    // The message for two mappings of different route types, made so that Build rejects them.
+    private static string PairMessage<TFirst, TSecond>()
+        where TFirst : AppRoute, new()
+        where TSecond : AppRoute, new()
+    {
+        var builder = new RouteTableBuilder()
+            .Map("/settings", _ => new TFirst())
+            .Map("/settings", _ => new TSecond());
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(builder.Build);
+
+        Assert.Contains(SameTemplate, exception.Message, StringComparison.Ordinal);
+        return exception.Message;
+    }
+
     private static string Quoted(Type routeType)
     {
-        return $"'{routeType.FullName}'";
+        return $"'{RouteValueTypes.DisplayName(routeType)}'";
     }
 
     private static RouteTable Build(params (string Template, Type RouteType)[] mappings)

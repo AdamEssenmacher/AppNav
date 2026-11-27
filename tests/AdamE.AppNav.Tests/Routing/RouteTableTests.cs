@@ -262,6 +262,18 @@ public sealed class RouteTableTests
     }
 
     [Fact]
+    public void TheReturnedNullMessageWritesANestedRouteTypeAsTheOtherMessagesDo()
+    {
+        AssertReturnedNullWrites<RouteHolder.NestedRoute>(RouteTypeNames.Nested);
+    }
+
+    [Fact]
+    public void TheReturnedNullMessageWritesAGenericRouteTypeAsTheOtherMessagesDo()
+    {
+        AssertReturnedNullWrites<GenericRoute<int>>(RouteTypeNames.Generic);
+    }
+
+    [Fact]
     public void AFailedMatchCurrentlyHasOneNotMatchedDiagnosticWithThePathInDataOnly()
     {
         RouteTable table = new RouteTableBuilder().Map("/settings", _ => new SettingsRoute()).Build();
@@ -464,6 +476,18 @@ public sealed class RouteTableTests
         });
 
         Assert.Equal(0, failures);
+    }
+
+    private static void AssertReturnedNullWrites<TRoute>(string name)
+        where TRoute : AppRoute, new()
+    {
+        RouteTable table = new RouteTableBuilder().Map<TRoute>("/products/{id:int}", _ => null!).Build();
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(
+            () => table.Match(new Uri("/products/42", UriKind.Relative)));
+
+        Assert.Contains(ReturnedNull, exception.Message, StringComparison.Ordinal);
+        RouteTypeNames.AssertWrittenAsInTheUnboundConstraintError<TRoute>(exception.Message, name);
     }
 
     // Matches the URI against a table that most URIs fail and one whose catch-all hands every path without a dot

@@ -365,6 +365,46 @@ public sealed class RouteTableAmbiguousTemplateTests
     }
 
     [Fact]
+    public void TheAmbiguityMessageWritesANestedRouteTypeAsTheOtherMessagesDo()
+    {
+        AssertAmbiguityWrites<RouteHolder.NestedRoute>(RouteTypeNames.Nested);
+    }
+
+    [Fact]
+    public void TheAmbiguityMessageWritesAGenericRouteTypeAsTheOtherMessagesDo()
+    {
+        AssertAmbiguityWrites<GenericRoute<int>>(RouteTypeNames.Generic);
+    }
+
+    [Fact]
+    public void TheAmbiguityMessageWritesSameNamedRouteTypesOfTwoNamespacesWithTheirNamespaces()
+    {
+        string message = PairMessage<Orders.DetailRoute, Catalog.DetailRoute>();
+
+        AssertInOrder(message, $"'{RouteTypeNames.OrdersDetail}'", $"'{RouteTypeNames.CatalogDetail}'");
+    }
+
+    [Fact]
+    public void TheAmbiguityMessageWritesGenericRouteTypesThatOnlyTheirArgumentsTellApartInFull()
+    {
+        string message = PairMessage<GenericRoute<Orders.DetailRoute>, GenericRoute<Catalog.DetailRoute>>();
+
+        AssertInOrder(
+            message,
+            $"'{RouteTypeNames.GenericOfOrdersDetail}'",
+            $"'{RouteTypeNames.GenericOfCatalogDetail}'");
+    }
+
+    [Fact]
+    public void TheAmbiguityMessageWritesTheSameRouteTypeTwiceWithoutItsNamespace()
+    {
+        string message = PairMessage<Orders.DetailRoute, Orders.DetailRoute>();
+
+        AssertInOrder(message, "'DetailRoute'", "'DetailRoute'");
+        Assert.DoesNotContain(RouteTypeNames.OrdersDetail, message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TheSameRouteTypeOnTemplatesThatCannotBeToldApartIsStillRejected()
     {
         var builder = new RouteTableBuilder()
@@ -964,9 +1004,37 @@ public sealed class RouteTableAmbiguousTemplateTests
             $"{second} does not follow {first} in: {message}");
     }
 
+    private static void AssertAmbiguityWrites<TRoute>(string name)
+        where TRoute : AppRoute, new()
+    {
+        var builder = new RouteTableBuilder()
+            .Map("/p/{id:int}", _ => new TRoute())
+            .Map("/p/{id:long}", _ => new TRoute());
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(builder.Build);
+
+        Assert.Contains(Ambiguous, exception.Message, StringComparison.Ordinal);
+        RouteTypeNames.AssertWrittenAsInTheUnboundConstraintError<TRoute>(exception.Message, name);
+    }
+
+    // The message for two mappings of different route types, made so that Build rejects them.
+    private static string PairMessage<TFirst, TSecond>()
+        where TFirst : AppRoute, new()
+        where TSecond : AppRoute, new()
+    {
+        var builder = new RouteTableBuilder()
+            .Map("/p/{id:int}", _ => new TFirst())
+            .Map("/p/{id:long}", _ => new TSecond());
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(builder.Build);
+
+        Assert.Contains(Ambiguous, exception.Message, StringComparison.Ordinal);
+        return exception.Message;
+    }
+
     private static string Quoted(Type routeType)
     {
-        return $"'{routeType.FullName}'";
+        return $"'{RouteValueTypes.DisplayName(routeType)}'";
     }
 
     private static string Quoted(Template template)
