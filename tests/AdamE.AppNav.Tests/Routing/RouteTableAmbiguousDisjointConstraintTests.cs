@@ -201,7 +201,6 @@ public sealed class RouteTableAmbiguousDisjointConstraintTests
     [Theory]
     [InlineData("/p/{a:upper?}", "/p/{b:long?}")]
     [InlineData("/p/{a:upper?}/{o:upper?}", "/p/{b:upper?}/{q:int?}")]
-    [InlineData("/p/{x:int?}/{y:lower?}", "/p/{x:long?}/{y:upper?}")]
     [InlineData("/p/{x:lower?}/{y:lower?}", "/p/{x:lower?}/{y:upper?}")]
     public void AlternativesWithAnUndeclaredAddedConstraintKeepTheAdviceForAddedConstraints(
         string first,
@@ -217,6 +216,48 @@ public sealed class RouteTableAmbiguousDisjointConstraintTests
         Assert.Contains(TreatedAsOverlapping, message, StringComparison.Ordinal);
         Assert.Contains(LiteralForAlternatives, message, StringComparison.Ordinal);
         Assert.DoesNotContain(DeclaredAlternatives, message, StringComparison.Ordinal);
+    }
+
+    // Only the first of the alternatives' positions can keep them apart once each is mapped as its own template, so
+    // the advice is about that position alone. A pair at a later position is never offered for declaring, since
+    // /p/{x:upper} would still conflict with itself, and /p/{x:int} with /p/{x:long}, whatever was declared there.
+    [Theory]
+    [InlineData("/p/{x:upper?}/{y:lower?}", "/p/{x:upper?}/{y:bang?}", true)]
+    [InlineData("/p/{x:int?}/{y:lower?}", "/p/{x:long?}/{y:bang?}", false)]
+    [InlineData("/p/{x:int?}/{y:lower?}", "/p/{x:guid?}/{y:bang?}", false)]
+    [InlineData("/p/{x:int?}/{y:lower?}", "/p/{x:long?}/{y:upper?}", false)]
+    [InlineData("/p/{x?}/{y:lower?}", "/p/{x?}/{y:bang?}", false)]
+    public void TheAdviceForOptionalAlternativesIsAboutTheFirstOfThemOnly(
+        string first,
+        string second,
+        bool addedAtTheFirst)
+    {
+        foreach ((string earlier, string later) in new[] { (first, second), (second, first) })
+        {
+            string message = Assert.Throws<InvalidOperationException>(Builder()
+                .DeclareDisjointConstraints("lower", "upper")
+                .Map(earlier, _ => new SettingsRoute())
+                .Map(later, _ => new FileRoute(null))
+                .Build).Message;
+
+            Assert.Contains(Ambiguous, message, StringComparison.Ordinal);
+            Assert.Contains(OptionalAdvice, message, StringComparison.Ordinal);
+            Assert.DoesNotContain(DeclareCall, message, StringComparison.Ordinal);
+            Assert.DoesNotContain(DeclaredAlternatives, message, StringComparison.Ordinal);
+            if (addedAtTheFirst)
+            {
+                Assert.Contains(TreatedAsOverlapping, message, StringComparison.Ordinal);
+                Assert.Contains(LiteralForAlternatives, message, StringComparison.Ordinal);
+            }
+            else
+            {
+                Assert.DoesNotContain(TreatedAsOverlapping, message, StringComparison.Ordinal);
+                Assert.Contains(
+                    "giving the alternatives constraints that no text satisfies together",
+                    message,
+                    StringComparison.Ordinal);
+            }
+        }
     }
 
     // When the alternatives would be kept apart by a declaration once each is mapped as its own template, the advice

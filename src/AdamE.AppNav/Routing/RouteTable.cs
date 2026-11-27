@@ -796,7 +796,8 @@ public sealed class RouteTable
     // With a path, both templates are known to match it. Without one, an added constraint at unknownPosition is the
     // reason the templates are not known to be apart, and no path is invented, since no text is known that its function
     // accepts together with the other constraint. The advice depends on the positions it is about: the required ones,
-    // or, when only optional parameters tell the templates apart, those of the alternatives. Where an added constraint
+    // or, when only optional parameters tell the templates apart, the first position after them, which alone decides
+    // whether the alternatives are apart once each is mapped as its own template. Where an added constraint
     // is involved there, constraints are not offered as the way to keep templates apart, since an added constraint
     // keeps none apart unless declared disjoint, and the message says why. Declaring is offered instead when, at one of
     // those positions, two different constraints, one of them added, are neither declared disjoint nor known to accept
