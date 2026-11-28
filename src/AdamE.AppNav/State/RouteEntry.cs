@@ -13,8 +13,10 @@ namespace AdamE.AppNav.State;
 /// </para>
 /// <para>
 /// An entry is immutable: its properties never hold <see langword="null"/> and cannot be set. So an entry is safe to
-/// share across threads, provided its route is immutable too, as a route whose members cannot be set is. An entry
-/// compares and hashes by its route, so changing a member of a route that allows it changes what the entry equals.
+/// share across threads, provided its route and the values of its metadata are immutable too, as a route whose
+/// members cannot be set is. An entry compares and hashes by its route and by the values of its metadata, so changing
+/// a member of a route that allows it, or a metadata value that can be changed, changes what the entry equals, and
+/// an entry kept in a set or as a dictionary key is then no longer found.
 /// </para>
 /// <para>
 /// Two entries are equal when their ids are equal, their routes are equal and their metadata are equal, as
